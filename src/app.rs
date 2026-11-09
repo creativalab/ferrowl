@@ -11,7 +11,7 @@ use iced::widget::{operation, text_editor};
 use iced::{Element, Subscription, Task, Theme};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const SEARCH_ID: &str = "search";
 /// Background indexing: wait before the first chunk and between chunks.
@@ -560,6 +560,14 @@ pub struct App {
     pub html_pointer: Option<(f32, f32)>,
     /// Where the hover link was last looked up (throttles hit tests).
     hover_probe: Option<(f32, f32)>,
+    /// Mouse held down on the HTML message: where, and whether it moved
+    /// (a drag selects text, a click opens links).
+    html_press: Option<((f32, f32), bool)>,
+    /// Last press on the HTML message, to tell double clicks.
+    html_last_press: Option<(Instant, (f32, f32))>,
+    /// A selection change is being painted; later ones wait here.
+    html_select_busy: bool,
+    html_select_queue: Vec<crate::html_view::Select>,
     pub window_width: f32,
     pub window_height: f32,
     pub scale_factor: f32,
@@ -745,7 +753,12 @@ pub enum Message {
     HtmlPointer(f32, f32),
     HoverLink(Option<String>),
     HtmlLeave,
-    HtmlClick,
+    /// Mouse pressed on the HTML message: starts a selection (or a click).
+    HtmlPress,
+    /// The HTML message painted again after a selection change.
+    HtmlSelected(Option<crate::html_view::Rendered>),
+    /// Text to put on the clipboard (Ctrl+C on the HTML message).
+    CopyText(Option<String>),
     WindowResized(iced::Size),
     /// The reader's measured width changed.
     ReaderWidth(f32),
@@ -946,6 +959,10 @@ impl App {
             hover_link: None,
             html_pointer: None,
             hover_probe: None,
+            html_press: None,
+            html_last_press: None,
+            html_select_busy: false,
+            html_select_queue: Vec::new(),
             window_width: 1440.0,
             window_height: 900.0,
             scale_factor: 1.0,
@@ -1730,6 +1747,32 @@ impl App {
 
     /// Renders the open message's HTML in the background, if it has one and
     /// the formatted view is selected.
+    /// Sends a selection change to the HTML renderer, one at a time (drags
+    /// send many: only the latest pending one is kept).
+    fn html_select(&mut self, op: crate::html_view::Select) -> Task<Message> {
+        use crate::html_view::Select;
+        let Some(uid) = self.html_render.as_ref().map(|r| r.uid) else {
+            return Task::none();
+        };
+        if self.html_select_busy {
+            if let (Some(Select::Extend(..)), Select::Extend(..)) = (self.html_select_queue.last(), op) {
+                self.html_select_queue.pop();
+            }
+            self.html_select_queue.push(op);
+            return Task::none();
+        }
+        self.html_select_busy = true;
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || crate::html_view::select(uid, op))
+                    .await
+                    .ok()
+                    .flatten()
+            },
+            Message::HtmlSelected,
+        )
+    }
+
     fn start_html_render(&mut self) -> Task<Message> {
         let Some(msg) = &self.message else {
             return Task::none();
@@ -2885,6 +2928,12 @@ impl App {
             }
             Message::HtmlPointer(x, y) => {
                 self.html_pointer = Some((x, y));
+                if let Some(((px, py), moved)) = &mut self.html_press
+                    && (*moved || (*px - x).abs() + (*py - y).abs() > 3.0)
+                {
+                    *moved = true;
+                    return self.html_select(crate::html_view::Select::Extend(x, y));
+                }
                 if self
                     .hover_probe
                     .is_some_and(|(px, py)| (px - x).abs() + (py - y).abs() < 6.0)
@@ -2915,24 +2964,41 @@ impl App {
                 self.hover_probe = None;
                 Task::none()
             }
-            Message::HtmlClick => {
-                let (Some((x, y)), Some(uid)) = (self.html_pointer, self.html_render.as_ref().map(|r| r.uid))
-                else {
+            Message::HtmlPress => {
+                let Some((x, y)) = self.html_pointer else {
                     return Task::none();
                 };
-                Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || crate::html_view::link_at(uid, x, y))
-                            .await
-                            .ok()
-                            .flatten()
-                    },
-                    |link| match link {
-                        Some(url) => Message::OpenLink(url),
-                        None => Message::Noop,
-                    },
-                )
+                self.html_press = Some(((x, y), false));
+                let now = Instant::now();
+                let double = self.html_last_press.is_some_and(|(at, (px, py))| {
+                    now.duration_since(at) < Duration::from_millis(400)
+                        && (px - x).abs() + (py - y).abs() < 6.0
+                });
+                self.html_last_press = (!double).then_some((now, (x, y)));
+                self.html_select(if double {
+                    crate::html_view::Select::Word(x, y)
+                } else {
+                    crate::html_view::Select::Start(x, y)
+                })
             }
+            Message::HtmlSelected(rendered) => {
+                self.html_select_busy = false;
+                if let (Some(new), Some(old)) = (rendered, &mut self.html_render)
+                    && new.uid == old.uid
+                    && new.width == old.width
+                {
+                    *old = new;
+                }
+                match self.html_select_queue.is_empty() {
+                    true => Task::none(),
+                    false => {
+                        let next = self.html_select_queue.remove(0);
+                        self.html_select(next)
+                    }
+                }
+            }
+            Message::CopyText(Some(text)) => iced::clipboard::write(text),
+            Message::CopyText(None) => Task::none(),
             Message::WindowResized(size) => {
                 self.window_width = size.width;
                 self.window_height = size.height;
@@ -3022,6 +3088,28 @@ impl App {
                     });
                 }
                 Task::none()
+            }
+            Message::MouseUp if self.html_press.is_some() => {
+                // A click without a drag: follow the link under it.
+                let Some((_, false)) = self.html_press.take() else {
+                    return Task::none();
+                };
+                let (Some((x, y)), Some(uid)) = (self.html_pointer, self.html_render.as_ref().map(|r| r.uid))
+                else {
+                    return Task::none();
+                };
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || crate::html_view::link_at(uid, x, y))
+                            .await
+                            .ok()
+                            .flatten()
+                    },
+                    |link| match link {
+                        Some(url) => Message::OpenLink(url),
+                        None => Message::Noop,
+                    },
+                )
             }
             Message::MouseUp if self.list_resize.take().is_some() => {
                 let save = self.save_config();
@@ -4190,6 +4278,18 @@ impl App {
         if modifiers.command() {
             return match key.as_ref() {
                 Key::Character("k") => operation::focus(SEARCH_ID),
+                Key::Character("c") if self.html_render.as_ref().is_some_and(|r| r.selection) => {
+                    let uid = self.html_render.as_ref().map(|r| r.uid).unwrap_or_default();
+                    Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || crate::html_view::selected_text(uid))
+                                .await
+                                .ok()
+                                .flatten()
+                        },
+                        Message::CopyText,
+                    )
+                }
                 _ => Task::none(),
             };
         }
