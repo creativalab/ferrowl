@@ -36,12 +36,7 @@ final class NotificationService: UNNotificationServiceExtension {
     }
 
     private static func fill(_ content: UNMutableNotificationContent, accountId: String?) async {
-        // Which account: the server sends the id it gave the account.
-        let ids = SharedStorage.defaults.data(forKey: "push.accounts")
-            .flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
-        guard let accountId, let email = ids.first(where: { $0.value == accountId })?.key else { return }
-        let store = AccountStore(directory: SharedStorage.directory)
-        guard let account = store.load().accounts.first(where: { $0.email.lowercased() == email }) else { return }
+        guard let account = MailNotifications.account(pushId: accountId) else { return }
         content.subtitle = account.email
         content.threadIdentifier = account.email
 

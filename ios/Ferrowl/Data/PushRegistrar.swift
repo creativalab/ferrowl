@@ -255,4 +255,31 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         MainActor.assumeIsolated { push?.failed(error) }
     }
+
+    /// A silent push from Ferrowl's server: mail of an account was read (or
+    /// removed) elsewhere. Takes back the notifications of messages no
+    /// longer unread and updates the number on the icon. iOS delivers these
+    /// as it sees fit, and not after the app was swiped away; the app's
+    /// own checks catch up then.
+    func application(_ application: UIApplication, didReceiveRemoteNotification info: [AnyHashable: Any]) async
+        -> UIBackgroundFetchResult {
+        guard info["type"] as? String == "read",
+              let account = MailNotifications.account(pushId: info["account"] as? String) else { return .noData }
+        return await Self.clearRead(account) ? .newData : .failed
+    }
+
+    /// Reads which of `account`'s notified messages are still unread, on a
+    /// connection of its own, and takes back the others.
+    static func clearRead(_ account: Account) async -> Bool {
+        let shown = await MailNotifications.delivered(for: account.email)
+        let lastKey = "lastUid:\(account.email.lowercased())"
+        let after = shown.uids.min().map { $0 - 1 } ?? UInt32(SharedStorage.defaults.integer(forKey: lastKey))
+        let engine = Engine(dataDir: SharedStorage.mail.path, language: Language.code)
+        guard let peek = try? await engine.peekInbox(account: account, after: after, limit: 0) else { return false }
+        await MailNotifications.clearRead(account: account.email, unread: Set(peek.unreadUids),
+                                          from: after + 1, noneUnread: peek.unread == 0)
+        Badge.set(Int(peek.unread), for: account.email)
+        Badge.show()
+        return true
+    }
 }

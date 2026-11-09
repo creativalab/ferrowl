@@ -340,6 +340,9 @@ pub struct InboxPeek {
     pub fresh: Vec<Header>,
     /// How many unread messages are above the given UID in all.
     pub fresh_count: u32,
+    /// All the unread messages' UIDs above the given UID, newest first
+    /// (which notifications are still about unread mail).
+    pub unread_uids: Vec<u32>,
     /// The newest message of the inbox, read or not.
     pub newest: Option<Header>,
     /// The inbox's unread count (Gmail: of the Primary tab), for the icon.
@@ -1122,6 +1125,7 @@ impl Engine {
         Ok(InboxPeek {
             fresh: p.fresh.into_iter().map(Header::from).collect(),
             fresh_count: p.fresh_count,
+            unread_uids: p.unread_uids,
             newest: p.newest.map(Header::from),
             unread: p.unread,
         })

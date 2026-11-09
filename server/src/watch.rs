@@ -1,18 +1,20 @@
 //! One IMAP IDLE connection per account, each on its own thread.
 //!
-//! When the inbox gets new unread messages (the EXISTS count grows and a
-//! message above the previous UIDNEXT is unread) the phone is notified.
-//! Flag changes, deletions and mail already read do not wake it. Connection errors
+//! When the inbox gets new unread messages (an unread message above the
+//! previous UIDNEXT) the phone is notified. When unread messages are read
+//! or removed elsewhere, the phone is told silently, a few seconds later
+//! (several in a row make one message), so it can take back their
+//! notifications. Mail already read when it arrives wakes nobody. Connection errors
 //! are retried with a growing pause.
 
-use crate::fcm::{Delivery, Notifier};
+use crate::fcm::{Delivery, Event, Notifier};
 use crate::store::Store;
 use ferrowl_core::config::Account;
 use ferrowl_core::mail;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use zeroize::Zeroize;
 
 /// IDLE is renewed well within the 29 minutes allowed by RFC 2177. It also
@@ -20,6 +22,11 @@ use zeroize::Zeroize;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(9 * 60);
 const RETRY_MIN: Duration = Duration::from_secs(30);
 const RETRY_MAX: Duration = Duration::from_secs(15 * 60);
+/// Mail read elsewhere is reported once nothing more was read for this long
+/// (reading several messages in a row makes one message to the phone)...
+const READ_QUIET: Duration = Duration::from_secs(10);
+/// ...or at the latest this long after the first one.
+const READ_MAX_DELAY: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 pub struct Watchers {
@@ -98,8 +105,8 @@ fn watch(
 ) {
     let mut retry = RETRY_MIN;
     while !stop.load(Ordering::Relaxed) {
-        match idle_session(account_id, account, stop, || {
-            on_new_mail(account_id, device_id, store, notifier)
+        match idle_session(account_id, account, stop, |event| {
+            tell_device(account_id, device_id, store, notifier, event)
         }) {
             Ok(Ended::Stopped) => return,
             Ok(Ended::NoIdle) => {
@@ -136,7 +143,7 @@ fn idle_session(
     account_id: &str,
     account: &Account,
     stop: &AtomicBool,
-    mut on_new: impl FnMut() -> bool,
+    mut tell: impl FnMut(Event) -> bool,
 ) -> anyhow::Result<Ended> {
     let mut session = mail::connect(account)?;
     if !mail::supports_idle(&mut session)? {
@@ -146,53 +153,119 @@ fn idle_session(
     let inbox = session.select("INBOX")?;
     let mut exists = inbox.exists;
     let mut uid_next = inbox.uid_next;
+    // UIDs only, kept in memory: which inbox messages are unread.
+    let mut unseen = unseen_set(&mut session);
+    // Mail read elsewhere not reported yet: (first, latest) change.
+    let mut read_pending: Option<(Instant, Instant)> = None;
     eprintln!("account {account_id}: watching the inbox");
     while !stop.load(Ordering::Relaxed) {
-        if mail::idle_wait(&mut session, "INBOX", IDLE_TIMEOUT)? {
-            // Removed while waiting (the wait ends only with mail or a
-            // timeout): no notification for an account that is gone.
-            if stop.load(Ordering::Relaxed) {
-                break;
-            }
+        let wait = match read_pending {
+            Some((first, last)) => (last + READ_QUIET)
+                .min(first + READ_MAX_DELAY)
+                .saturating_duration_since(Instant::now()),
+            None => IDLE_TIMEOUT,
+        };
+        let changed = mail::idle_wait(&mut session, "INBOX", wait.max(Duration::from_secs(1)))?;
+        // Removed while waiting (the wait ends only with a change or a
+        // timeout): nothing more for an account that is gone.
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        if changed {
             let now = session.select("INBOX")?;
-            if now.exists > exists && worth_notifying(&mut session, uid_next) {
+            let now_unseen = unseen_set(&mut session);
+            let change = compare(
+                unseen.as_ref(),
+                now_unseen.as_ref(),
+                uid_next,
+                now.exists > exists,
+            );
+            if change.arrived {
                 eprintln!("account {account_id}: new mail, notifying");
-                if !on_new() {
+                if !tell(Event::NewMail) {
                     let _ = session.logout();
                     return Ok(Ended::Gone);
                 }
             }
+            if change.read {
+                let t = Instant::now();
+                read_pending = Some((read_pending.map_or(t, |(first, _)| first), t));
+            }
             exists = now.exists;
             uid_next = now.uid_next.or(uid_next);
+            unseen = now_unseen.or(unseen);
+        }
+        if let Some((first, last)) = read_pending {
+            let t = Instant::now();
+            if t >= last + READ_QUIET || t >= first + READ_MAX_DELAY {
+                read_pending = None;
+                eprintln!("account {account_id}: mail read elsewhere, telling the phone");
+                if !tell(Event::Read) {
+                    let _ = session.logout();
+                    return Ok(Ended::Gone);
+                }
+            }
         }
     }
     let _ = session.logout();
     Ok(Ended::Stopped)
 }
 
-/// Whether the messages that just arrived include an unread one: messages
-/// already read elsewhere, sent to oneself or moved back into the inbox
-/// after reading wake nobody. Without the server's UIDNEXT, or when the
-/// search fails, the phone is notified as before.
-fn worth_notifying(session: &mut mail::ImapSession, uid_next: Option<u32>) -> bool {
-    match uid_next {
-        Some(from) => mail::unseen_from(session, from)
-            .map(|u| !u.is_empty())
-            .unwrap_or(true),
-        None => true,
-    }
+/// The inbox's unread UIDs (`None` if the server refused the search).
+fn unseen_set(session: &mut mail::ImapSession) -> Option<HashSet<u32>> {
+    mail::unseen_from(session, 1).ok().map(HashSet::from_iter)
 }
 
-/// Notifies the device. Returns false when the device no longer exists.
-fn on_new_mail(account_id: &str, device_id: &str, store: &Store, notifier: &dyn Notifier) -> bool {
+/// What a change of the inbox means for the phone.
+#[derive(Debug, PartialEq, Eq)]
+struct Change {
+    /// A new message arrived unread: notify.
+    arrived: bool,
+    /// An unread message was read or removed: take back notifications.
+    read: bool,
+}
+
+/// Compares the unread UIDs before and after a change. Only messages above
+/// the previous UIDNEXT are new (one marked unread again is not); mail
+/// already read when it arrives is not news. Without the unread UIDs
+/// (search refused) or UIDNEXT, a growing inbox is news, as it used to be.
+fn compare(
+    before: Option<&HashSet<u32>>,
+    after: Option<&HashSet<u32>>,
+    uid_next: Option<u32>,
+    grew: bool,
+) -> Change {
+    let (Some(before), Some(after)) = (before, after) else {
+        return Change {
+            arrived: grew,
+            read: false,
+        };
+    };
+    let arrived = match uid_next {
+        Some(next) => after.iter().any(|u| *u >= next && !before.contains(u)),
+        None => grew,
+    };
+    let read = before.iter().any(|u| !after.contains(u));
+    Change { arrived, read }
+}
+
+/// Tells the device. Returns false when the device no longer exists.
+fn tell_device(
+    account_id: &str,
+    device_id: &str,
+    store: &Store,
+    notifier: &dyn Notifier,
+    event: Event,
+) -> bool {
     let target = match store.target(device_id) {
         Ok(Some(t)) => t,
         _ => return false,
     };
-    match notifier.notify(&target, account_id) {
+    match notifier.notify(&target, account_id, event) {
         Ok(Delivery::Sent) => {
             eprintln!(
-                "account {account_id}: notification sent ({})",
+                "account {account_id}: {} sent ({})",
+                event.name(),
                 target.platform.name()
             );
             true
@@ -238,6 +311,87 @@ fn short(e: &anyhow::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn set(uids: &[u32]) -> HashSet<u32> {
+        uids.iter().copied().collect()
+    }
+
+    #[test]
+    fn new_unread_mail_is_news() {
+        let c = compare(Some(&set(&[5])), Some(&set(&[5, 10])), Some(10), true);
+        assert_eq!(
+            c,
+            Change {
+                arrived: true,
+                read: false
+            }
+        );
+    }
+
+    #[test]
+    fn mail_already_read_is_not_news() {
+        let c = compare(Some(&set(&[5])), Some(&set(&[5])), Some(10), true);
+        assert_eq!(
+            c,
+            Change {
+                arrived: false,
+                read: false
+            }
+        );
+    }
+
+    #[test]
+    fn marked_unread_again_is_not_news() {
+        let c = compare(Some(&set(&[5])), Some(&set(&[3, 5])), Some(10), false);
+        assert_eq!(
+            c,
+            Change {
+                arrived: false,
+                read: false
+            }
+        );
+    }
+
+    #[test]
+    fn read_or_removed_elsewhere_is_reported() {
+        let c = compare(Some(&set(&[5, 7])), Some(&set(&[7])), Some(10), false);
+        assert_eq!(
+            c,
+            Change {
+                arrived: false,
+                read: true
+            }
+        );
+        // Read one, another arrived: both.
+        let c = compare(Some(&set(&[5])), Some(&set(&[11])), Some(10), true);
+        assert_eq!(
+            c,
+            Change {
+                arrived: true,
+                read: true
+            }
+        );
+    }
+
+    #[test]
+    fn without_search_a_growing_inbox_is_news() {
+        let c = compare(None, Some(&set(&[11])), Some(10), true);
+        assert_eq!(
+            c,
+            Change {
+                arrived: true,
+                read: false
+            }
+        );
+        let c = compare(Some(&set(&[5])), Some(&set(&[5, 11])), None, true);
+        assert_eq!(
+            c,
+            Change {
+                arrived: true,
+                read: false
+            }
+        );
+    }
 
     #[test]
     fn recognizes_refused_logins() {

@@ -54,18 +54,39 @@ pub struct Target {
     pub token: String,
 }
 
+/// What a phone is told about an account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Event {
+    /// New unread mail: the phone shows a notification.
+    NewMail,
+    /// Unread mail was read (or removed) elsewhere: the phone silently takes
+    /// back its notifications and updates the number on the app icon.
+    Read,
+}
+
+impl Event {
+    /// The `type` field of the message.
+    pub fn name(self) -> &'static str {
+        match self {
+            Event::NewMail => "new_mail",
+            Event::Read => "read",
+        }
+    }
+}
+
 pub trait Notifier: Send + Sync {
-    fn notify(&self, target: &Target, account_id: &str) -> Result<Delivery>;
+    fn notify(&self, target: &Target, account_id: &str, event: Event) -> Result<Delivery>;
 }
 
 /// For development without Firebase/APNs credentials: only logs.
 pub struct LogNotifier;
 
 impl Notifier for LogNotifier {
-    fn notify(&self, target: &Target, account_id: &str) -> Result<Delivery> {
+    fn notify(&self, target: &Target, account_id: &str, event: Event) -> Result<Delivery> {
         eprintln!(
-            "push (log only, {}): new mail for account {account_id}",
-            target.platform.name()
+            "push (log only, {}): {} for account {account_id}",
+            target.platform.name(),
+            event.name()
         );
         Ok(Delivery::Sent)
     }
@@ -79,14 +100,14 @@ pub struct Push {
 }
 
 impl Notifier for Push {
-    fn notify(&self, target: &Target, account_id: &str) -> Result<Delivery> {
+    fn notify(&self, target: &Target, account_id: &str, event: Event) -> Result<Delivery> {
         let service = match target.platform {
             Platform::Fcm => &self.fcm,
             Platform::Apns | Platform::ApnsSandbox => &self.apns,
         };
         match service {
-            Some(n) => n.notify(target, account_id),
-            None => LogNotifier.notify(target, account_id),
+            Some(n) => n.notify(target, account_id, event),
+            None => LogNotifier.notify(target, account_id, event),
         }
     }
 }
@@ -167,22 +188,32 @@ impl Fcm {
     }
 }
 
+/// The FCM message: data-only, so the app decides what to show.
+fn message(token: &str, account_id: &str, event: Event) -> serde_json::Value {
+    // New mail: high priority wakes the app even in Doze. Taking back a
+    // notification can wait (and Android lowers apps whose high-priority
+    // messages show nothing).
+    let priority = match event {
+        Event::NewMail => "HIGH",
+        Event::Read => "NORMAL",
+    };
+    serde_json::json!({
+        "message": {
+            "token": token,
+            "data": { "type": event.name(), "account": account_id },
+            "android": { "priority": priority, "ttl": "3600s" },
+        }
+    })
+}
+
 impl Notifier for Fcm {
-    fn notify(&self, target: &Target, account_id: &str) -> Result<Delivery> {
+    fn notify(&self, target: &Target, account_id: &str, event: Event) -> Result<Delivery> {
         let fcm_token = target.token.as_str();
         let url = format!(
             "https://fcm.googleapis.com/v1/projects/{}/messages:send",
             self.project_id
         );
-        let body = serde_json::json!({
-            "message": {
-                "token": fcm_token,
-                "data": { "type": "new_mail", "account": account_id },
-                // High priority wakes the app even in Doze; data-only so the
-                // app decides what to show.
-                "android": { "priority": "HIGH", "ttl": "3600s" },
-            }
-        });
+        let body = message(fcm_token, account_id, event);
         let result = ureq::post(&url)
             .header("Authorization", &format!("Bearer {}", self.access_token()?))
             .config()
@@ -195,5 +226,21 @@ impl Notifier for Fcm {
             404 => Ok(Delivery::Unregistered),
             code => Err(anyhow!("FCM answered {code}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn messages_carry_only_the_account_and_the_event() {
+        let m = message("tok", "acc1", Event::Read);
+        assert_eq!(m["message"]["data"]["type"], "read");
+        assert_eq!(m["message"]["data"]["account"], "acc1");
+        assert_eq!(m["message"]["android"]["priority"], "NORMAL");
+        let m = message("tok", "acc1", Event::NewMail);
+        assert_eq!(m["message"]["data"]["type"], "new_mail");
+        assert_eq!(m["message"]["android"]["priority"], "HIGH");
     }
 }

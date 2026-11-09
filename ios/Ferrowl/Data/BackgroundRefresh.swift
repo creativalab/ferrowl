@@ -65,6 +65,12 @@ enum BackgroundRefresh {
                     unread = try? await app.side.unread(folderIds: [inbox])[inbox]
                 }
                 notifyNew(headers, account: account.email, announce: !(foreground && active))
+                // Notifications of messages read since (here or elsewhere) go.
+                if let oldest = headers.map(\.uid).min() {
+                    let unread = Set(headers.filter { !$0.seen }.map(\.uid))
+                    await MailNotifications.clearRead(account: account.email, unread: unread,
+                                                      from: oldest, noneUnread: unread.isEmpty)
+                }
                 // The number on the app icon: the inbox's unread messages.
                 if let n = Badge.unread(server: unread, headers: headers, gmail: Badge.isGmail(account)) {
                     Badge.set(n, for: account.email)

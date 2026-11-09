@@ -6,7 +6,7 @@
 //! (`loc-key`, from the app's `Localizable.strings`). The app then fetches
 //! the mail straight from the mail server.
 
-use crate::fcm::{Delivery, Notifier, Platform, Target};
+use crate::fcm::{Delivery, Event, Notifier, Platform, Target};
 use anyhow::{Context, Result, anyhow};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -78,8 +78,18 @@ pub fn payload(account_id: &str) -> serde_json::Value {
     })
 }
 
+/// Mail read elsewhere: a background push, shown nowhere, that wakes the
+/// app to take back the notifications of messages no longer unread.
+pub fn read_payload(account_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "aps": { "content-available": 1 },
+        "type": "read",
+        "account": account_id,
+    })
+}
+
 impl Notifier for Apns {
-    fn notify(&self, target: &Target, account_id: &str) -> Result<Delivery> {
+    fn notify(&self, target: &Target, account_id: &str, event: Event) -> Result<Delivery> {
         let host = match target.platform {
             Platform::ApnsSandbox => "api.sandbox.push.apple.com",
             _ => "api.push.apple.com",
@@ -88,17 +98,25 @@ impl Notifier for Apns {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs()
             + 3600;
-        let reply = self
+        let request = self
             .http
             .post(format!("https://{host}/3/device/{}", target.token))
             .header("authorization", format!("bearer {}", self.provider_token()?))
             .header("apns-topic", &self.topic)
-            .header("apns-push-type", "alert")
-            .header("apns-priority", "10")
-            .header("apns-expiration", expires.to_string())
-            .header("apns-collapse-id", account_id)
-            .json(&payload(account_id))
-            .send()?;
+            .header("apns-expiration", expires.to_string());
+        let reply = match event {
+            Event::NewMail => request
+                .header("apns-push-type", "alert")
+                .header("apns-priority", "10")
+                .header("apns-collapse-id", account_id)
+                .json(&payload(account_id)),
+            // Apple requires priority 5 for background pushes.
+            Event::Read => request
+                .header("apns-push-type", "background")
+                .header("apns-priority", "5")
+                .json(&read_payload(account_id)),
+        }
+        .send()?;
         let status = reply.status().as_u16();
         if status == 200 {
             return Ok(Delivery::Sent);
@@ -127,5 +145,14 @@ mod tests {
         assert_eq!(p["aps"]["alert"]["loc-key"], "notif_new_mail");
         assert_eq!(p["aps"]["thread-id"], "acc1");
         assert!(p["aps"]["alert"].get("body").is_none(), "no message content");
+    }
+
+    #[test]
+    fn read_payload_is_silent() {
+        let p = super::read_payload("acc1");
+        assert_eq!(p["type"], "read");
+        assert_eq!(p["account"], "acc1");
+        assert_eq!(p["aps"]["content-available"], 1);
+        assert!(p["aps"].get("alert").is_none() && p["aps"].get("sound").is_none());
     }
 }
