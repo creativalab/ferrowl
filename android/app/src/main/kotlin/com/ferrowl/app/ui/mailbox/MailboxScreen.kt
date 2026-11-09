@@ -221,9 +221,14 @@ fun MailboxScreen(
                         style = MaterialTheme.typography.titleSmall,
                         modifier = Modifier.padding(start = 28.dp, top = 20.dp, bottom = 8.dp),
                     )
+                    val accountCounts by vm.accountCounts.collectAsStateWithLifecycle()
                     s.accounts.forEach { email ->
+                        // Unread mail in its inbox, live for the account in use.
+                        val active = email.equals(s.active, ignoreCase = true)
+                        val unread = (if (active) vm.activeUnread() else null) ?: accountCounts[email.lowercase()] ?: 0
                         NavigationDrawerItem(
                             label = { Text(email, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            badge = { if (unread > 0) Text(unread.toString()) },
                             selected = email.equals(s.active, ignoreCase = true),
                             onClick = {
                                 vm.switchAccount(email)
