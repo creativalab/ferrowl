@@ -371,7 +371,7 @@
 					"$(SRCROOT)/Engine/lib/$(PLATFORM_NAME)/libferrowl_ffi.a",
 				);
 				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/Engine/include";
-				MARKETING_VERSION = 0.4.10;
+				MARKETING_VERSION = 0.4.11;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ferrowl.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -411,7 +411,7 @@
 					"$(SRCROOT)/Engine/lib/$(PLATFORM_NAME)/libferrowl_ffi.a",
 				);
 				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/Engine/include";
-				MARKETING_VERSION = 0.4.10;
+				MARKETING_VERSION = 0.4.11;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ferrowl.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -453,7 +453,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.10;
+				MARKETING_VERSION = 0.4.11;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"$(SRCROOT)/Engine/lib/$(PLATFORM_NAME)/libferrowl_ffi.a",
@@ -485,7 +485,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.10;
+				MARKETING_VERSION = 0.4.11;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"$(SRCROOT)/Engine/lib/$(PLATFORM_NAME)/libferrowl_ffi.a",
