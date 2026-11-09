@@ -79,9 +79,9 @@ struct RootView: View {
 struct NoticeBanner: View {
     @Environment(Notices.self) private var notices
 
-    /// Room left below: the compose button (48 + 20 points) and the bottom
-    /// search field.
-    static let clearance: CGFloat = 80
+    /// Room left below: the bottom search field (about 60 points) with the
+    /// compose button above it (20 + 48), so the notice never covers it.
+    static let clearance: CGFloat = 132
 
     var body: some View {
         if let notice = notices.current {
