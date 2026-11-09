@@ -23,7 +23,12 @@ struct MessageListView: View {
             // Worked out once for the whole list, not for each row.
             let deletesForever = model.deletesForever
             let inSpam = model.inSpam
-            ForEach(rows) { row in
+            // Not over the rows themselves: they compare by message (for a
+            // selection that survives a change of state), so the list would
+            // take a row that became read or unread for unchanged and keep
+            // drawing the old state. ListRow decides what to redraw.
+            ForEach(rows.map(ListItem.init)) { item in
+                let row = item.row
                 ListRow(row: row, model: model, threaded: prefs.threaded, selecting: model.selecting,
                         selected: model.selecting && model.isSelected(row),
                         deletesForever: deletesForever, inSpam: inSpam,
@@ -334,6 +339,13 @@ struct SearchCommand {
         SearchCommand(text: "is:unread ", labelKey: "filter_unread", icon: "envelope.badge"),
         SearchCommand(text: "is:starred ", labelKey: "filter_starred", icon: "star"),
     ]
+}
+
+/// A row as the list iterates it: identified by its message, never equal
+/// to another state of itself (see `ForEach` above).
+private struct ListItem: Identifiable {
+    let row: Row
+    var id: UInt32 { row.id }
 }
 
 /// A row of the message list, with its swipe actions and menu. Equatable on
