@@ -42,6 +42,10 @@ final class AppModel {
         UNUserNotificationCenter.current().delegate = banners
         mail = MailRepository(engine: engine, notices: notices, directory: support)
         banners.open = { [weak self] email, uid in self?.pendingOpen = (email, uid) }
+        banners.isActive = { [weak self] email in
+            email.caseInsensitiveCompare(self?.mail.activeEmail ?? "") == .orderedSame
+        }
+        banners.arrived = { [weak self] email in self?.mail.arrived(email) }
         Self.shared = self
     }
 
@@ -75,10 +79,25 @@ final class AppModel {
 /// opens its message.
 final class ForegroundBanners: NSObject, UNUserNotificationCenterDelegate {
     var open: ((String, UInt32?) -> Void)?
+    /// Whether an address is the account on screen.
+    var isActive: ((String) -> Bool)?
+    /// New mail for an account while the app is open.
+    var arrived: ((String) -> Void)?
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
-        done([.banner, .list, .sound])
+        let info = notification.request.content.userInfo
+        let email = info["email"] as? String
+            ?? MailNotifications.account(pushId: info["account"] as? String)?.email
+        guard let email else { return done([.banner, .list, .sound]) }
+        DispatchQueue.main.async {
+            // The account on screen: its list shows the new message at once,
+            // so no banner over it (a sound, and it stays in the list of
+            // notifications). Other accounts: a banner as usual.
+            let onScreen = self.isActive?(email) ?? false
+            self.arrived?(email)
+            done(onScreen ? [.list, .sound] : [.banner, .list, .sound])
+        }
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,

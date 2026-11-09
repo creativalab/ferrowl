@@ -64,6 +64,18 @@ class MailRepository @Inject constructor(
     /** Emits after messages were moved, deleted or sent: lists reload. */
     val changes: SharedFlow<Unit> = _changes.asSharedFlow()
 
+    private val _arrivals = MutableSharedFlow<String>(extraBufferCapacity = 8)
+
+    /**
+     * Emits an address when a push says it has new mail (or mail read
+     * elsewhere): an open mailbox of that account fetches its inbox again.
+     */
+    val arrivals: SharedFlow<String> = _arrivals.asSharedFlow()
+
+    fun arrived(email: String) {
+        _arrivals.tryEmit(email)
+    }
+
 
     suspend fun savedAccount(): Account? = accounts.account.first()
 

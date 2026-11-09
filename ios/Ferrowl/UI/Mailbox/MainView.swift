@@ -58,6 +58,10 @@ struct MainView: View {
             app.pendingCompose = nil
             sheet = .compose(request)
         }
+        // New mail (or mail read elsewhere) for this account while open.
+        .onChange(of: mail.arrivals) { _, _ in
+            Task { await model?.serverChanged() }
+        }
         .onChange(of: mail.changes) { _, _ in
             Task { await model?.reloadLocal() }
         }
