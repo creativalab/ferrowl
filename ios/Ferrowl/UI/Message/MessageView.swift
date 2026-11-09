@@ -9,6 +9,10 @@ struct ComposeRequest: Identifiable {
     var kind: Kind = .new
     var to = ""
     var message: Message?
+    /// A draft asked for by a link or a shortcut (new messages only).
+    var cc = ""
+    var subject = ""
+    var body = ""
 }
 
 /// An opened message, as `MessageViewModel` on Android.
@@ -470,9 +474,11 @@ struct MessageBody: View {
         }
     }
 
+    /// A mailto: link in a message, with its subject and text if it has them.
     private func mailto(_ url: URL) {
-        let to = url.absoluteString.dropFirst("mailto:".count).split(separator: "?").first.map(String.init) ?? ""
-        compose(ComposeRequest(to: to.removingPercentEncoding ?? to))
+        if case .compose(let to, let cc, _, let subject, let body) = parseLink(url: url.absoluteString) {
+            compose(ComposeRequest(to: to, cc: cc, subject: subject, body: body))
+        }
     }
 
     /// Plain text with its web addresses, e-mail addresses and phone numbers
