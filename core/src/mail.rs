@@ -726,6 +726,8 @@ pub struct Peek {
     pub fresh: Vec<Header>,
     /// How many unread messages have a UID above `after` in all.
     pub fresh_count: u32,
+    /// All the unread messages' UIDs above `after`, newest first.
+    pub unread_uids: Vec<u32>,
     /// The newest message of the inbox, read or not (`None`: empty inbox).
     pub newest: Option<Header>,
     /// The inbox's unread count; for Gmail, of the Primary tab among the
@@ -771,6 +773,7 @@ pub fn peek_inbox(session: &mut ImapSession, after: u32, limit: u32) -> Result<P
     let mut fresh: Vec<u32> = unseen.into_iter().filter(|u| *u > after).collect();
     fresh.sort_unstable_by(|a, b| b.cmp(a));
     peek.fresh_count = fresh.len() as u32;
+    peek.unread_uids = fresh.clone();
     fresh.truncate(limit as usize);
 
     let mut wanted = fresh.clone();

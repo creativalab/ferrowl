@@ -14,9 +14,11 @@ import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 /**
- * Receives the server's "new mail" signal (a data-only Firebase message, so
- * the app decides what to show). It reads the inbox and notifies the new
- * unread messages; if that fails in time, a plain "New mail" is shown.
+ * Receives the server's signals (data-only Firebase messages, so the app
+ * decides what to show). "New mail": it reads the inbox and notifies the
+ * new unread messages; if that fails in time, a plain "New mail" is shown.
+ * "Read": mail was read elsewhere, and notifications of messages no longer
+ * unread are taken back.
  */
 @AndroidEntryPoint
 class PushService : FirebaseMessagingService() {
@@ -36,12 +38,41 @@ class PushService : FirebaseMessagingService() {
 
     // Called on a background thread; Android gives it about 20 seconds.
     override fun onMessageReceived(message: RemoteMessage) {
-        if (message.data["type"] != "new_mail") return
+        val type = message.data["type"]
+        if (type != "new_mail" && type != "read") return
         runBlocking {
-            // Which account has new mail (the server sends its id).
+            // Which account (the server sends its id).
             val email = message.data["account"]?.let { store.current().emailOf(it) }
+            if (type == "read") {
+                email?.let { withTimeoutOrNull(TIMEOUT_MS) { takeBackRead(it) } }
+                return@runBlocking
+            }
             val shown = withTimeoutOrNull(TIMEOUT_MS) { notifyNewMessages(email) } ?: false
             if (!shown) notifier.showGeneric(email)
+        }
+    }
+
+    /**
+     * Mail of [email] was read (or removed) elsewhere: its notification goes
+     * once none of its messages is unread, or is updated quietly to the
+     * ones still unread.
+     */
+    private suspend fun takeBackRead(email: String) = runCatching {
+        val shown = notifier.shownUids(email) ?: return@runCatching
+        if (shown.isEmpty()) {
+            // A plain "New mail": it goes once nothing is unread.
+            val peek = repo.peekInbox(email, UInt.MAX_VALUE.toLong(), 0) ?: return@runCatching
+            if (peek.unread == 0u) notifier.cancel(email)
+            return@runCatching
+        }
+        val peek = repo.peekInbox(email, shown.min() - 1, MailNotifier.MAX_LINES) ?: return@runCatching
+        val unread = peek.unreadUids.map { it.toLong() }.toSet()
+        val still = shown.filter { it in unread }
+        val listed = peek.fresh.filter { it.uid.toLong() in still }
+        when {
+            still.isEmpty() -> notifier.cancel(email)
+            still.size < shown.size && listed.isNotEmpty() ->
+                notifier.show(listed, still.size, email, still, quietly = true)
         }
     }
 
@@ -53,7 +84,7 @@ class PushService : FirebaseMessagingService() {
         // in the time Android gives.
         val peek = repo.peekInbox(address, last, MailNotifier.MAX_LINES) ?: return@runCatching false
         if (peek.fresh.isNotEmpty()) {
-            notifier.show(peek.fresh, peek.freshCount.toInt(), address)
+            notifier.show(peek.fresh, peek.freshCount.toInt(), address, peek.unreadUids.map { it.toLong() })
             store.setLastNotified(address, peek.fresh.first().uid.toLong())
         }
         true

@@ -10,8 +10,11 @@ fetches the mail directly from the mail server.
 ## Privacy and security
 
 - Message contents are never read or stored; only the inbox message count is
-  watched, and whether new messages are unread (an IMAP search on the
-  `\Seen` flag, so mail already read elsewhere wakes nobody).
+  watched, and which inbox messages are unread (their UIDs, in memory: an
+  IMAP search on the `\Seen` flag). Mail already read when it arrives wakes
+  nobody; when unread mail is read or removed elsewhere the phone gets a
+  silent message (Android: data-only, normal priority; iPhone: background
+  push) so it can take back its notifications.
 - Account settings (including the password) are stored sealed with
   AES-256-GCM under a 256-bit key generated and kept by the phone. The server
   holds the key **in memory only**; after a restart it waits for each phone to

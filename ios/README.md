@@ -79,7 +79,10 @@ xcodebuild -scheme Ferrowl -destination 'id=<UDID>' -allowProvisioningUpdates \
   `Localizable.strings`, generated from `core/locales`); the notification
   service extension (`FerrowlNotifications/`) replaces it with sender and
   subject, reading only what it shows (`Engine.peekInbox`) to fit in the
-  extension's time and memory.
+  extension's time and memory. When mail is read elsewhere the server sends a
+  silent background push and the app takes back those notifications
+  (`AppDelegate`, `Shared/MailNotifications`); iOS does not deliver these
+  to an app swiped away, so the app's own checks also clean up.
 
 ## Security notes
 
