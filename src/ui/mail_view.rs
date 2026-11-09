@@ -1803,12 +1803,12 @@ fn html_page<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
             )
             // Back to the message's own coordinates for hit testing.
             .on_move(move |pt| Message::HtmlPointer(pt.x / zoom, top + pt.y / zoom))
-            .on_press(Message::HtmlClick)
+            .on_press(Message::HtmlPress)
             .on_exit(Message::HtmlLeave)
             .interaction(if pointer {
                 iced::mouse::Interaction::Pointer
             } else {
-                iced::mouse::Interaction::Idle
+                iced::mouse::Interaction::Text
             }),
         );
         offset += h;
