@@ -1190,20 +1190,26 @@ impl App {
         Task::perform(fut, move |r| Message::Scoped(generation, Box::new(f(r))))
     }
 
+    /// Unread mail in the inbox of account `i`: the open account's from the
+    /// list, the others' from their push watch (0 until it is known).
+    pub fn account_unread(&self, i: usize) -> u32 {
+        if i == self.config.active {
+            let inbox = self.folder_by_kind(FolderKind::Inbox).map(|f| f.name.as_str());
+            return inbox.and_then(|f| self.unseen.get(f).copied()).unwrap_or(0);
+        }
+        self.config
+            .accounts
+            .get(i)
+            .and_then(|a| self.other_unread.get(&a.email).copied())
+            .unwrap_or(0)
+    }
+
     /// The dock icon shows the unread mail of every account's inbox: the open
     /// account's from the list, the others' from their push watch.
     fn update_badge(&mut self) -> Task<Message> {
-        let inbox = self.folder_by_kind(FolderKind::Inbox).map(|f| f.name.clone());
-        let mine = inbox.and_then(|f| self.unseen.get(&f).copied()).unwrap_or(0);
-        let active = self.config.account().map(|a| a.email.clone());
-        let others: u32 = self
-            .config
-            .accounts
-            .iter()
-            .filter(|a| Some(&a.email) != active.as_ref())
-            .filter_map(|a| self.other_unread.get(&a.email))
+        let count: u32 = (0..self.config.accounts.len())
+            .map(|i| self.account_unread(i))
             .sum();
-        let count = mine + others;
         if self.badge == Some(count) {
             return Task::none();
         }

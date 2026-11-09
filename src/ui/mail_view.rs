@@ -254,6 +254,15 @@ fn sidebar<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
                 .color(if active { p.text } else { p.text2 })
                 .width(Fill)
                 .into(),
+            // Unread mail in its inbox, like the folders show it.
+            text(match app.account_unread(i) {
+                0 => String::new(),
+                n => n.to_string(),
+            })
+            .size(12)
+            .font(MONO)
+            .color(if active { p.text } else { p.text2 })
+            .into(),
         ])
         .spacing(10)
         .align_y(Alignment::Center);
