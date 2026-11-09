@@ -1,9 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Android 13+: asked when the user turns on instant notifications. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Ferrowl Bridge: the automation apps that can be connected (their
+         names and icons; answers are sent to them alone). -->
+    <queries>
+        <package android:name="net.dinglisch.android.taskerm" />
+        <package android:name="com.arlosoft.macrodroid" />
+        <package android:name="com.llamalab.automate" />
+    </queries>
 
     <application
         android:name=".FerrowlApp"
@@ -78,6 +87,24 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- Ferrowl Bridge: requests from automation apps (Tasker…). Anyone
+             may send them; only apps with a key the user created get an
+             answer, and answers go to that app alone. -->
+        <receiver
+            android:name=".bridge.BridgeReceiver"
+            android:exported="true"
+            tools:ignore="ExportedReceiver">
+            <intent-filter>
+                <action android:name="com.ferrowl.app.action.UNREAD" />
+                <action android:name="com.ferrowl.app.action.SEARCH" />
+                <action android:name="com.ferrowl.app.action.SEND" />
+            </intent-filter>
+        </receiver>
+        <!-- "Send" / "Don't send" in the confirmation notification. -->
+        <receiver
+            android:name=".bridge.BridgeAnswerReceiver"
+            android:exported="false" />
 
         <!-- Receives the "new mail" signal from push.ferrowl.com via Firebase. -->
         <service
