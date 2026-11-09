@@ -25,7 +25,12 @@ final class MessageModel {
     let notices: Notices
     let folderId: String
     let uid: UInt32
+    /// The message as listed, shown while the whole message loads.
+    let listed: Header?
     private(set) var state: State = .loading
+    /// The HTML loads images from the network (worked out once, off the
+    /// main thread: the search is slow on big newsletters).
+    private(set) var remoteImagesInside = false
     var starred: Bool
     /// Our answer to the message's invitation, and whether a cancelled
     /// event is still in the calendar.
@@ -33,12 +38,13 @@ final class MessageModel {
     private(set) var inCalendar = false
     private(set) var inviteBusy = false
 
-    init(mail: MailRepository, notices: Notices, folderId: String, uid: UInt32, starred: Bool) {
+    init(mail: MailRepository, notices: Notices, folderId: String, uid: UInt32, starred: Bool, listed: Header? = nil) {
         self.mail = mail
         self.notices = notices
         self.folderId = folderId
         self.uid = uid
         self.starred = starred
+        self.listed = listed
     }
 
     var message: Message? {
@@ -49,7 +55,13 @@ final class MessageModel {
     func load() async {
         guard case .loading = state else { return }
         do {
-            state = .shown(try await mail.message(folderId, uid))
+            let message = try await mail.message(folderId, uid)
+            if let html = message.html {
+                remoteImagesInside = await Task.detached(priority: .userInitiated) {
+                    MessageBody.hasRemoteImages(html)
+                }.value
+            }
+            state = .shown(message)
             refreshInvite()
         } catch {
             state = .failed(describe(error))
@@ -157,25 +169,37 @@ struct MessageView: View {
         self.compose = compose
         self.embedded = embedded
         let repo = mail ?? mailbox!.mail
-        _model = State(initialValue: MessageModel(mail: repo, notices: repo.notices, folderId: folderId, uid: uid, starred: starred))
+        _model = State(initialValue: MessageModel(mail: repo, notices: repo.notices, folderId: folderId, uid: uid,
+                                                  starred: starred, listed: mailbox?.header(uid)))
     }
 
     var body: some View {
-        Group {
+        // One scroll view whatever the state: only its content changes when
+        // the message arrives, so the screen is not replaced mid-transition.
+        ScrollView {
             switch model.state {
             case .loading:
-                ProgressView(t("loading_message")).frame(maxWidth: .infinity, maxHeight: .infinity)
+                if let listed = model.listed {
+                    // What the list already knows, at once; the rest follows.
+                    ListedHeader(header: listed).padding()
+                } else {
+                    ProgressView(t("loading_message"))
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 120)
+                }
             case .failed(let error):
                 ContentUnavailableView(t("err_generic"), systemImage: "exclamationmark.triangle", description: Text(error))
+                    .padding(.top, 60)
             case .shown(let message):
-                ScrollView {
-                    MessageBody(message: message, model: model, compose: compose)
-                        .padding()
-                        // Room for the actions floating at the bottom.
-                        .padding(.bottom, embedded ? 0 : 56)
-                }
+                MessageBody(message: message, model: model, compose: compose)
+                    .padding()
+                    // Room for the actions floating at the bottom.
+                    .padding(.bottom, embedded ? 0 : 56)
             }
         }
+        // Opaque: nothing of the list shows through, even mid-transition.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
         .navigationBarTitleDisplayMode(.inline)
         .task {
             await model.load()
@@ -265,6 +289,33 @@ struct MessageView: View {
     }
 }
 
+/// Subject, sender and date from the message list, with a spinner for the
+/// body: shown at once while the message loads.
+struct ListedHeader: View {
+    let header: Header
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(header.subject.isEmpty ? t("no_subject") : header.subject)
+                .font(.title2.weight(.semibold))
+            HStack(alignment: .top, spacing: 12) {
+                Avatar(name: header.from.isEmpty ? header.fromAddress : header.from)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(header.from.isEmpty ? header.fromAddress : header.from).font(.headline)
+                    if !header.from.isEmpty {
+                        Text(header.fromAddress).font(.footnote).foregroundStyle(.secondary)
+                    }
+                    Text(Dates.full(header.timestamp)).font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            ProgressView(t("loading_message"))
+                .frame(maxWidth: .infinity)
+                .padding(.top, 32)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 /// Header, badges, invitation, body and attachments of a message.
 struct MessageBody: View {
     let message: Message
@@ -276,6 +327,7 @@ struct MessageBody: View {
     @State private var showText = false
     @State private var loadImages = false
     @State private var height: CGFloat = 120
+    @State private var rendered = false
     @State private var preview: URL?
 
     var body: some View {
@@ -309,7 +361,7 @@ struct MessageBody: View {
             }
 
             if let html = message.html, !showText {
-                if !prefs.remoteImages && !loadImages && Self.hasRemoteImages(html) {
+                if !prefs.remoteImages && !loadImages && model.remoteImagesInside {
                     HStack {
                         Text(t("images_blocked")).font(.footnote).foregroundStyle(.secondary)
                         Spacer()
@@ -317,8 +369,9 @@ struct MessageBody: View {
                     }
                 }
                 HTMLView(html: html, inline: message.inline, remoteImages: prefs.remoteImages || loadImages,
-                         dark: scheme == .dark, height: $height, openMailto: mailto)
+                         dark: scheme == .dark, height: $height, rendered: $rendered, openMailto: mailto)
                     .frame(height: height)
+                    .overlay { if !rendered { ProgressView() } }
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                 Button(t("view_text")) { showText = true }.font(.footnote)
             } else {
@@ -435,7 +488,7 @@ struct MessageBody: View {
         return out
     }
 
-    static func hasRemoteImages(_ html: String) -> Bool {
+    nonisolated static func hasRemoteImages(_ html: String) -> Bool {
         html.range(of: #"<img[^>]+src\s*=\s*["']?https?:"#, options: [.regularExpression, .caseInsensitive]) != nil
             || html.range(of: #"url\(\s*["']?https?:"#, options: [.regularExpression, .caseInsensitive]) != nil
     }

@@ -5,11 +5,27 @@ import Foundation
 ///
 /// `t("selected_count", ["n": "3"])` fills the `{n}` placeholder.
 func t(_ key: String, _ args: [String: String] = [:]) -> String {
-    var text = translate(key: key)
+    var text = Translations.text(key)
     for (name, value) in args {
         text = text.replacingOccurrences(of: "{\(name)}", with: value)
     }
     return text
+}
+
+/// The engine's texts, each asked once: lists draw many rows, each with
+/// several labels, and a call into the engine for each was too slow.
+private enum Translations {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var cache: [String: String] = [:]
+
+    static func text(_ key: String) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        if let text = cache[key] { return text }
+        let text = translate(key: key)
+        cache[key] = text
+        return text
+    }
 }
 
 /// The message of an engine failure (already in words for the user).

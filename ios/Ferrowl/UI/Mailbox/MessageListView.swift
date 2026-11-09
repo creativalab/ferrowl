@@ -20,8 +20,18 @@ struct MessageListView: View {
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
             }
+            // Worked out once for the whole list, not for each row.
+            let deletesForever = model.deletesForever
+            let inSpam = model.inSpam
             ForEach(rows) { row in
-                rowView(row)
+                ListRow(row: row, model: model, threaded: prefs.threaded, selecting: model.selecting,
+                        selected: model.selecting && model.isSelected(row),
+                        deletesForever: deletesForever, inSpam: inSpam,
+                        move: { moving = true }, confirmDelete: { confirmDelete = true })
+                    // Drawn again only when the row changes: not for every
+                    // tap, which changes the list's selection.
+                    .equatable()
+                    .tag(row)
             }
         }
         .listStyle(.plain)
@@ -71,76 +81,6 @@ struct MessageListView: View {
         }
         .sheet(isPresented: $labeling) {
             LabelPicker(model: model)
-        }
-    }
-
-    @ViewBuilder
-    private func rowView(_ row: Row) -> some View {
-        if model.selecting {
-            Button {
-                model.toggle(row)
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: model.isSelected(row) ? "checkmark.circle.fill" : "circle")
-                        .font(.title3)
-                        .foregroundStyle(model.isSelected(row) ? Color.accentColor : .secondary)
-                    MessageRow(row: row, threaded: prefs.threaded)
-                }
-            }
-            .foregroundStyle(.primary)
-        } else {
-            MessageRow(row: row, threaded: prefs.threaded)
-                .tag(row)
-                .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                    Button {
-                        model.markRead(row.unread, row)
-                    } label: {
-                        Label(t(row.unread ? "mark_read" : "mark_unread"),
-                              systemImage: row.unread ? "envelope.open" : "envelope.badge")
-                    }
-                    .tint(.blue)
-                    Button {
-                        model.star(!row.flagged, row)
-                    } label: {
-                        Label(t(row.flagged ? "star_remove" : "star_add"), systemImage: row.flagged ? "star.slash" : "star")
-                    }
-                    .tint(.yellow)
-                }
-                // To the left: delete (to the Trash; not in the Trash itself,
-                // where it would be for good without asking).
-                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    if !model.deletesForever {
-                        Button(role: .destructive) {
-                            model.deleteWithUndo(row)
-                        } label: {
-                            Label(t("delete"), systemImage: "trash")
-                        }
-                    }
-                }
-                .contextMenu {
-                    Button { model.markRead(row.unread, row) } label: {
-                        Label(t(row.unread ? "mark_read" : "mark_unread"), systemImage: "envelope")
-                    }
-                    Button { model.star(!row.flagged, row) } label: {
-                        Label(t(row.flagged ? "star_remove" : "star_add"), systemImage: "star")
-                    }
-                    Button { model.archive(row) } label: { Label(t("archive"), systemImage: "archivebox") }
-                    Button { model.spam(row) } label: {
-                        Label(t(model.inSpam ? "spam_not" : "spam_report"), systemImage: "xmark.bin")
-                    }
-                    Button {
-                        model.selected = Set(row.uids)
-                        moving = true
-                    } label: { Label(t("move_to"), systemImage: "folder") }
-                    Button(role: .destructive) {
-                        if model.deletesForever {
-                            model.selected = Set(row.uids)
-                            confirmDelete = true
-                        } else {
-                            model.delete(row)
-                        }
-                    } label: { Label(t(model.deletesForever ? "delete_forever" : "delete"), systemImage: "trash") }
-                }
         }
     }
 
@@ -394,4 +334,91 @@ struct SearchCommand {
         SearchCommand(text: "is:unread ", labelKey: "filter_unread", icon: "envelope.badge"),
         SearchCommand(text: "is:starred ", labelKey: "filter_starred", icon: "star"),
     ]
+}
+
+/// A row of the message list, with its swipe actions and menu. Equatable on
+/// what it shows, so SwiftUI skips rows that did not change.
+private struct ListRow: View, Equatable {
+    let row: Row
+    let model: MailboxModel
+    let threaded: Bool
+    let selecting: Bool
+    let selected: Bool
+    let deletesForever: Bool
+    let inSpam: Bool
+    let move: () -> Void
+    let confirmDelete: () -> Void
+
+    nonisolated static func == (a: ListRow, b: ListRow) -> Bool {
+        a.row.conversation == b.row.conversation && a.threaded == b.threaded && a.selecting == b.selecting && a.selected == b.selected
+            && a.deletesForever == b.deletesForever && a.inSpam == b.inSpam
+    }
+
+    var body: some View {
+        if selecting {
+            Button {
+                model.toggle(row)
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
+                        .foregroundStyle(selected ? Color.accentColor : .secondary)
+                    MessageRow(row: row, threaded: threaded)
+                }
+            }
+            .foregroundStyle(.primary)
+        } else {
+            MessageRow(row: row, threaded: threaded)
+                .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                    Button {
+                        model.markRead(row.unread, row)
+                    } label: {
+                        Label(t(row.unread ? "mark_read" : "mark_unread"),
+                              systemImage: row.unread ? "envelope.open" : "envelope.badge")
+                    }
+                    .tint(.blue)
+                    Button {
+                        model.star(!row.flagged, row)
+                    } label: {
+                        Label(t(row.flagged ? "star_remove" : "star_add"), systemImage: row.flagged ? "star.slash" : "star")
+                    }
+                    .tint(.yellow)
+                }
+                // To the left: delete (to the Trash; not in the Trash itself,
+                // where it would be for good without asking).
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    if !deletesForever {
+                        Button(role: .destructive) {
+                            model.deleteWithUndo(row)
+                        } label: {
+                            Label(t("delete"), systemImage: "trash")
+                        }
+                    }
+                }
+                .contextMenu {
+                    Button { model.markRead(row.unread, row) } label: {
+                        Label(t(row.unread ? "mark_read" : "mark_unread"), systemImage: "envelope")
+                    }
+                    Button { model.star(!row.flagged, row) } label: {
+                        Label(t(row.flagged ? "star_remove" : "star_add"), systemImage: "star")
+                    }
+                    Button { model.archive(row) } label: { Label(t("archive"), systemImage: "archivebox") }
+                    Button { model.spam(row) } label: {
+                        Label(t(inSpam ? "spam_not" : "spam_report"), systemImage: "xmark.bin")
+                    }
+                    Button {
+                        model.selected = Set(row.uids)
+                        move()
+                    } label: { Label(t("move_to"), systemImage: "folder") }
+                    Button(role: .destructive) {
+                        if deletesForever {
+                            model.selected = Set(row.uids)
+                            confirmDelete()
+                        } else {
+                            model.delete(row)
+                        }
+                    } label: { Label(t(deletesForever ? "delete_forever" : "delete"), systemImage: "trash") }
+                }
+        }
+    }
 }

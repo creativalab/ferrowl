@@ -40,6 +40,9 @@ struct MainView: View {
                 model = MailboxModel(mail: mail, prefs: prefs, notices: notices)
             }
             await model?.start()
+            #if DEBUG
+            if let model { await PerfProbe.autotest(model) }
+            #endif
         }
         // A notification was tapped (also before the mailbox was ready: the
         // request waits for it).
