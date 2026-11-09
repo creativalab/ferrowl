@@ -32,6 +32,8 @@ class PushService : FirebaseMessagingService() {
 
     @Inject lateinit var bridge: com.ferrowl.app.bridge.Bridge
 
+    @Inject lateinit var accountUnread: com.ferrowl.app.data.AccountUnread
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onNewToken(token: String) {
@@ -64,10 +66,12 @@ class PushService : FirebaseMessagingService() {
         if (shown.isEmpty()) {
             // A plain "New mail": it goes once nothing is unread.
             val peek = repo.peekInbox(email, UInt.MAX_VALUE.toLong(), 0) ?: return@runCatching
+            accountUnread.set(email, peek.unread.toInt())
             if (peek.unread == 0u) notifier.cancel(email)
             return@runCatching
         }
         val peek = repo.peekInbox(email, shown.min() - 1, MailNotifier.MAX_LINES) ?: return@runCatching
+        accountUnread.set(email, peek.unread.toInt())
         val unread = peek.unreadUids.map { it.toLong() }.toSet()
         val still = shown.filter { it in unread }
         val listed = peek.fresh.filter { it.uid.toLong() in still }
@@ -85,6 +89,7 @@ class PushService : FirebaseMessagingService() {
         // Only what the notification shows: loading the inbox may not fit
         // in the time Android gives.
         val peek = repo.peekInbox(address, last, MailNotifier.MAX_LINES) ?: return@runCatching false
+        accountUnread.set(address, peek.unread.toInt())
         if (peek.fresh.isNotEmpty()) {
             notifier.show(peek.fresh, peek.freshCount.toInt(), address, peek.unreadUids.map { it.toLong() })
             // Connected automation apps (Tasker…) hear about it too.

@@ -94,7 +94,11 @@ class MailboxViewModel @Inject constructor(
     private val billing: Billing,
     private val notificationOpen: NotificationOpen,
     private val push: com.ferrowl.app.push.PushRegistrar,
+    private val accountUnread: com.ferrowl.app.data.AccountUnread,
 ) : ViewModel() {
+    /** Each account's unread count, for the drawer. */
+    val accountCounts = accountUnread.counts
+
     private val _state = MutableStateFlow(MailboxState())
     val state: StateFlow<MailboxState> = _state.asStateFlow()
 
@@ -331,7 +335,26 @@ class MailboxViewModel @Inject constructor(
     }
 
     private suspend fun loadUnread() {
-        runCatching { repo.unread() }.onSuccess { counts -> _state.update { it.copy(unread = counts) } }
+        runCatching { repo.unread() }.onSuccess { counts ->
+            _state.update { it.copy(unread = counts) }
+            activeUnread()?.let { accountUnread.set(_state.value.active, it) }
+        }
+    }
+
+    /**
+     * The account in use's unread count, as the drawer shows it: Gmail
+     * counts the Primary tab (known while its inbox is open), the others
+     * the server's inbox count.
+     */
+    fun activeUnread(): Int? {
+        val s = _state.value
+        if (s.active.isBlank()) return null
+        val inbox = repo.inboxId()
+        return when {
+            !repo.isGmail() -> s.unread[inbox]?.toInt()
+            s.folderId == inbox && s.tabs -> s.unreadByCategory[0] ?: 0
+            else -> null
+        }
     }
 
     fun setQuery(text: String) {
