@@ -95,9 +95,12 @@ fun ComposeScreen(
     uid: UInt,
     to: String,
     onClose: () -> Unit,
+    cc: String = "",
+    subject: String = "",
+    body: String = "",
     vm: ComposeViewModel = hiltViewModel(),
 ) {
-    LaunchedEffect(Unit) { vm.start(kind, folderId, uid, to) }
+    LaunchedEffect(Unit) { vm.start(kind, folderId, uid, to, cc, subject, body) }
     val s by vm.state.collectAsStateWithLifecycle()
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> vm.addFiles(uris) }
     // Photos and videos from the gallery (system picker: no permission needed).

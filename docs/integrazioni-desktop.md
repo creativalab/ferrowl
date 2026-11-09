@@ -28,6 +28,20 @@ Decisioni prese con l'utente:
 
 ## Architettura comune: Ferrowl Bridge (in `core/`)
 
+> **Aggiornamento 9 novembre 2026, branch `feat/mobile-intents`.** Il
+> modulo `core/src/bridge.rs` esiste già e contiene:
+> - link `ferrowl://open|inbox|compose` e `mailto:`, con `parse_link` e
+>   `open_link`;
+> - `Capability` con `needs_pro` e `needs_confirmation`;
+> - `search` per qualsiasi account, sulla cache.
+>
+> L'FFI lo espone come `parse_link`, `message_link`,
+> `capability_needs_pro`, `capability_needs_confirmation` ed
+> `Engine::search_account`. Il desktop deve partire da qui e aggiungere le
+> azioni restanti nello stesso modulo.
+>
+> Testi: chiavi `intent_*` e `shortcut_*` in `core/locales`.
+
 Un solo insieme di azioni con un formato stabile, nel motore Rust: lo usano
 il desktop, l'FFI di iOS/Android e tutte le "porte" verso l'esterno.
 

@@ -1,0 +1,5 @@
+/* Generated from core/locales by ffi/build-ios.sh: edit those files. */
+"Unread mail in ${applicationName}" = "E-mails não lidos no ${applicationName}";
+"Search mail in ${applicationName}" = "Pesquisar e-mails no ${applicationName}";
+"Write a mail with ${applicationName}" = "Escrever um e-mail com o ${applicationName}";
+"Send a mail with ${applicationName}" = "Enviar um e-mail com o ${applicationName}";

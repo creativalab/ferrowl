@@ -12,12 +12,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import com.ferrowl.app.data.Billing
 import com.ferrowl.app.data.MicrosoftSignIn
+import com.ferrowl.app.push.ComposeRequest
+import com.ferrowl.app.push.ComposeRequests
 import com.ferrowl.app.ui.navigation.FerrowlNavHost
 import com.ferrowl.app.ui.notice.LocalBilling
 import com.ferrowl.app.ui.notice.LocalNotices
-import com.ferrowl.app.ui.notice.Notices
 import com.ferrowl.app.ui.notice.NoticeHost
+import com.ferrowl.app.ui.notice.Notices
 import com.ferrowl.app.ui.theme.FerrowlTheme
+import com.ferrowl.core.FerrowlLink
+import com.ferrowl.core.parseLink
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
@@ -36,6 +40,8 @@ class MainActivity : ComponentActivity() {
 
     @Inject lateinit var notificationOpen: com.ferrowl.app.push.NotificationOpen
 
+    @Inject lateinit var composeRequests: ComposeRequests
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -45,7 +51,7 @@ class MainActivity : ComponentActivity() {
                 CompositionLocalProvider(LocalNotices provides notices, LocalBilling provides billing) {
                     // Notices (confirmations and errors) over every screen, at the bottom.
                     Box(Modifier.fillMaxSize()) {
-                        FerrowlNavHost()
+                        FerrowlNavHost(composeRequests)
                         NoticeHost(notices, Modifier.align(Alignment.BottomCenter))
                     }
                 }
@@ -71,10 +77,40 @@ class MainActivity : ComponentActivity() {
             notificationOpen.request(email, uid)
             intent.removeExtra(com.ferrowl.app.push.NotificationOpen.EXTRA_EMAIL)
         }
-        val uri = intent?.data ?: return
+        if (intent == null) return
+        // Text shared from another app: a new message with it.
+        if (intent.action == Intent.ACTION_SEND) {
+            composeRequests.request(
+                ComposeRequest(
+                    to = intent.getStringArrayExtra(Intent.EXTRA_EMAIL)?.joinToString(", ").orEmpty(),
+                    subject = intent.getStringExtra(Intent.EXTRA_SUBJECT).orEmpty(),
+                    body = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty(),
+                ),
+            )
+            setIntent(Intent(intent).setAction(Intent.ACTION_MAIN))
+            return
+        }
+        val uri = intent.data ?: return
         if (microsoft.isAnswer(uri)) {
             microsoft.complete(uri)
             setIntent(Intent(intent).setData(null))
+            return
         }
+        // ferrowl:// and mailto: links (read by the engine, as on iOS and desktop).
+        when (val link = parseLink(uri.toString())) {
+            is FerrowlLink.Open -> notificationOpen.request(link.account, link.uid.toLong())
+            is FerrowlLink.Inbox -> link.account?.let { notificationOpen.request(it, null) }
+            is FerrowlLink.Compose -> composeRequests.request(
+                ComposeRequest(
+                    to = link.to,
+                    cc = link.cc,
+                    // "Send e-mail" intents may carry these as extras too.
+                    subject = link.subject.ifEmpty { intent.getStringExtra(Intent.EXTRA_SUBJECT).orEmpty() },
+                    body = link.body.ifEmpty { intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty() },
+                ),
+            )
+            null -> return
+        }
+        setIntent(Intent(intent).setData(null))
     }
 }

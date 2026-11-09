@@ -66,9 +66,18 @@ class ComposeViewModel @Inject constructor(
 
     /**
      * Prepares a reply or forward from the original message, or a new
-     * message to [to] (from the contacts). Runs once.
+     * message to [to] (from the contacts), maybe with [cc], [subject] and
+     * [body] (from a link or another app). Runs once.
      */
-    fun start(kind: ReplyKind?, folderId: String, uid: UInt, to: String = "") {
+    fun start(
+        kind: ReplyKind?,
+        folderId: String,
+        uid: UInt,
+        to: String = "",
+        cc: String = "",
+        subject: String = "",
+        body: String = "",
+    ) {
         if (started) return
         started = true
         viewModelScope.launch {
@@ -78,7 +87,7 @@ class ComposeViewModel @Inject constructor(
             }
         }
         if (kind == null) {
-            _state.update { it.copy(to = to) }
+            _state.update { it.copy(to = to, cc = cc, subject = subject, body = body) }
             return
         }
         _state.update { it.copy(loading = true) }

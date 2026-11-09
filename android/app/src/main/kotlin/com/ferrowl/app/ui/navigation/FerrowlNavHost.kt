@@ -1,13 +1,16 @@
 package com.ferrowl.app.ui.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import com.ferrowl.app.push.ComposeRequests
 import com.ferrowl.app.ui.calendar.CalendarScreen
 import com.ferrowl.app.ui.calendar.EventEditScreen
 import com.ferrowl.app.ui.compose.ComposeScreen
@@ -42,12 +45,22 @@ import kotlinx.serialization.Serializable
 
 /**
  * Write a message; `kind` is a [ReplyKind] name, or null for a new one.
- * `to` fills in the recipient of a new message (from the contacts).
+ * `to` fills in the recipient of a new message (from the contacts); the
+ * other fields come from a link or another app.
  */
-@Serializable data class Write(val kind: String? = null, val folderId: String = "", val uid: Long = 0, val to: String = "")
+@Serializable data class Write(
+    val kind: String? = null,
+    val folderId: String = "",
+    val uid: Long = 0,
+    val to: String = "",
+    // A draft asked for by another app or a link (new messages only).
+    val cc: String = "",
+    val subject: String = "",
+    val body: String = "",
+)
 
 @Composable
-fun FerrowlNavHost() {
+fun FerrowlNavHost(composeRequests: ComposeRequests) {
     val nav = rememberNavController()
     NavHost(navController = nav, startDestination = Start) {
         // Decides where to go: account setup the first time, mailbox after.
@@ -63,6 +76,15 @@ fun FerrowlNavHost() {
             SetupScreen(onDone = { nav.navigate(Mailbox) { popUpTo(nav.graph.id) { inclusive = true } } })
         }
         composable<Mailbox> {
+            // A link or another app asked for a new message: once the
+            // mailbox (an account) is there.
+            val compose by composeRequests.pending.collectAsState()
+            LaunchedEffect(compose) {
+                compose?.let { r ->
+                    composeRequests.done()
+                    nav.navigate(Write(to = r.to, cc = r.cc, subject = r.subject, body = r.body))
+                }
+            }
             MailboxScreen(
                 onOpen = { folderId, uid, starred -> nav.navigate(Read(folderId, uid.toLong(), starred)) },
                 onOpenConversation = { folderId, uids -> nav.navigate(Thread(folderId, uids.joinToString(","))) },
@@ -132,6 +154,9 @@ fun FerrowlNavHost() {
                 folderId = route.folderId,
                 uid = route.uid.toUInt(),
                 to = route.to,
+                cc = route.cc,
+                subject = route.subject,
+                body = route.body,
                 onClose = { nav.popBackStack() },
             )
         }

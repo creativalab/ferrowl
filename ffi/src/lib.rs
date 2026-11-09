@@ -10,7 +10,7 @@
 //! engine never reads a config file on mobile.
 
 use ferrowl_core::backend::Backend;
-use ferrowl_core::{config, events, i18n, invite, mail, oauth, paths, providers};
+use ferrowl_core::{bridge, config, events, i18n, invite, mail, oauth, paths, providers};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -931,6 +931,99 @@ pub fn markdown_to_html(markdown: String) -> Option<String> {
         .then(|| ferrowl_core::markdown::to_html_document(&markdown))
 }
 
+// MARK: Ferrowl Bridge (other apps, Shortcuts/Siri, intents, links)
+
+/// What a `ferrowl://` or `mailto:` link asks for (see `ferrowl_core::bridge`).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum FerrowlLink {
+    /// Open a message of an account (the inbox unless `folder` says otherwise).
+    Open {
+        account: String,
+        folder: String,
+        uid: u32,
+    },
+    /// Show an account's inbox (the current account when `None`).
+    Inbox { account: Option<String> },
+    /// Write a message, shown to the user before anything is sent.
+    Compose {
+        to: String,
+        cc: String,
+        bcc: String,
+        subject: String,
+        body: String,
+    },
+}
+
+impl From<bridge::Link> for FerrowlLink {
+    fn from(l: bridge::Link) -> Self {
+        match l {
+            bridge::Link::Open { account, folder, uid } => FerrowlLink::Open { account, folder, uid },
+            bridge::Link::Inbox { account } => FerrowlLink::Inbox { account },
+            bridge::Link::Compose {
+                to,
+                cc,
+                bcc,
+                subject,
+                body,
+            } => FerrowlLink::Compose {
+                to,
+                cc,
+                bcc,
+                subject,
+                body,
+            },
+        }
+    }
+}
+
+/// Reads a `ferrowl://` or `mailto:` link (`None`: not one, or incomplete).
+#[uniffi::export]
+pub fn parse_link(url: String) -> Option<FerrowlLink> {
+    bridge::parse_link(&url).map(FerrowlLink::from)
+}
+
+/// The `ferrowl://open` link of a message, for other apps to keep.
+#[uniffi::export]
+pub fn message_link(account: String, folder: String, uid: u32) -> String {
+    bridge::open_link(&account, &folder, uid)
+}
+
+/// What another app or a shortcut may do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum Capability {
+    Read,
+    Write,
+    Send,
+    Contacts,
+    Calendar,
+    Open,
+}
+
+impl From<Capability> for bridge::Capability {
+    fn from(c: Capability) -> Self {
+        match c {
+            Capability::Read => bridge::Capability::Read,
+            Capability::Write => bridge::Capability::Write,
+            Capability::Send => bridge::Capability::Send,
+            Capability::Contacts => bridge::Capability::Contacts,
+            Capability::Calendar => bridge::Capability::Calendar,
+            Capability::Open => bridge::Capability::Open,
+        }
+    }
+}
+
+/// Whether other apps need Ferrowl Pro for this.
+#[uniffi::export]
+pub fn capability_needs_pro(capability: Capability) -> bool {
+    bridge::needs_pro(capability.into())
+}
+
+/// Whether the user confirms this each time (sending, changing mail).
+#[uniffi::export]
+pub fn capability_needs_confirmation(capability: Capability) -> bool {
+    bridge::needs_confirmation(capability.into())
+}
+
 /// Translated UI string from `core/locales`, for texts shared with desktop.
 #[uniffi::export]
 pub fn translate(key: String) -> String {
@@ -1148,6 +1241,23 @@ impl Engine {
                 .collect(),
             None => Vec::new(),
         }
+    }
+
+    /// Search in what is stored on the device for any account (not only
+    /// the connected one; nothing is fetched): newest first, at most `limit`.
+    /// For Shortcuts/Siri and other apps.
+    pub fn search_account(
+        &self,
+        account: Account,
+        folder_id: String,
+        query: String,
+        limit: u32,
+    ) -> Vec<Header> {
+        let account: config::Account = account.into();
+        bridge::search(&account, &folder_id, &query, limit as usize)
+            .into_iter()
+            .map(Header::from)
+            .collect()
     }
 
     /// Recipients matching what is being typed, from the account's mail

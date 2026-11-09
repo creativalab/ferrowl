@@ -1,0 +1,5 @@
+/* Generated from core/locales by ffi/build-ios.sh: edit those files. */
+"Unread mail in ${applicationName}" = "${applicationName}의 읽지 않은 메일";
+"Search mail in ${applicationName}" = "${applicationName}에서 메일 검색";
+"Write a mail with ${applicationName}" = "${applicationName}로 메일 쓰기";
+"Send a mail with ${applicationName}" = "${applicationName}로 메일 보내기";

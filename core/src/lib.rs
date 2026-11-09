@@ -4,6 +4,7 @@
 //! Nothing here depends on a user interface toolkit.
 
 pub mod backend;
+pub mod bridge;
 pub mod cache;
 pub mod carddav;
 pub mod config;

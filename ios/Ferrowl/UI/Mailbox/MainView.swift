@@ -52,6 +52,12 @@ struct MainView: View {
         .task(id: "\(app.pendingOpen?.email ?? "")|\(app.pendingOpen?.uid ?? 0)|\(model != nil)") {
             await openFromNotification()
         }
+        // A link or a shortcut asked for a new message.
+        .task(id: "\(app.pendingCompose?.id.uuidString ?? "")|\(model != nil)") {
+            guard let request = app.pendingCompose, model != nil else { return }
+            app.pendingCompose = nil
+            sheet = .compose(request)
+        }
         .onChange(of: mail.changes) { _, _ in
             Task { await model?.reloadLocal() }
         }
