@@ -334,6 +334,26 @@ fn fetch(url: &str) -> Option<Vec<u8>> {
         .ok()
 }
 
+/// Text the message does not style gets the app's font (Inter), as other
+/// mail apps give it theirs, instead of the browser default (a serif).
+/// The message's own styles still win over this.
+const DEFAULT_STYLE: &str = "body { font-family: Inter, sans-serif; }";
+
+/// System fonts plus the fonts bundled with the app.
+fn fonts() -> parley::FontContext {
+    static FONTS: OnceLock<parley::FontContext> = OnceLock::new();
+    FONTS
+        .get_or_init(|| {
+            let mut ctx = parley::FontContext::new();
+            for font in crate::ui::FONTS {
+                ctx.collection
+                    .register_fonts(parley::fontique::Blob::new(Arc::new(font)), None);
+            }
+            ctx
+        })
+        .clone()
+}
+
 /// Parses the message and waits (bounded) for its images and style sheets.
 fn load(job: &Job) -> Loaded {
     let scale = job.scale.clamp(1.0, 3.0);
@@ -360,6 +380,11 @@ fn load(job: &Job) -> Loaded {
             ColorScheme::Light,
         )),
         net_provider: Some(Arc::new(net)),
+        font_ctx: Some(fonts()),
+        ua_stylesheets: vec![
+            blitz_dom::UserAgentStylesheet::default_sheet(),
+            blitz_dom::UserAgentStylesheet::parse(DEFAULT_STYLE),
+        ],
         ..Default::default()
     };
     // A text/html part is HTML whatever it declares: Blitz parses anything

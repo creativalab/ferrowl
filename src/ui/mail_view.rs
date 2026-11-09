@@ -1813,11 +1813,19 @@ fn html_page<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
         );
         offset += h;
     }
+    // The message is painted as a light page: on a white reader it sits
+    // flat like plain text does; on a dark or tinted one a soft frame keeps
+    // its edges from looking cut.
+    let white = p.bg.r > 0.98 && p.bg.g > 0.98 && p.bg.b > 0.98;
     let page = container(tiles).clip(true).style(move |_| container::Style {
-        border: Border {
-            color: p.line_soft,
-            width: 1.0,
-            radius: radius(10.0),
+        border: if white {
+            Border::default()
+        } else {
+            Border {
+                color: p.line_soft,
+                width: 1.0,
+                radius: radius(10.0),
+            }
         },
         ..Default::default()
     });
