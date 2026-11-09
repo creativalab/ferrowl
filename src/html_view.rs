@@ -43,6 +43,8 @@ pub struct Rendered {
     pub tiles: Vec<(image::Handle, f32)>,
     /// Remote content was present but not loaded.
     pub blocked_remote: bool,
+    /// Some text is selected (Ctrl+C copies it).
+    pub selection: bool,
 }
 
 pub struct Job {
@@ -59,6 +61,21 @@ enum Command {
     Render(Job, mpsc::Sender<Rendered>),
     /// Link at logical (x, y) of message `uid`.
     Hit(u32, f32, f32, mpsc::Sender<Option<String>>),
+    /// Changes the text selection of message `uid` and paints it again.
+    Select(u32, Select, mpsc::Sender<Option<Rendered>>),
+    /// The selected text of message `uid`.
+    Selected(u32, mpsc::Sender<Option<String>>),
+}
+
+/// A change to the text selection, at logical document coordinates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Select {
+    /// Mouse pressed: the selection starts (empty) here.
+    Start(f32, f32),
+    /// Mouse dragged: the selection now ends here.
+    Extend(f32, f32),
+    /// Double click: the word under the point.
+    Word(f32, f32),
 }
 
 fn worker() -> &'static Mutex<mpsc::Sender<Command>> {
@@ -91,6 +108,21 @@ pub fn link_at(uid: u32, x: f32, y: f32) -> Option<String> {
     rx.recv().ok().flatten()
 }
 
+/// Applies a selection change to the last rendered message and paints
+/// it again (blocking). `None` when nothing visible changed.
+pub fn select(uid: u32, op: Select) -> Option<Rendered> {
+    let (tx, rx) = mpsc::channel();
+    send(Command::Select(uid, op, tx));
+    rx.recv().ok().flatten()
+}
+
+/// The text selected in the last rendered message (blocking).
+pub fn selected_text(uid: u32) -> Option<String> {
+    let (tx, rx) = mpsc::channel();
+    send(Command::Selected(uid, tx));
+    rx.recv().ok().flatten()
+}
+
 /// A parsed message kept by the worker, so a new width only lays it out
 /// and paints it again (no parsing, no downloads).
 struct Loaded {
@@ -99,6 +131,18 @@ struct Loaded {
     html_len: usize,
     doc: HtmlDocument,
     blocked_remote: bool,
+    /// How it was last painted, to paint it again after a selection
+    /// change without a new layout.
+    painted: Option<Painted>,
+}
+
+#[derive(Clone, Copy)]
+struct Painted {
+    width: u32,
+    zoom: f32,
+    scale: f32,
+    physical_w: u32,
+    physical_h: u32,
 }
 
 fn run(rx: mpsc::Receiver<Command>) {
@@ -116,6 +160,12 @@ fn run(rx: mpsc::Receiver<Command>) {
                             reply = r;
                         }
                         Command::Hit(_, _, _, r) => {
+                            let _ = r.send(None);
+                        }
+                        Command::Select(_, _, r) => {
+                            let _ = r.send(None);
+                        }
+                        Command::Selected(_, r) => {
                             let _ = r.send(None);
                         }
                     }
@@ -136,8 +186,82 @@ fn run(rx: mpsc::Receiver<Command>) {
                 };
                 let _ = reply.send(link);
             }
+            Command::Select(uid, op, reply) => {
+                let rendered = match &mut current {
+                    Some(c) if c.uid == uid => {
+                        if apply(&mut c.doc, op) {
+                            repaint(c)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                let _ = reply.send(rendered);
+            }
+            Command::Selected(uid, reply) => {
+                let text = match &current {
+                    Some(c) if c.uid == uid => c.doc.get_selected_text(),
+                    _ => None,
+                };
+                let _ = reply.send(text);
+            }
         }
     }
+}
+
+/// Changes the selection; false when it stayed as it was.
+fn apply(doc: &mut HtmlDocument, op: Select) -> bool {
+    let before = doc.get_text_selection_ranges();
+    match op {
+        Select::Start(x, y) => match doc.find_text_position(x, y) {
+            Some((node, offset)) => doc.set_text_selection(node, offset, node, offset),
+            None => doc.clear_text_selection(),
+        },
+        Select::Extend(x, y) => {
+            doc.extend_text_selection_to_point(x, y);
+        }
+        Select::Word(x, y) => match doc.find_text_position(x, y) {
+            Some((node, offset)) => {
+                let text = doc
+                    .get_node(node)
+                    .and_then(|n| n.element_data())
+                    .and_then(|e| e.inline_layout_data.as_ref())
+                    .map(|l| l.text.clone())
+                    .unwrap_or_default();
+                let (start, end) = word_at(&text, offset);
+                doc.set_text_selection(node, start, node, end);
+            }
+            None => doc.clear_text_selection(),
+        },
+    }
+    doc.get_text_selection_ranges() != before
+}
+
+/// Byte range of the word around `offset` (letters, digits, `_`, and the
+/// `.`/`@`/`-` inside addresses and codes).
+fn word_at(text: &str, offset: usize) -> (usize, usize) {
+    let offset = offset.min(text.len());
+    let is_word = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '@');
+    let mut start = offset;
+    for (i, c) in text[..offset].char_indices().rev() {
+        if !is_word(c) {
+            break;
+        }
+        start = i;
+    }
+    let mut end = offset;
+    for (i, c) in text[offset..].char_indices() {
+        if !is_word(c) {
+            break;
+        }
+        end = offset + i + c.len_utf8();
+    }
+    // Trailing dots and dashes end sentences, not words.
+    while end > start && text[..end].ends_with(['.', '-']) {
+        end -= 1;
+    }
+    (start, end)
 }
 
 fn link_in(doc: &HtmlDocument, x: f32, y: f32) -> Option<String> {
@@ -210,6 +334,26 @@ fn fetch(url: &str) -> Option<Vec<u8>> {
         .ok()
 }
 
+/// Text the message does not style gets the app's font (Inter), as other
+/// mail apps give it theirs, instead of the browser default (a serif).
+/// The message's own styles still win over this.
+const DEFAULT_STYLE: &str = "body { font-family: Inter, sans-serif; }";
+
+/// System fonts plus the fonts bundled with the app.
+fn fonts() -> parley::FontContext {
+    static FONTS: OnceLock<parley::FontContext> = OnceLock::new();
+    FONTS
+        .get_or_init(|| {
+            let mut ctx = parley::FontContext::new();
+            for font in crate::ui::FONTS {
+                ctx.collection
+                    .register_fonts(parley::fontique::Blob::new(Arc::new(font)), None);
+            }
+            ctx
+        })
+        .clone()
+}
+
 /// Parses the message and waits (bounded) for its images and style sheets.
 fn load(job: &Job) -> Loaded {
     let scale = job.scale.clamp(1.0, 3.0);
@@ -236,6 +380,11 @@ fn load(job: &Job) -> Loaded {
             ColorScheme::Light,
         )),
         net_provider: Some(Arc::new(net)),
+        font_ctx: Some(fonts()),
+        ua_stylesheets: vec![
+            blitz_dom::UserAgentStylesheet::default_sheet(),
+            blitz_dom::UserAgentStylesheet::parse(DEFAULT_STYLE),
+        ],
         ..Default::default()
     };
     // A text/html part is HTML whatever it declares: Blitz parses anything
@@ -258,6 +407,7 @@ fn load(job: &Job) -> Loaded {
         html_len: job.html.len(),
         doc,
         blocked_remote: blocked.load(Ordering::SeqCst) > 0,
+        painted: None,
     }
 }
 
@@ -296,6 +446,33 @@ fn paint(loaded: &mut Loaded, width: u32, scale: f32) -> Rendered {
     let content = (root.scrollable_overflow().y1 / scale as f64) as f32;
     let height = (root.final_layout().size.height.max(content).ceil() as u32).clamp(1, MAX_HEIGHT);
     let physical_h = (height as f32 * scale).ceil() as u32;
+    let painted = Painted {
+        width,
+        zoom,
+        scale,
+        physical_w,
+        physical_h,
+    };
+    loaded.painted = Some(painted);
+    tiles(loaded, painted)
+}
+
+/// Paints the message as last laid out again (after a selection change).
+fn repaint(loaded: &mut Loaded) -> Option<Rendered> {
+    let painted = loaded.painted?;
+    Some(tiles(loaded, painted))
+}
+
+/// Paints the laid-out message into tiles.
+fn tiles(loaded: &mut Loaded, painted: Painted) -> Rendered {
+    let Painted {
+        width,
+        zoom,
+        scale,
+        physical_w,
+        physical_h,
+    } = painted;
+    let doc = &mut loaded.doc;
     // Paint tile by tile: a viewport as tall as the tile, scrolled to it.
     let mut tiles = Vec::new();
     let mut y = 0;
@@ -326,6 +503,7 @@ fn paint(loaded: &mut Loaded, width: u32, scale: f32) -> Rendered {
         zoom,
         tiles,
         blocked_remote: loaded.blocked_remote,
+        selection: doc.has_text_selection(),
     }
 }
 
@@ -386,6 +564,58 @@ mod tests {
         assert_eq!(link_at(7, 50.0, 50.0).as_deref(), Some("https://ferrowl.com/x"));
         assert_eq!(link_at(7, 50.0, 2000.0), None);
         assert_eq!(link_at(8, 50.0, 50.0), None, "other message");
+    }
+
+    #[test]
+    fn drag_and_double_click_select_text() {
+        let _turn = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        let html = r#"<html><body style="margin:0;font:16px sans-serif">
+            <p style="margin:0">Your order code is ABC-123.</p>
+            <p style="margin:0">Second line here</p>
+            <div style="height:5000px"></div>
+        </body></html>"#;
+        let r = render(Job {
+            uid: 9,
+            html: html.into(),
+            width: 600,
+            scale: 2.0,
+            allow_remote: false,
+            inline: HashMap::new(),
+        })
+        .unwrap();
+        assert!(!r.selection);
+        assert!(
+            select(9, Select::Start(1.0, 8.0)).is_none(),
+            "an empty selection paints nothing"
+        );
+        let started = Instant::now();
+        let r = select(9, Select::Extend(590.0, 28.0)).expect("drag repaints");
+        eprintln!("repaint of {} tiles: {:?}", r.tiles.len(), started.elapsed());
+        assert!(r.selection);
+        let text = selected_text(9).unwrap();
+        assert!(text.starts_with("Your order code is ABC-123."), "{text:?}");
+        assert!(text.contains("Second line"), "{text:?}");
+        assert!(select(10, Select::Start(1.0, 8.0)).is_none(), "other message");
+        // Double click on the code takes it whole.
+        let x = (0..600).map(|x| x as f32).find(|&x| {
+            select(9, Select::Word(x, 8.0));
+            selected_text(9).as_deref() == Some("ABC-123")
+        });
+        assert!(x.is_some(), "double click selects ABC-123");
+    }
+
+    #[test]
+    fn words_stop_at_spaces_and_sentence_ends() {
+        let t = "Code: ABC-123. Mail fabio@ferrowl.com now";
+        let at = |w: &str| {
+            let i = t.find(w).unwrap() + 1;
+            let (a, b) = word_at(t, i);
+            &t[a..b]
+        };
+        assert_eq!(at("ABC"), "ABC-123");
+        assert_eq!(at("fabio"), "fabio@ferrowl.com");
+        assert_eq!(at("now"), "now");
+        assert_eq!(word_at(t, t.len()), (t.len() - 3, t.len()));
     }
 
     #[test]

@@ -2262,6 +2262,7 @@ dependencies = [
  "iced",
  "notify-rust",
  "open",
+ "parley",
  "pgp",
  "png 0.18.1",
  "rand 0.8.8",

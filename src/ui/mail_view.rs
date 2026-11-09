@@ -1803,21 +1803,29 @@ fn html_page<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
             )
             // Back to the message's own coordinates for hit testing.
             .on_move(move |pt| Message::HtmlPointer(pt.x / zoom, top + pt.y / zoom))
-            .on_press(Message::HtmlClick)
+            .on_press(Message::HtmlPress)
             .on_exit(Message::HtmlLeave)
             .interaction(if pointer {
                 iced::mouse::Interaction::Pointer
             } else {
-                iced::mouse::Interaction::Idle
+                iced::mouse::Interaction::Text
             }),
         );
         offset += h;
     }
+    // The message is painted as a light page: on a white reader it sits
+    // flat like plain text does; on a dark or tinted one a soft frame keeps
+    // its edges from looking cut.
+    let white = p.bg.r > 0.98 && p.bg.g > 0.98 && p.bg.b > 0.98;
     let page = container(tiles).clip(true).style(move |_| container::Style {
-        border: Border {
-            color: p.line_soft,
-            width: 1.0,
-            radius: radius(10.0),
+        border: if white {
+            Border::default()
+        } else {
+            Border {
+                color: p.line_soft,
+                width: 1.0,
+                radius: radius(10.0),
+            }
         },
         ..Default::default()
     });
