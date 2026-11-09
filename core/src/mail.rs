@@ -718,6 +718,101 @@ pub fn fetch_delta(
     Ok(Some(delta))
 }
 
+/// What a new-mail notification needs from the inbox. See [`peek_inbox`].
+#[derive(Debug, Clone, Default)]
+pub struct Peek {
+    /// The newest unread messages with a UID above `after`, newest first
+    /// (at most `limit`; sender and subject, no preview).
+    pub fresh: Vec<Header>,
+    /// How many unread messages have a UID above `after` in all.
+    pub fresh_count: u32,
+    /// The newest message of the inbox, read or not (`None`: empty inbox).
+    pub newest: Option<Header>,
+    /// The inbox's unread count; for Gmail, of the Primary tab among the
+    /// newest `PAGE_SIZE` messages (as the app's icon number counts them).
+    pub unread: u32,
+}
+
+/// Reads only what a new-mail notification shows, for the phone's
+/// notification handlers, which have little time and memory: no folder
+/// list, no cache, no previews, a few small commands. The inbox is opened
+/// read-only (EXAMINE), so nothing gets marked as read.
+pub fn peek_inbox(session: &mut ImapSession, after: u32, limit: u32) -> Result<Peek> {
+    let gmail = has_gmail_labels(session);
+    let mailbox = session.examine("INBOX")?;
+    let mut peek = Peek::default();
+    if mailbox.exists == 0 {
+        return Ok(peek);
+    }
+    // UIDs and flags of the newest page: the newest message, and for Gmail
+    // the window its unread count is taken from.
+    let first = mailbox.exists.saturating_sub(PAGE_SIZE - 1).max(1);
+    let window: Vec<(u32, bool)> = session
+        .fetch(format!("{first}:{}", mailbox.exists), "(UID FLAGS)")?
+        .iter()
+        .filter_map(|f| Some((f.uid?, f.flags().contains(&imap::types::Flag::Seen))))
+        .collect();
+    let newest_uid = window.iter().map(|(u, _)| *u).max();
+
+    let unseen: Vec<u32> = session.uid_search("UNSEEN")?.into_iter().collect();
+    peek.unread = if gmail {
+        let unread_window: Vec<u32> = window.iter().filter(|(_, seen)| !seen).map(|(u, _)| *u).collect();
+        gmail_search(
+            session,
+            &unread_window,
+            &format!("X-GM-RAW {}", imap_quote("category:primary")),
+        )
+        .map(|s| s.len() as u32)
+        .unwrap_or(unread_window.len() as u32)
+    } else {
+        unseen.len() as u32
+    };
+
+    let mut fresh: Vec<u32> = unseen.into_iter().filter(|u| *u > after).collect();
+    fresh.sort_unstable_by(|a, b| b.cmp(a));
+    peek.fresh_count = fresh.len() as u32;
+    fresh.truncate(limit as usize);
+
+    let mut wanted = fresh.clone();
+    if let Some(n) = newest_uid
+        && !wanted.contains(&n)
+    {
+        wanted.push(n);
+    }
+    if wanted.is_empty() {
+        return Ok(peek);
+    }
+    let mut headers: HashMap<u32, Header> = session
+        .uid_fetch(uid_set(&wanted), "(UID FLAGS INTERNALDATE BODY.PEEK[HEADER])")?
+        .iter()
+        .filter_map(|f| {
+            let uid = f.uid?;
+            let mut h = header_from_raw(
+                uid,
+                f.header().unwrap_or_default(),
+                f.flags().contains(&imap::types::Flag::Seen),
+            );
+            fill_missing_date(&mut h.timestamp, f);
+            Some((uid, h))
+        })
+        .collect();
+    peek.newest = newest_uid.and_then(|n| headers.get(&n).cloned());
+    peek.fresh = fresh.iter().filter_map(|u| headers.remove(u)).collect();
+    Ok(peek)
+}
+
+/// The unread messages with a UID of at least `from` in the selected
+/// folder (the server's push watcher: whether new mail is worth a
+/// notification).
+pub fn unseen_from(session: &mut ImapSession, from: u32) -> Result<Vec<u32>> {
+    // "n:*" always matches the last message, even below n: filtered out.
+    Ok(session
+        .uid_search(format!("UID {}:* UNSEEN", from.max(1)))?
+        .into_iter()
+        .filter(|u| *u >= from)
+        .collect())
+}
+
 /// Up to `count` messages older than sequence number `before` (for indexing).
 pub fn fetch_older(session: &mut ImapSession, folder: &str, before: u32, count: u32) -> Result<HeaderPage> {
     let mailbox = session.select(folder)?;
@@ -1723,6 +1818,37 @@ mod tests {
         let head = String::from_utf8_lossy(&raw);
         assert!(head.contains("Message-ID: <"), "no Message-ID");
         assert!(head.contains("In-Reply-To: <parent@example.org>"));
+    }
+
+    /// Read-only: what a new-mail notification reads, against the inbox
+    /// of the `[account]` of a config. Prints counts only.
+    /// `FERROWL_TEST_CONFIG=<config.toml> cargo test -p ferrowl-core live_peek_inbox -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_peek_inbox() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let path = std::env::var("FERROWL_TEST_CONFIG").expect("FERROWL_TEST_CONFIG");
+        let table: toml::Table = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let account: Account = table["account"].clone().try_into().unwrap();
+        let mut s = connect(&account).unwrap();
+        let all = peek_inbox(&mut s, 0, 3).unwrap();
+        let newest = all.newest.as_ref().expect("an empty inbox tells nothing");
+        assert!(all.fresh.len() <= 3);
+        assert!(all.fresh.windows(2).all(|w| w[0].uid > w[1].uid), "newest first");
+        assert!(all.fresh.iter().all(|h| !h.seen));
+        assert!(!newest.subject.is_empty() || !newest.from_address.is_empty());
+        // Nothing above the newest message.
+        let none = peek_inbox(&mut s, newest.uid, 3).unwrap();
+        assert_eq!(none.fresh_count, 0);
+        assert_eq!(none.newest.map(|h| h.uid), Some(newest.uid));
+        assert!(unseen_from(&mut s, newest.uid + 1).unwrap().is_empty());
+        println!(
+            "unread {}, fresh {}, newest has subject: {}",
+            all.unread,
+            all.fresh_count,
+            !newest.subject.is_empty()
+        );
+        let _ = s.logout();
     }
 
     /// Bulk commands on messages whose subject starts with "Ferrowl bulk test":

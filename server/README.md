@@ -1,7 +1,7 @@
 # ferrowl-push
 
 Push relay for the Ferrowl mobile apps. For each registered account it keeps
-an IMAP IDLE connection on the inbox and, when new mail arrives, wakes the
+an IMAP IDLE connection on the inbox and, when new unread mail arrives, wakes the
 phone with a message that contains only an account id: a **data-only**
 Firebase Cloud Messaging message on Android, an Apple Push Notification
 service alert ("New mail", translated by the phone) on iPhone. The app then
@@ -10,7 +10,8 @@ fetches the mail directly from the mail server.
 ## Privacy and security
 
 - Message contents are never read or stored; only the inbox message count is
-  watched.
+  watched, and whether new messages are unread (an IMAP search on the
+  `\Seen` flag, so mail already read elsewhere wakes nobody).
 - Account settings (including the password) are stored sealed with
   AES-256-GCM under a 256-bit key generated and kept by the phone. The server
   holds the key **in memory only**; after a restart it waits for each phone to

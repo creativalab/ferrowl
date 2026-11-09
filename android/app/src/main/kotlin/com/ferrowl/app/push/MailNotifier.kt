@@ -23,21 +23,24 @@ import javax.inject.Singleton
 @Singleton
 class MailNotifier @Inject constructor(@ApplicationContext private val context: Context) {
 
-    /** One message: sender and subject; several: how many, and the newest. */
-    fun show(fresh: List<Header>, account: String) {
+    /**
+     * One message: sender and subject; several ([count] in all, the newest
+     * of them in [fresh]): how many, and the newest.
+     */
+    fun show(fresh: List<Header>, count: Int, account: String) {
         val newest = fresh.first()
         // The account, when there are several; tapping opens the newest message.
         val builder = base(account, newest.uid.toLong()).setSubText(account)
-        if (fresh.size == 1) {
+        if (count <= 1) {
             builder.setContentTitle(newest.from).setContentText(newest.subject)
         } else {
             val style = NotificationCompat.InboxStyle()
-            fresh.take(5).forEach { style.addLine("${it.from}: ${it.subject}") }
+            fresh.take(MAX_LINES).forEach { style.addLine("${it.from}: ${it.subject}") }
             builder
-                .setContentTitle(translate("notif_many").replace("{n}", fresh.size.toString()))
+                .setContentTitle(translate("notif_many").replace("{n}", count.toString()))
                 .setContentText("${newest.from}: ${newest.subject}")
                 .setStyle(style)
-                .setNumber(fresh.size)
+                .setNumber(count)
         }
         post(builder, account)
     }
@@ -88,8 +91,10 @@ class MailNotifier @Inject constructor(@ApplicationContext private val context: 
         }
     }
 
-    private companion object {
-        const val CHANNEL = "new_mail"
-        const val ID = 1
+    companion object {
+        /** Messages listed in a notification of several. */
+        const val MAX_LINES = 5
+        private const val CHANNEL = "new_mail"
+        private const val ID = 1
     }
 }

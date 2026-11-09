@@ -505,6 +505,23 @@ impl Backend {
         .map_err(|e| crate::errors::humanize(&format!("{e:#}")))?
     }
 
+    /// What a new-mail notification shows (see [`mail::peek_inbox`]), on a
+    /// connection of its own, without touching the current session or the
+    /// cache. Not for POP3 accounts.
+    pub async fn peek(account: Account, after: u32, limit: u32) -> Res<mail::Peek> {
+        tokio::task::spawn_blocking(move || {
+            if account.is_pop3() {
+                return Err(t("err_no_account").to_string());
+            }
+            let mut s = mail::connect(&account).map_err(text)?;
+            let peek = mail::peek_inbox(&mut s, after, limit).map_err(text);
+            let _ = s.logout();
+            peek
+        })
+        .await
+        .map_err(|e| crate::errors::humanize(&format!("{e:#}")))?
+    }
+
     /// Cache key of the connected account.
     fn key(&self) -> Option<String> {
         self.lock().account.as_ref().map(cache::account_key)
