@@ -30,6 +30,8 @@ class PushService : FirebaseMessagingService() {
 
     @Inject lateinit var notifier: MailNotifier
 
+    @Inject lateinit var bridge: com.ferrowl.app.bridge.Bridge
+
     @Inject lateinit var accountUnread: com.ferrowl.app.data.AccountUnread
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -90,6 +92,8 @@ class PushService : FirebaseMessagingService() {
         accountUnread.set(address, peek.unread.toInt())
         if (peek.fresh.isNotEmpty()) {
             notifier.show(peek.fresh, peek.freshCount.toInt(), address, peek.unreadUids.map { it.toLong() })
+            // Connected automation apps (Tasker…) hear about it too.
+            runCatching { bridge.newMail(address, peek) }
             store.setLastNotified(address, peek.fresh.first().uid.toLong())
         }
         true

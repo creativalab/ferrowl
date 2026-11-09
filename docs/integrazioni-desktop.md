@@ -41,6 +41,15 @@ Decisioni prese con l'utente:
 > azioni restanti nello stesso modulo.
 >
 > Testi: chiavi `intent_*` e `shortcut_*` in `core/locales`.
+>
+> **Android (branch `feat/android-tasker`).** `android/.../bridge/`
+> contiene il modello di permessi da riusare sul desktop:
+> - ogni app collegata ha una chiave (`token`) e i permessi lettura e
+>   invio, con la conferma prima di ogni invio;
+> - le risposte vanno solo al pacchetto di quell'app;
+> - c'è un registro delle ultime 50 operazioni.
+>
+> Testi: chiavi `integrations_*` in `core/locales`.
 
 Un solo insieme di azioni con un formato stabile, nel motore Rust: lo usano
 il desktop, l'FFI di iOS/Android e tutte le "porte" verso l'esterno.

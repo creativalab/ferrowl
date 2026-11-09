@@ -61,7 +61,12 @@ import com.ferrowl.core.translate
 /** App settings (for now: how the message list is grouped). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(onBack: () -> Unit, onNoAccount: () -> Unit, vm: SettingsViewModel = hiltViewModel()) {
+fun SettingsScreen(
+    onBack: () -> Unit,
+    onNoAccount: () -> Unit,
+    onIntegrations: () -> Unit = {},
+    vm: SettingsViewModel = hiltViewModel(),
+) {
     val threaded by vm.threaded.collectAsStateWithLifecycle()
     val pushOn by vm.pushEnabled.collectAsStateWithLifecycle()
     val pushUnavailable by vm.pushUnavailable.collectAsStateWithLifecycle()
@@ -127,6 +132,13 @@ fun SettingsScreen(onBack: () -> Unit, onNoAccount: () -> Unit, vm: SettingsView
                 },
             )
             if (pushBusy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp))
+            HorizontalDivider(Modifier.padding(vertical = 16.dp))
+            // Automation apps (Tasker…) connected through Ferrowl Bridge.
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.integrations)) },
+                supportingContent = { Text(stringResource(R.string.integrations_desc)) },
+                modifier = Modifier.clickable(onClick = onIntegrations),
+            )
             HorizontalDivider(Modifier.padding(vertical = 16.dp))
             val blocked by vm.blocked.collectAsStateWithLifecycle()
             val allowed by vm.allowed.collectAsStateWithLifecycle()
