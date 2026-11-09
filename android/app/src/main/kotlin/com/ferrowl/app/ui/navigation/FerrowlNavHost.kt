@@ -1,6 +1,7 @@
 package com.ferrowl.app.ui.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.compose.NavHost
@@ -108,6 +109,7 @@ fun FerrowlNavHost() {
             // message there with "Moved to Trash · Undo", as a swipe does.
             val listEntry = remember(entry) { runCatching { nav.getBackStackEntry(Mailbox) }.getOrNull() }
             val list: MailboxViewModel? = listEntry?.let { hiltViewModel(it) }
+            val listFolder = list?.state?.collectAsState()?.value?.folderId
             MessageScreen(
                 folderId = route.folderId,
                 uid = route.uid.toUInt(),
@@ -115,7 +117,7 @@ fun FerrowlNavHost() {
                 onBack = { nav.popBackStack() },
                 onReply = { kind -> nav.navigate(Write(kind.name, route.folderId, route.uid)) },
                 onGone = { nav.popBackStack(Mailbox, inclusive = false) },
-                onTrash = list?.takeIf { it.state.value.folderId == route.folderId }?.let { vm ->
+                onTrash = list?.takeIf { listFolder == route.folderId }?.let { vm ->
                     {
                         vm.deleteRow(listOf(route.uid.toUInt()))
                         nav.popBackStack(Mailbox, inclusive = false)
