@@ -265,7 +265,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         -> UIBackgroundFetchResult {
         guard info["type"] as? String == "read",
               let account = MailNotifications.account(pushId: info["account"] as? String) else { return .noData }
-        return await Self.clearRead(account) ? .newData : .failed
+        let cleared = await Self.clearRead(account)
+        // Read elsewhere while the app is open: the list shows it.
+        await MainActor.run { AppModel.shared?.mail.arrived(account.email) }
+        return cleared ? .newData : .failed
     }
 
     /// Reads which of `account`'s notified messages are still unread, on a

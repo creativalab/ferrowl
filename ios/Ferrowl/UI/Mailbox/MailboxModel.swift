@@ -128,6 +128,16 @@ final class MailboxModel {
     }
 
     /// The local copy at once, then the newest messages from the server.
+    /// The server has news for the account (a push while the app is open):
+    /// the inbox, if open, is fetched again; elsewhere only the counts.
+    func serverChanged() async {
+        if folderId == mail.inboxId, query.trimmingCharacters(in: .whitespaces).isEmpty {
+            await refresh()
+        } else {
+            await loadUnread()
+        }
+    }
+
     func refresh() async {
         let id = folderId
         guard !id.isEmpty else { return }

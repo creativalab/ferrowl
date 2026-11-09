@@ -26,6 +26,9 @@ final class MailRepository {
 
     /// Goes up after messages were moved, deleted or sent: lists reload.
     private(set) var changes = 0
+    /// Goes up when the server says the account in use has new mail (or
+    /// mail read elsewhere) while the app is open: its inbox is fetched again.
+    private(set) var arrivals = 0
 
     /// Goes up after another account became the active one: screens start over.
     private(set) var switches = 0
@@ -390,6 +393,11 @@ final class MailRepository {
 
     /// The inbox was refreshed elsewhere (new-mail check): lists reload.
     func touch() { changes += 1 }
+
+    /// A push for `email` arrived while the app is open.
+    func arrived(_ email: String) {
+        if email.caseInsensitiveCompare(activeEmail ?? "") == .orderedSame { arrivals += 1 }
+    }
 
     private func changed(_ notice: String) {
         changes += 1

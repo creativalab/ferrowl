@@ -179,6 +179,15 @@ class MailboxViewModel @Inject constructor(
                 refresh()
             }
         }
+        // A push for the account on screen (new mail, or mail read
+        // elsewhere): its inbox, if open, comes again from the server.
+        viewModelScope.launch {
+            repo.arrivals.collect { email ->
+                val s = _state.value
+                if (!email.equals(s.active, ignoreCase = true)) return@collect
+                if (s.folderId == repo.inboxId() && s.query.isBlank()) refresh() else loadUnread()
+            }
+        }
         // Something was moved, deleted or sent: reload from the local copy.
         viewModelScope.launch {
             repo.changes.collect {

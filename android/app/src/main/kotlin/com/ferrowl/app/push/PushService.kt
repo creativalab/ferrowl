@@ -47,6 +47,8 @@ class PushService : FirebaseMessagingService() {
         runBlocking {
             // Which account (the server sends its id).
             val email = message.data["account"]?.let { store.current().emailOf(it) }
+            // An open mailbox of this account shows the change at once.
+            email?.let { repo.arrived(it) }
             if (type == "read") {
                 email?.let { withTimeoutOrNull(TIMEOUT_MS) { takeBackRead(it) } }
                 return@runBlocking
