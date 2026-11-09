@@ -14,13 +14,17 @@ import StoreKit
 final class ProStore {
     static let product = "ferrowl_pro"
 
-    /// Development builds always have Pro (as on Android), so several
-    /// accounts can be tried without a paid App Store sandbox.
+    /// Development and TestFlight builds always have Pro (as on Android),
+    /// so several accounts can be tried without a paid subscription.
     #if DEBUG
     private static let unlocked = true
     #else
-    private static let unlocked = false
+    private static let unlocked = isTestFlight
     #endif
+
+    /// TestFlight installs carry a sandbox receipt (App Store ones a
+    /// regular one): known at once, before the App Store answers anything.
+    private static let isTestFlight = Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"
 
     private(set) var pro = ProStore.unlocked
     /// Yearly price as the App Store shows it, once known.
@@ -52,14 +56,6 @@ final class ProStore {
             }
         }
         pro = Self.unlocked || active
-        if !pro, await Self.isTestFlight() { pro = true }
-    }
-
-    /// TestFlight builds have Pro, as development builds do: testers try
-    /// several accounts without a (sandbox) subscription.
-    private static func isTestFlight() async -> Bool {
-        guard case .verified(let app)? = try? await AppTransaction.shared else { return false }
-        return app.environment == .sandbox
     }
 
     enum Outcome { case bought, cancelled, unavailable }
