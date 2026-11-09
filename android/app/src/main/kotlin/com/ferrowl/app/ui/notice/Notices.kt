@@ -9,8 +9,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -57,7 +58,7 @@ data class Notice(
 )
 
 /**
- * The app's notices, shown at the top of every screen by [TopNoticeHost]:
+ * The app's notices, shown at the bottom of every screen by [NoticeHost]:
  * confirmations ("Archived", "Sent") and errors, already in words for the
  * user (the engine translates technical errors).
  */
@@ -87,11 +88,13 @@ val LocalBilling = staticCompositionLocalOf<com.ferrowl.app.data.Billing> { erro
 val LocalNotices = staticCompositionLocalOf<Notices> { error("Notices not provided") }
 
 /**
- * Shows each notice at the top, under the status bar: confirmations for a
- * few seconds, errors until closed (✕ or a tap). Screen readers announce it.
+ * Shows each notice at the bottom, above the system bar, the keyboard and
+ * the compose button (at the top it covered the app bar's buttons; Undo is
+ * also within the thumb's reach there): confirmations for a few seconds,
+ * errors until closed (✕ or a tap). Screen readers announce it.
  */
 @Composable
-fun TopNoticeHost(notices: Notices, modifier: Modifier = Modifier) {
+fun NoticeHost(notices: Notices, modifier: Modifier = Modifier) {
     var current by remember { mutableStateOf<Notice?>(null) }
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(notices) {
@@ -110,11 +113,19 @@ fun TopNoticeHost(notices: Notices, modifier: Modifier = Modifier) {
             delay(300)
         }
     }
-    Box(modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp), contentAlignment = Alignment.TopCenter) {
+    Box(
+        modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .imePadding()
+            // Room for the compose button (56 dp plus its margin).
+            .padding(start = 12.dp, end = 12.dp, bottom = 88.dp),
+        contentAlignment = Alignment.BottomCenter,
+    ) {
         AnimatedVisibility(
             visible = visible && current != null,
-            enter = slideInVertically { -it } + fadeIn(),
-            exit = slideOutVertically { -it } + fadeOut(),
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
         ) {
             val n = current ?: return@AnimatedVisibility
             val colors = MaterialTheme.colorScheme

@@ -415,7 +415,7 @@ private struct ListRow: View, Equatable {
                             model.selected = Set(row.uids)
                             confirmDelete()
                         } else {
-                            model.delete(row)
+                            model.deleteWithUndo(row)
                         }
                     } label: { Label(t(deletesForever ? "delete_forever" : "delete"), systemImage: "trash") }
                 }

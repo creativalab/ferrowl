@@ -16,7 +16,7 @@ import com.ferrowl.app.ui.navigation.FerrowlNavHost
 import com.ferrowl.app.ui.notice.LocalBilling
 import com.ferrowl.app.ui.notice.LocalNotices
 import com.ferrowl.app.ui.notice.Notices
-import com.ferrowl.app.ui.notice.TopNoticeHost
+import com.ferrowl.app.ui.notice.NoticeHost
 import com.ferrowl.app.ui.theme.FerrowlTheme
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -43,10 +43,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             FerrowlTheme {
                 CompositionLocalProvider(LocalNotices provides notices, LocalBilling provides billing) {
-                    // Notices (confirmations and errors) over every screen, at the top.
+                    // Notices (confirmations and errors) over every screen, at the bottom.
                     Box(Modifier.fillMaxSize()) {
                         FerrowlNavHost()
-                        TopNoticeHost(notices, Modifier.align(Alignment.TopCenter))
+                        NoticeHost(notices, Modifier.align(Alignment.BottomCenter))
                     }
                 }
             }

@@ -1,6 +1,8 @@
 package com.ferrowl.app.ui.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.remember
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -12,6 +14,7 @@ import com.ferrowl.app.ui.compose.ComposeScreen
 import com.ferrowl.app.ui.contacts.ContactsScreen
 import com.ferrowl.app.ui.conversation.ConversationScreen
 import com.ferrowl.app.ui.mailbox.MailboxScreen
+import com.ferrowl.app.ui.mailbox.MailboxViewModel
 import com.ferrowl.app.ui.message.MessageScreen
 import com.ferrowl.app.ui.message.ReplyKind
 import com.ferrowl.app.ui.settings.SettingsScreen
@@ -102,6 +105,11 @@ fun FerrowlNavHost() {
         }
         composable<Read> { entry ->
             val route = entry.toRoute<Read>()
+            // The message list under this screen: the trash button removes the
+            // message there with "Moved to Trash · Undo", as a swipe does.
+            val listEntry = remember(entry) { runCatching { nav.getBackStackEntry(Mailbox) }.getOrNull() }
+            val list: MailboxViewModel? = listEntry?.let { hiltViewModel(it) }
+            val listFolder = list?.state?.collectAsState()?.value?.folderId
             MessageScreen(
                 folderId = route.folderId,
                 uid = route.uid.toUInt(),
@@ -109,6 +117,12 @@ fun FerrowlNavHost() {
                 onBack = { nav.popBackStack() },
                 onReply = { kind -> nav.navigate(Write(kind.name, route.folderId, route.uid)) },
                 onGone = { nav.popBackStack(Mailbox, inclusive = false) },
+                onTrash = list?.takeIf { listFolder == route.folderId }?.let { vm ->
+                    {
+                        vm.deleteRow(listOf(route.uid.toUInt()))
+                        nav.popBackStack(Mailbox, inclusive = false)
+                    }
+                },
             )
         }
         composable<Write> { entry ->

@@ -275,9 +275,9 @@ final class MailboxModel {
         run(target(row)) { [mail] f, u in try await mail.archive(f, u) }
     }
 
-    /// Swipe: the row leaves the list at once and "Moved to Trash · Undo"
-    /// shows at the top; the server is asked only when the notice is gone,
-    /// so Undo really undoes it.
+    /// Swipe, the row's menu or the trash button of an open message: the row
+    /// leaves the list at once and "Moved to Trash · Undo" shows; the server
+    /// is asked only when the notice is gone, so Undo really undoes it.
     func deleteWithUndo(_ row: Row) {
         let folder = folderId
         let uids = Set(row.uids)
