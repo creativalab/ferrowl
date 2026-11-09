@@ -5,6 +5,12 @@ import Observation
 struct Row: Identifiable, Hashable {
     let conversation: Conversation
     var id: UInt32 { conversation.latest.uid }
+
+    // The same row whatever its state: it is the list's selection and the
+    // open message, which must not change when the message becomes read
+    // (SwiftUI then rebuilt and moved the reader, freezing for seconds).
+    static func == (a: Row, b: Row) -> Bool { a.id == b.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
     var header: Header { conversation.latest }
     var uids: [UInt32] { conversation.uids }
     var unread: Bool { conversation.unread > 0 }
@@ -57,13 +63,25 @@ final class MailboxModel {
         return messages
     }
 
+    /// The list's rows. Grouping and sorting go through the engine, so they
+    /// are kept until the messages or the settings change: the list is drawn
+    /// again for every tap (the selection), which must not redo them.
     var rows: [Row] {
         let list = shown
-        let conversations = prefs.threaded
+        let threaded = prefs.threaded
+        let sort = prefs.sort
+        if let cached = rowsCache, cached.threaded == threaded, cached.sort == sort, cached.list == list {
+            return cached.rows
+        }
+        let conversations = threaded
             ? groupConversations(headers: list)
             : list.map { Conversation(latest: $0, uids: [$0.uid], unread: $0.seen ? 0 : 1) }
-        return sortConversations(rows: conversations, order: prefs.sort).map(Row.init)
+        let rows = sortConversations(rows: conversations, order: sort).map(Row.init)
+        rowsCache = (list, threaded, sort, rows)
+        return rows
     }
+
+    @ObservationIgnored private var rowsCache: (list: [Header], threaded: Bool, sort: SortOrder, rows: [Row])?
 
     /// Gmail inbox: unread messages per tab.
     var unreadByCategory: [Int: Int] {

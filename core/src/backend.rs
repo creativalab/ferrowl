@@ -8,6 +8,7 @@ use crate::i18n::{generic_error, t};
 use crate::local;
 use crate::mail::{self, Folder, FolderKind, FullMessage, Header, ImapSession, Outgoing};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Default)]
@@ -23,6 +24,10 @@ struct Inner {
 #[derive(Clone, Default)]
 pub struct Backend {
     inner: Arc<Mutex<Inner>>,
+    /// The same as `Inner::gmail`, readable without the lock: server
+    /// commands hold the lock for their whole run (seconds for the unread
+    /// counts of every folder), and the apps ask this while drawing.
+    gmail: Arc<AtomicBool>,
 }
 
 /// Reloads the calendars from the server after a change (errors only
@@ -454,6 +459,8 @@ impl Backend {
                 if let Some(mut old) = g.session.take() {
                     let _ = old.logout();
                 }
+                g.gmail = false;
+                b.gmail.store(false, Ordering::Relaxed);
                 g.account = Some(account);
                 return Ok(local::folders());
             }
@@ -462,6 +469,7 @@ impl Backend {
             let gmail = mail::has_gmail_labels(&mut session);
             let mut g = b.lock();
             g.gmail = gmail;
+            b.gmail.store(gmail, Ordering::Relaxed);
             g.gmail_labels = if gmail {
                 folders
                     .iter()
@@ -787,8 +795,9 @@ impl Backend {
     }
 
     /// Whether the connected account is Gmail (messages have labels).
+    /// Never waits for a server command in progress.
     pub fn is_gmail(&self) -> bool {
-        self.lock().gmail
+        self.gmail.load(Ordering::Relaxed)
     }
 
     /// Adds or removes a Gmail label (raw IMAP name) on messages.

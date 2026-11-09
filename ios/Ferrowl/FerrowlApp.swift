@@ -84,7 +84,11 @@ struct FerrowlApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
-                .onAppear { delegate.push = app.push }
+                .onAppear {
+                    delegate.push = app.push
+                    // WebKit starts now rather than at the first message opened.
+                    HTMLView.prewarm()
+                }
                 .environment(app)
                 .environment(app.mail)
                 .environment(app.notices)
