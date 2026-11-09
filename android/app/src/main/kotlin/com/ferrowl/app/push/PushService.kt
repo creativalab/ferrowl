@@ -30,6 +30,8 @@ class PushService : FirebaseMessagingService() {
 
     @Inject lateinit var notifier: MailNotifier
 
+    @Inject lateinit var bridge: com.ferrowl.app.bridge.Bridge
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onNewToken(token: String) {
@@ -85,6 +87,8 @@ class PushService : FirebaseMessagingService() {
         val peek = repo.peekInbox(address, last, MailNotifier.MAX_LINES) ?: return@runCatching false
         if (peek.fresh.isNotEmpty()) {
             notifier.show(peek.fresh, peek.freshCount.toInt(), address, peek.unreadUids.map { it.toLong() })
+            // Connected automation apps (Tasker…) hear about it too.
+            runCatching { bridge.newMail(address, peek) }
             store.setLastNotified(address, peek.fresh.first().uid.toLong())
         }
         true

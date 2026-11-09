@@ -278,6 +278,13 @@ class MailRepository @Inject constructor(
         return engine.peekInbox(account, after.toUInt(), limit.toUInt())
     }
 
+    /**
+     * Search in what the phone keeps of any account (not only the active
+     * one), newest first: for other apps (Ferrowl Bridge).
+     */
+    suspend fun searchAccount(account: Account, query: String, limit: Int): List<Header> =
+        withContext(Dispatchers.IO) { engine.searchAccount(account, "INBOX", query, limit.toUInt()) }
+
     /** Messages already on the phone (local database, off the main thread). */
     suspend fun cachedHeaders(folderId: String): List<Header> =
         withContext(Dispatchers.IO) { engine.cachedHeaders(folderId) }
