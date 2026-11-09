@@ -32,6 +32,11 @@ enum Badge {
         return total()
     }
 
+    /// One account's last known count (0 when not known yet).
+    static func count(for email: String) -> Int {
+        SharedStorage.defaults.integer(forKey: key(email))
+    }
+
     static func total() -> Int {
         let d = SharedStorage.defaults
         let accounts = Set(AccountStore(directory: SharedStorage.directory).load().accounts.map { $0.email.lowercased() })

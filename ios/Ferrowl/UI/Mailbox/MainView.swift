@@ -190,6 +190,17 @@ struct Sidebar: View {
                                 } else if !app.mayUse(account.email) {
                                     Image(systemName: "lock").foregroundStyle(.secondary)
                                 }
+                                // Unread mail in its inbox (as on the app icon).
+                                let unread = unreadCount(account.email)
+                                if unread > 0 {
+                                    Text("\(unread)")
+                                        .font(.caption.bold().monospacedDigit())
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 7)
+                                        .padding(.vertical, 2)
+                                        .background(Capsule().fill(Color.accentColor))
+                                        .accessibilityLabel(t("intent_unread_count", ["n": "\(unread)"]))
+                                }
                             }
                         }
                         .foregroundStyle(.primary)
@@ -228,6 +239,15 @@ struct Sidebar: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { titleBar }
         .refreshable { await model.loadUnread() }
+    }
+
+    /// An account's unread count: the open inbox's for the account in use,
+    /// the last one saved (notifications, background checks) for the others.
+    private func unreadCount(_ email: String) -> Int {
+        if email == mail.activeEmail, let n = model.unread[mail.inboxId], !Badge.isGmail(mail.activeAccount!) {
+            return Int(n)
+        }
+        return Badge.count(for: email)
     }
 
     /// "Ferrowl" with its logo at the start of the bar (no empty title row).
