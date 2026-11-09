@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Long press on the launcher icon (and launchers/automation apps that
+     list shortcuts): the same actions as iOS's Shortcuts, through links. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="compose"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_compose"
+        android:shortcutShortLabel="@string/intent_compose_title">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.ferrowl.app"
+            android:targetClass="com.ferrowl.app.MainActivity"
+            android:data="ferrowl://compose" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="unread"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_inbox"
+        android:shortcutShortLabel="@string/intent_unread_title">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.ferrowl.app"
+            android:targetClass="com.ferrowl.app.MainActivity"
+            android:data="ferrowl://inbox" />
+    </shortcut>
+</shortcuts>

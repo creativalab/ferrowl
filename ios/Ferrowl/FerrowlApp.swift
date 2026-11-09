@@ -20,6 +20,13 @@ final class AppModel {
     /// A notification was tapped: the message to open (account, uid; no
     /// uid = its inbox).
     var pendingOpen: (email: String, uid: UInt32?)?
+    /// A `ferrowl://compose`/`mailto:` link or a shortcut asked for a new
+    /// message: shown to the user, never sent by itself.
+    var pendingCompose: ComposeRequest?
+
+    /// The process's model, for Shortcuts/Siri actions (they run in the
+    /// app's process, outside the views).
+    private(set) static var shared: AppModel?
 
     init() {
         // Shared with the notification extension (see SharedStorage).
@@ -35,6 +42,22 @@ final class AppModel {
         UNUserNotificationCenter.current().delegate = banners
         mail = MailRepository(engine: engine, notices: notices, directory: support)
         banners.open = { [weak self] email, uid in self?.pendingOpen = (email, uid) }
+        Self.shared = self
+    }
+
+    /// A `ferrowl://` or `mailto:` link opened from another app.
+    func open(link url: URL) {
+        switch parseLink(url: url.absoluteString) {
+        case .open(let account, _, let uid):
+            // Only inbox messages can be opened directly for now.
+            pendingOpen = (account, uid)
+        case .inbox(let account):
+            if let email = account ?? mail.activeEmail { pendingOpen = (email, nil) }
+        case .compose(let to, let cc, _, let subject, let body):
+            pendingCompose = ComposeRequest(to: to, cc: cc, subject: subject, body: body)
+        case nil:
+            break
+        }
     }
 
     /// Whether an account may be used: the first is free, the others need
@@ -84,6 +107,7 @@ struct FerrowlApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
+                .onOpenURL { app.open(link: $0) }
                 .onAppear {
                     delegate.push = app.push
                     // WebKit starts now rather than at the first message opened.

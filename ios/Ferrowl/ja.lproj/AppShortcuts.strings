@@ -1,0 +1,5 @@
+/* Generated from core/locales by ffi/build-ios.sh: edit those files. */
+"Unread mail in ${applicationName}" = "${applicationName} の未読メール";
+"Search mail in ${applicationName}" = "${applicationName} でメールを検索";
+"Write a mail with ${applicationName}" = "${applicationName} でメールを作成";
+"Send a mail with ${applicationName}" = "${applicationName} でメールを送信";

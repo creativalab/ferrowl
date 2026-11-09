@@ -40,7 +40,8 @@ final class ComposeModel {
         case (.replyAll, let m?): draft = replyDraft(message: m, replyAll: true, ownAddress: own)
         case (.forward, let m?): draft = forwardDraft(message: m)
         default:
-            draft = Outgoing(to: request.to, cc: "", bcc: "", subject: "", body: "", html: nil, inReplyTo: nil,
+            draft = Outgoing(to: request.to, cc: request.cc, bcc: "", subject: request.subject, body: request.body,
+                             html: nil, inReplyTo: nil,
                              references: [], attachments: [], sign: false, encrypt: false)
         }
         to = draft.to

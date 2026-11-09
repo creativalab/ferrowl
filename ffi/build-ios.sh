@@ -91,9 +91,11 @@ mkdir -p "$headers"
 cp "$gen/ferrowl_ffiFFI.h" "$headers/"
 cp "$gen/ferrowl_ffiFFI.modulemap" "$headers/module.modulemap"
 
-# Texts iOS shows without the engine (push notifications: "loc-key" in
-# the server's message), from core/locales, one Localizable.strings per
-# language.
+# Texts iOS shows without the engine, from core/locales, one
+# Localizable.strings per language: push notifications ("loc-key" in the
+# server's message) and the Shortcuts/Siri actions' names (read by the
+# system from the app's files). Siri's phrases go to AppShortcuts.strings,
+# keyed by the English phrase as written in AppIntents.swift.
 for toml in core/locales/*.toml; do
   code=$(basename "$toml" .toml)
   [ "$code" = zh ] && code=zh-Hans
@@ -101,9 +103,20 @@ for toml in core/locales/*.toml; do
   mkdir -p "$(dirname "$file")"
   {
     echo "/* Generated from core/locales by ffi/build-ios.sh: edit those files. */"
-    grep -E '^notif_new_mail = ' "$toml" | sed -E 's/^([a-z_]+) = (".*")$/"\1" = \2;/'
+    grep -E '^(notif_new_mail|intent_[a-z_]+) = ' "$toml" | sed -E 's/^([a-z_]+) = (".*")$/"\1" = \2;/'
   } > "$gen/strings"
   cmp -s "$gen/strings" "$file" || cp "$gen/strings" "$file"
+  phrases="ios/Ferrowl/$code.lproj/AppShortcuts.strings"
+  {
+    echo "/* Generated from core/locales by ffi/build-ios.sh: edit those files. */"
+    grep -E '^shortcut_[a-z_]+ = ' core/locales/en.toml | while IFS= read -r line; do
+      key=${line%% = *}
+      english=${line#* = }
+      own=$(grep -E "^$key = " "$toml" | sed -E 's/^[a-z_]+ = //')
+      echo "$english = ${own:-$english};"
+    done | sed 's/{app}/${applicationName}/g'
+  } > "$gen/phrases"
+  cmp -s "$gen/phrases" "$phrases" || cp "$gen/phrases" "$phrases"
 done
 
 if [ "$MODE" = xcode ]; then
