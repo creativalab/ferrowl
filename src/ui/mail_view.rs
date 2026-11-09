@@ -244,16 +244,41 @@ fn sidebar<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
     for (i, acc) in app.config.accounts.iter().enumerate() {
         let active = i == app.config.active;
         let color = if active { dot } else { p.field };
+        // Unread mail in its inbox, like the folders show it; the address
+        // gives up room for it rather than running under it.
+        let unread = match app.account_unread(i) {
+            0 => String::new(),
+            n => n.to_string(),
+        };
+        let room = if unread.is_empty() { 21 } else { 16 - unread.len() };
         let row_el = dir_row(vec![
             container(space().width(8).height(8))
                 .style(chip_box(color, color, 4.0))
                 .into(),
-            text(trunc(&acc.email, 21))
+            text(trunc(&acc.email, room))
                 .size(14)
                 .font(if active && multi { medium() } else { INTER })
                 .color(if active { p.text } else { p.text2 })
                 .width(Fill)
                 .into(),
+            if unread.is_empty() {
+                space().width(0).into()
+            } else {
+                // Fixed height, text centred both ways: Inter's line box
+                // otherwise sits the digits a little high.
+                container(
+                    text(unread)
+                        .size(10)
+                        .font(semibold())
+                        .color(p.on_accent)
+                        .line_height(1.0),
+                )
+                .height(17)
+                .padding([0, 6])
+                .center_y(17)
+                .style(chip_box(p.accent, p.on_accent, 8.5))
+                .into()
+            },
         ])
         .spacing(10)
         .align_y(Alignment::Center);
