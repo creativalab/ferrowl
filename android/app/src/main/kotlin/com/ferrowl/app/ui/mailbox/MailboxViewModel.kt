@@ -455,9 +455,9 @@ class MailboxViewModel @Inject constructor(
     val deletesForever: Boolean get() = repo.deletesForever(_state.value.folderId)
 
     /**
-     * Swipe: the row leaves the list at once and "Moved to Trash · Undo"
-     * shows at the top; the server is asked only when the notice is gone,
-     * so Undo really undoes it.
+     * Swipe or the trash button of an open message: the row leaves the list
+     * at once and "Moved to Trash · Undo" shows; the server is asked only
+     * when the notice is gone, so Undo really undoes it.
      */
     fun deleteRow(uids: List<UInt>) {
         val folder = _state.value.folderId

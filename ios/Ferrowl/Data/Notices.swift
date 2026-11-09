@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-/// Short confirmations and errors shown at the top of every screen
+/// Short confirmations and errors shown at the bottom of every screen
 /// ("Archived · Undo", "Message sent"), one at a time. Confirmations go
 /// away by themselves; errors stay until closed.
 @MainActor

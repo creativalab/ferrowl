@@ -34,7 +34,7 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: mail.switching)
-        .overlay(alignment: .top) { NoticeBanner() }
+        .overlay(alignment: .bottom) { NoticeBanner() }
         // Instant notifications: what they send to the server is explained
         // once, with the first account, before anything is sent.
         .sheet(isPresented: Binding(get: { !mail.accounts.isEmpty && !app.push.asked }, set: { _ in })) {
@@ -72,10 +72,16 @@ struct RootView: View {
     }
 }
 
-/// The notice at the top of the screen: a confirmation or an error, maybe
-/// with a button (Undo).
+/// The notice at the bottom of the screen: a confirmation or an error,
+/// maybe with a button (Undo). At the top it covered the navigation bar's
+/// buttons; at the bottom it stays above the search field, the compose
+/// button and a message's actions, and Undo is within the thumb's reach.
 struct NoticeBanner: View {
     @Environment(Notices.self) private var notices
+
+    /// Room left below: the compose button (48 + 20 points) and the bottom
+    /// search field.
+    static let clearance: CGFloat = 80
 
     var body: some View {
         if let notice = notices.current {
@@ -103,8 +109,8 @@ struct NoticeBanner: View {
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
             .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
             .padding(.horizontal, 12)
-            .padding(.top, 4)
-            .transition(.move(edge: .top).combined(with: .opacity))
+            .padding(.bottom, Self.clearance)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
             .onTapGesture { if notice.actionLabel == nil { notices.dismiss() } }
             .accessibilityAddTraits(.isStaticText)
             .id(notice.id)
@@ -115,9 +121,9 @@ struct NoticeBanner: View {
 
 extension View {
     /// Confirmations and errors on top of a sheet too (a sheet covers the
-    /// app's own notice at the top).
+    /// app's own notice).
     func showsNotices() -> some View {
-        overlay(alignment: .top) { NoticeBanner() }
+        overlay(alignment: .bottom) { NoticeBanner() }
     }
 }
 

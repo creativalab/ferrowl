@@ -194,7 +194,7 @@ struct MessageView: View {
                 MessageBody(message: message, model: model, compose: compose)
                     .padding()
                     // Room for the actions floating at the bottom.
-                    .padding(.bottom, embedded ? 0 : 56)
+                    .padding(.bottom, embedded ? 0 : 68)
             }
         }
         // Opaque: nothing of the list shows through, even mid-transition.
@@ -269,7 +269,16 @@ struct MessageView: View {
                 close { try await mail.archive(model.folderId, [model.uid]) }
             }
             ActionIcon(name: "trash", label: t("delete")) {
-                if model.deletesForever { confirmDelete = true } else { close { try await mail.delete(model.folderId, [model.uid]) } }
+                if model.deletesForever {
+                    confirmDelete = true
+                } else if let mailbox, let header = mailbox.header(model.uid) {
+                    // As a swipe in the list: "Moved to Trash · Undo".
+                    let unread: UInt32 = header.seen ? 0 : 1
+                    mailbox.deleteWithUndo(Row(conversation: Conversation(latest: header, uids: [model.uid], unread: unread)))
+                    leave()
+                } else {
+                    close { try await mail.delete(model.folderId, [model.uid]) }
+                }
             }
             ActionIcon(name: "arrowshape.turn.up.left", label: t("reply")) { reply(.reply) }
             ActionIcon(name: "arrowshape.turn.up.left.2", label: t("reply_all")) { reply(.replyAll) }
@@ -537,9 +546,9 @@ struct ActionIcon: View {
 
     static func glyph(_ name: String) -> some View {
         Image(systemName: name)
-            .font(.system(size: 15, weight: .medium))
+            .font(.system(size: 19, weight: .medium))
             .foregroundStyle(.primary)
-            .frame(width: 40, height: 40)
+            .frame(width: 48, height: 48)
             .contentShape(Rectangle())
     }
 }

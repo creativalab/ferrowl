@@ -41,7 +41,10 @@ struct MainView: View {
             }
             await model?.start()
             #if DEBUG
-            if let model { await PerfProbe.autotest(model) }
+            if let model {
+                await PerfProbe.showcase(model)
+                await PerfProbe.autotest(model)
+            }
             #endif
         }
         // A notification was tapped (also before the mailbox was ready: the

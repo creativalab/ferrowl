@@ -77,6 +77,11 @@ fun MessageScreen(
     onReply: (ReplyKind) -> Unit,
     /** Deleted, archived or moved: back to the message list (also from a conversation). */
     onGone: () -> Unit = onBack,
+    /**
+     * To the Trash with "Moved to Trash · Undo" (the list does it, so Undo
+     * puts the row back); null: moved at once.
+     */
+    onTrash: (() -> Unit)? = null,
     vm: MessageViewModel = hiltViewModel(),
 ) {
     LaunchedEffect(folderId, uid) { vm.load(folderId, uid, starred) }
@@ -99,7 +104,13 @@ fun MessageScreen(
                 actions = {
                     if (state is MessageState.Shown) {
                         StarButton(star, onClick = vm::toggleStar)
-                        IconButton(onClick = { if (vm.deletesForever) confirmDelete = true else vm.delete() }) {
+                        IconButton(onClick = {
+                            when {
+                                vm.deletesForever -> confirmDelete = true
+                                onTrash != null -> onTrash()
+                                else -> vm.delete()
+                            }
+                        }) {
                             Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.delete))
                         }
                         IconButton(onClick = { menu = true }) {
@@ -136,13 +147,13 @@ fun MessageScreen(
                 ) {
                     Row(Modifier.padding(horizontal = 4.dp)) {
                         IconButton(onClick = { onReply(ReplyKind.REPLY) }) {
-                            Icon(painterResource(R.drawable.ic_reply), contentDescription = stringResource(R.string.reply), modifier = Modifier.size(20.dp))
+                            Icon(painterResource(R.drawable.ic_reply), contentDescription = stringResource(R.string.reply), modifier = Modifier.size(24.dp))
                         }
                         IconButton(onClick = { onReply(ReplyKind.REPLY_ALL) }) {
-                            Icon(painterResource(R.drawable.ic_reply_all), contentDescription = stringResource(R.string.reply_all), modifier = Modifier.size(20.dp))
+                            Icon(painterResource(R.drawable.ic_reply_all), contentDescription = stringResource(R.string.reply_all), modifier = Modifier.size(24.dp))
                         }
                         IconButton(onClick = { onReply(ReplyKind.FORWARD) }) {
-                            Icon(painterResource(R.drawable.ic_forward), contentDescription = stringResource(R.string.forward), modifier = Modifier.size(20.dp))
+                            Icon(painterResource(R.drawable.ic_forward), contentDescription = stringResource(R.string.forward), modifier = Modifier.size(24.dp))
                         }
                     }
                 }

@@ -57,6 +57,19 @@ enum PerfProbe {
         timer = t
     }
 
+    /// `FERROWL_SHOWCASE=notice` (or `notice-message`, over an open
+    /// message) shows an "Undo" notice a few seconds after launch, to check
+    /// how it looks on screen (a screenshot) without deleting anything.
+    static func showcase(_ model: MailboxModel) async {
+        guard let what = ProcessInfo.processInfo.environment["FERROWL_SHOWCASE"] else { return }
+        try? await Task.sleep(for: .seconds(3))
+        if what == "notice-message", let row = model.rows.first {
+            model.open = row
+            try? await Task.sleep(for: .seconds(2))
+        }
+        model.mail.notices.withAction(t("moved_to_trash"), t("undo")) {}
+    }
+
     static func autotest(_ model: MailboxModel) async {
         guard enabled else { return }
         try? FileManager.default.removeItem(at: file)
