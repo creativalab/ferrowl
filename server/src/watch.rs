@@ -1,7 +1,8 @@
 //! One IMAP IDLE connection per account, each on its own thread.
 //!
-//! When the inbox gets new messages (the EXISTS count grows) the phone is
-//! notified. Flag changes and deletions do not wake it. Connection errors
+//! When the inbox gets new unread messages (the EXISTS count grows and a
+//! message above the previous UIDNEXT is unread) the phone is notified.
+//! Flag changes, deletions and mail already read do not wake it. Connection errors
 //! are retried with a growing pause.
 
 use crate::fcm::{Delivery, Notifier};
@@ -142,7 +143,9 @@ fn idle_session(
         let _ = session.logout();
         return Ok(Ended::NoIdle);
     }
-    let mut exists = session.select("INBOX")?.exists;
+    let inbox = session.select("INBOX")?;
+    let mut exists = inbox.exists;
+    let mut uid_next = inbox.uid_next;
     eprintln!("account {account_id}: watching the inbox");
     while !stop.load(Ordering::Relaxed) {
         if mail::idle_wait(&mut session, "INBOX", IDLE_TIMEOUT)? {
@@ -151,19 +154,33 @@ fn idle_session(
             if stop.load(Ordering::Relaxed) {
                 break;
             }
-            let now = session.select("INBOX")?.exists;
-            if now > exists {
+            let now = session.select("INBOX")?;
+            if now.exists > exists && worth_notifying(&mut session, uid_next) {
                 eprintln!("account {account_id}: new mail, notifying");
+                if !on_new() {
+                    let _ = session.logout();
+                    return Ok(Ended::Gone);
+                }
             }
-            if now > exists && !on_new() {
-                let _ = session.logout();
-                return Ok(Ended::Gone);
-            }
-            exists = now;
+            exists = now.exists;
+            uid_next = now.uid_next.or(uid_next);
         }
     }
     let _ = session.logout();
     Ok(Ended::Stopped)
+}
+
+/// Whether the messages that just arrived include an unread one: messages
+/// already read elsewhere, sent to oneself or moved back into the inbox
+/// after reading wake nobody. Without the server's UIDNEXT, or when the
+/// search fails, the phone is notified as before.
+fn worth_notifying(session: &mut mail::ImapSession, uid_next: Option<u32>) -> bool {
+    match uid_next {
+        Some(from) => mail::unseen_from(session, from)
+            .map(|u| !u.is_empty())
+            .unwrap_or(true),
+        None => true,
+    }
 }
 
 /// Notifies the device. Returns false when the device no longer exists.

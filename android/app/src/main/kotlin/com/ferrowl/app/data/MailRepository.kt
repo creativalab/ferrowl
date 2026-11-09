@@ -12,6 +12,7 @@ import com.ferrowl.core.EventDraft
 import com.ferrowl.core.Folder
 import com.ferrowl.core.FolderKind
 import com.ferrowl.core.Header
+import com.ferrowl.core.InboxPeek
 import com.ferrowl.core.InviteReply
 import com.ferrowl.core.Message
 import com.ferrowl.core.Outgoing
@@ -266,21 +267,15 @@ class MailRepository @Inject constructor(
     private val sideLock = Mutex()
 
     /**
-     * The newest inbox messages of any account (for notifications): the
-     * active one through the main engine, the others through [side], so
-     * the account on screen stays connected.
+     * For a new-mail notification: the unread messages of [email]'s inbox
+     * above UID [after] (at most [limit]) and how many there are, read on a
+     * connection of its own (no folder list, no cache, no previews), so it
+     * fits in the time Android gives a push. The account on screen stays
+     * connected. Null for an account no longer on the phone.
      */
-    suspend fun inboxOf(email: String): List<Header> {
-        val active = accounts.account.first()
-        if (active != null && active.email.equals(email, ignoreCase = true)) {
-            ensureConnected()
-            return engine.headers(inboxId()).headers
-        }
-        val account = accounts.accounts.first().firstOrNull { it.email.equals(email, ignoreCase = true) } ?: return emptyList()
-        return sideLock.withLock {
-            val inbox = side.connect(account).firstOrNull { it.kind == FolderKind.INBOX }?.id ?: "INBOX"
-            side.headers(inbox).headers
-        }
+    suspend fun peekInbox(email: String, after: Long, limit: Int): InboxPeek? {
+        val account = accounts.accounts.first().firstOrNull { it.email.equals(email, ignoreCase = true) } ?: return null
+        return engine.peekInbox(account, after.toUInt(), limit.toUInt())
     }
 
     /** Messages already on the phone (local database, off the main thread). */

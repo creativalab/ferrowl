@@ -332,6 +332,20 @@ pub struct HeaderPage {
     pub more: Option<u32>,
 }
 
+/// What a new-mail notification shows, from [`Engine::peek_inbox`].
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct InboxPeek {
+    /// The newest unread messages above the given UID, newest first (sender
+    /// and subject, no preview).
+    pub fresh: Vec<Header>,
+    /// How many unread messages are above the given UID in all.
+    pub fresh_count: u32,
+    /// The newest message of the inbox, read or not.
+    pub newest: Option<Header>,
+    /// The inbox's unread count (Gmail: of the Primary tab), for the icon.
+    pub unread: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct Attachment {
     pub name: String,
@@ -1095,6 +1109,21 @@ impl Engine {
         Ok(HeaderPage {
             headers: headers.into_iter().map(Header::from).collect(),
             more: (first_seq > 1).then_some(first_seq),
+        })
+    }
+
+    /// For new-mail notifications, which have little time and memory: the
+    /// unread messages of `account`'s inbox above UID `after` (at most
+    /// `limit`), its newest message and its unread count, on a connection
+    /// of its own (the connected account and the cache are left alone).
+    /// Fails for POP3 accounts.
+    pub async fn peek_inbox(&self, account: Account, after: u32, limit: u32) -> Result<InboxPeek> {
+        let p = Backend::peek(account.into(), after, limit).await?;
+        Ok(InboxPeek {
+            fresh: p.fresh.into_iter().map(Header::from).collect(),
+            fresh_count: p.fresh_count,
+            newest: p.newest.map(Header::from),
+            unread: p.unread,
         })
     }
 

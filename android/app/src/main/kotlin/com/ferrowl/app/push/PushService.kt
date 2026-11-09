@@ -48,12 +48,13 @@ class PushService : FirebaseMessagingService() {
     /** True if it decided what to show (possibly nothing: already read). */
     private suspend fun notifyNewMessages(email: String?): Boolean = runCatching {
         val address = email ?: repo.savedAccount()?.email ?: return@runCatching false
-        val headers = repo.inboxOf(address)
         val last = store.current().lastNotified[address.lowercase()] ?: 0
-        val fresh = headers.filter { !it.seen && it.uid.toLong() > last }.sortedByDescending { it.uid }
-        if (fresh.isNotEmpty()) {
-            notifier.show(fresh, address)
-            store.setLastNotified(address, fresh.first().uid.toLong())
+        // Only what the notification shows: loading the inbox may not fit
+        // in the time Android gives.
+        val peek = repo.peekInbox(address, last, MailNotifier.MAX_LINES) ?: return@runCatching false
+        if (peek.fresh.isNotEmpty()) {
+            notifier.show(peek.fresh, peek.freshCount.toInt(), address)
+            store.setLastNotified(address, peek.fresh.first().uid.toLong())
         }
         true
     }.getOrDefault(false)

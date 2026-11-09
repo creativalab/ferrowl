@@ -75,9 +75,11 @@ xcodebuild -scheme Ferrowl -destination 'id=<UDID>' -allowProvisioningUpdates \
   2. on the server, the APNs `.p8` key with its Key ID and Team ID (see
      `server/README.md`).
   Until then the switch fails with a message and the app keeps using the
-  background refresh. The notification says only "New mail" (translated:
-  `Localizable.strings`, generated from `core/locales`); a notification
-  service extension could later show sender and subject.
+  background refresh. The push says only "New mail" (translated:
+  `Localizable.strings`, generated from `core/locales`); the notification
+  service extension (`FerrowlNotifications/`) replaces it with sender and
+  subject, reading only what it shows (`Engine.peekInbox`) to fit in the
+  extension's time and memory.
 
 ## Security notes
 
