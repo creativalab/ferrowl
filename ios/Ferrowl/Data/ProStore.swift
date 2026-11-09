@@ -52,6 +52,14 @@ final class ProStore {
             }
         }
         pro = Self.unlocked || active
+        if !pro, await Self.isTestFlight() { pro = true }
+    }
+
+    /// TestFlight builds have Pro, as development builds do: testers try
+    /// several accounts without a (sandbox) subscription.
+    private static func isTestFlight() async -> Bool {
+        guard case .verified(let app)? = try? await AppTransaction.shared else { return false }
+        return app.environment == .sandbox
     }
 
     enum Outcome { case bought, cancelled, unavailable }

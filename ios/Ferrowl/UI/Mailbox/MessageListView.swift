@@ -160,8 +160,12 @@ struct MessageListView: View {
 
 /// One row: sender, time, subject, preview, unread dot, star, clip.
 struct MessageRow: View {
-    let row: Row
+    /// The conversation itself, not a `Row`: rows compare by message, so
+    /// SwiftUI took a row that became read or unread for unchanged and never
+    /// redrew it.
+    let conversation: Conversation
     let threaded: Bool
+    private var row: Row { Row(conversation: conversation) }
 
     @Environment(Preferences.self) private var prefs
 
@@ -375,12 +379,12 @@ private struct ListRow: View, Equatable {
                     Image(systemName: selected ? "checkmark.circle.fill" : "circle")
                         .font(.title3)
                         .foregroundStyle(selected ? Color.accentColor : .secondary)
-                    MessageRow(row: row, threaded: threaded)
+                    MessageRow(conversation: row.conversation, threaded: threaded)
                 }
             }
             .foregroundStyle(.primary)
         } else {
-            MessageRow(row: row, threaded: threaded)
+            MessageRow(conversation: row.conversation, threaded: threaded)
                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
                     Button {
                         model.markRead(row.unread, row)
