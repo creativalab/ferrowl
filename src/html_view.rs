@@ -479,15 +479,65 @@ const NO_HOST: &str = "ferrowl.invalid";
 /// The message's own styles still win over this.
 const DEFAULT_STYLE: &str = "body { font-family: Inter, sans-serif; }";
 
+/// Sans-serif fonts mail asks for that Linux usually lacks: shown in Inter.
+const SANS_ALIASES: [&str; 14] = [
+    "Helvetica Neue",
+    "Helvetica",
+    "Arial",
+    "Verdana",
+    "Tahoma",
+    "Segoe UI",
+    "-apple-system",
+    "BlinkMacSystemFont",
+    "SF Pro Text",
+    "SF Pro Display",
+    "Myriad Set Pro",
+    "Lucida Grande",
+    "Geneva",
+    "Calibri",
+];
+
 /// System fonts plus the fonts bundled with the app.
 fn fonts() -> parley::FontContext {
     static FONTS: OnceLock<parley::FontContext> = OnceLock::new();
     FONTS
         .get_or_init(|| {
+            use parley::fontique::{Blob, FontInfoOverride, GenericFamily};
             let mut ctx = parley::FontContext::new();
+            let mut inter = Vec::new();
             for font in crate::ui::FONTS {
+                for (family, _) in ctx.collection.register_fonts(Blob::new(Arc::new(font)), None) {
+                    if ctx.collection.family_name(family) == Some("Inter") && !inter.contains(&family) {
+                        inter.push(family);
+                    }
+                }
+            }
+            // Mail asks for the fonts of Mac and Windows, missing on Linux,
+            // where each fell back to a different system font. They all get
+            // Inter, the app's font, as do the generic sans-serif families.
+            for font in &crate::ui::FONTS[..4] {
+                for name in SANS_ALIASES {
+                    ctx.collection.register_fonts(
+                        Blob::new(Arc::new(*font)),
+                        Some(FontInfoOverride {
+                            family_name: Some(name),
+                            ..Default::default()
+                        }),
+                    );
+                }
+            }
+            for generic in [
+                GenericFamily::SansSerif,
+                GenericFamily::SystemUi,
+                GenericFamily::UiSansSerif,
+            ] {
+                let others: Vec<_> = ctx.collection.generic_families(generic).collect();
+                let all = inter
+                    .iter()
+                    .copied()
+                    .chain(others.into_iter().filter(|f| !inter.contains(f)));
                 ctx.collection
-                    .register_fonts(parley::fontique::Blob::new(Arc::new(font)), None);
+                    .set_generic_families(generic, all.collect::<Vec<_>>().into_iter());
             }
             ctx
         })
