@@ -862,6 +862,28 @@ fn accounts(app: &App, p: Palette) -> Element<'_, Message> {
         ]
         .spacing(4),
     );
+    // A login of their own, for servers that are not the mail provider.
+    form = form.push(
+        column![
+            text(t("dav_credentials")).size(13).font(semibold()).color(p.text),
+            field(
+                t("dav_username"),
+                &d.dav_username,
+                Field::DavUsername,
+                false,
+                false
+            ),
+            field(
+                t("dav_password"),
+                &d.dav_password,
+                Field::DavPassword,
+                true,
+                false
+            ),
+            text(t("dav_credentials_hint")).size(12).color(p.muted),
+        ]
+        .spacing(4),
+    );
 
     form = form.push(
         dir_row(vec![

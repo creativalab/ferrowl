@@ -414,6 +414,9 @@ pub struct AccountDraft {
     pub carddav_url: String,
     /// Calendar server (empty = automatic).
     pub caldav_url: String,
+    /// Login for the contacts and calendar servers (empty = the mail login).
+    pub dav_username: String,
+    pub dav_password: String,
     /// Signed in with Google/Microsoft instead of a password.
     pub oauth: Option<ferrowl_core::oauth::Provider>,
 }
@@ -459,6 +462,8 @@ impl AccountDraft {
             keyring: a.keyring,
             carddav_url: a.carddav_url.clone(),
             caldav_url: a.caldav_url.clone(),
+            dav_username: a.dav_username.clone(),
+            dav_password: a.dav_password.clone(),
             oauth: a.oauth,
         }
     }
@@ -479,8 +484,8 @@ impl AccountDraft {
             keyring: self.keyring,
             carddav_url: self.carddav_url.trim().to_string(),
             caldav_url: self.caldav_url.trim().to_string(),
-            dav_username: String::new(),
-            dav_password: String::new(),
+            dav_username: self.dav_username.trim().to_string(),
+            dav_password: self.dav_password.clone(),
             oauth: self.oauth,
         };
         a.is_complete().then_some(a)
@@ -498,6 +503,8 @@ pub enum Field {
     SmtpHost,
     SmtpPort,
     CardDav,
+    DavUsername,
+    DavPassword,
     CalDav,
 }
 
@@ -3435,6 +3442,8 @@ impl App {
                     Field::SmtpPort => &mut d.smtp_port,
                     Field::CardDav => &mut d.carddav_url,
                     Field::CalDav => &mut d.caldav_url,
+                    Field::DavUsername => &mut d.dav_username,
+                    Field::DavPassword => &mut d.dav_password,
                 };
                 *target = value;
                 // New account: recognise the provider from the address.
