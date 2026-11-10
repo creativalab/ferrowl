@@ -98,8 +98,11 @@ class Connections @Inject constructor(@ApplicationContext context: Context) {
     fun remove(token: String) = save(_list.value.filterNot { it.token == token })
 
     /** The app holding this key, if it is still connected. */
-    fun find(token: String?): Connection? =
-        token?.takeIf { it.isNotBlank() }?.let { t -> _list.value.firstOrNull { it.token == t.trim() } }
+    fun find(token: String?): Connection? {
+        val given = token?.trim()?.takeIf { it.isNotEmpty() }?.toByteArray() ?: return null
+        // Compared in constant time: how long it takes says nothing about the key.
+        return _list.value.firstOrNull { java.security.MessageDigest.isEqual(it.token.toByteArray(), given) }
+    }
 
     @Synchronized
     fun used(connection: Connection, action: String, outcome: String) {
