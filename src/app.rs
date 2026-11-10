@@ -106,6 +106,78 @@ impl EventForm {
     }
 }
 
+/// The contact form (new contact, or changes to a stored one).
+pub struct ContactForm {
+    /// Where the contact is stored (empty = new).
+    pub url: String,
+    pub uid: String,
+    pub name: String,
+    pub organization: String,
+    pub emails: Vec<String>,
+    pub phones: Vec<String>,
+    pub note: text_editor::Content,
+    pub error: Option<String>,
+    pub saving: bool,
+}
+
+impl ContactForm {
+    fn new(c: &ferrowl_core::vcard::Contact) -> ContactForm {
+        // Always one empty line to type in.
+        let one = |v: &Vec<String>| {
+            if v.is_empty() {
+                vec![String::new()]
+            } else {
+                v.clone()
+            }
+        };
+        ContactForm {
+            url: c.url.clone(),
+            uid: c.uid.clone(),
+            name: c.name.clone(),
+            organization: c.organization.clone(),
+            emails: one(&c.emails),
+            phones: one(&c.phones),
+            note: text_editor::Content::with_text(&c.note),
+            error: None,
+            saving: false,
+        }
+    }
+
+    /// The form as a contact, without the empty lines.
+    pub fn contact(&self) -> ferrowl_core::vcard::Contact {
+        let keep = |v: &Vec<String>| {
+            v.iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        };
+        ferrowl_core::vcard::Contact {
+            url: self.url.clone(),
+            uid: self.uid.clone(),
+            name: self.name.trim().to_string(),
+            emails: keep(&self.emails),
+            phones: keep(&self.phones),
+            organization: self.organization.trim().to_string(),
+            note: self.note.text().trim_end().to_string(),
+        }
+    }
+
+    /// Something to save: a name or an address.
+    pub fn can_save(&self) -> bool {
+        let c = self.contact();
+        !self.saving && (!c.name.is_empty() || !c.emails.is_empty())
+    }
+}
+
+/// Which field of the contact form changed.
+#[derive(Debug, Clone, Copy)]
+pub enum ContactField {
+    Name,
+    Organization,
+    Email(usize),
+    Phone(usize),
+}
+
 /// Which text field of the event form changed.
 #[derive(Debug, Clone, Copy)]
 pub enum EventField {
@@ -634,6 +706,8 @@ pub struct App {
     pub agenda_selected: Option<usize>,
     pub calendar_sync: SyncState,
     pub invite: Option<InviteCard>,
+    /// What the open message is about (shipment, code, bill), by its UID.
+    pub insights: Option<(u32, Vec<ferrowl_core::insights::Insight>)>,
     pub event_form: Option<EventForm>,
     /// Keyboard modifiers held now (for Shift/Ctrl+click in the list).
     pub modifiers: keyboard::Modifiers,
@@ -651,6 +725,8 @@ pub struct App {
     pub category: ferrowl_core::mail::Category,
     /// Asking before deleting the open event.
     pub confirm_event_delete: bool,
+    pub contact_form: Option<ContactForm>,
+    pub confirm_contact_delete: bool,
 }
 
 // ---------------------------------------------------------------- messages
@@ -859,6 +935,18 @@ pub enum Message {
     ContactSelect(usize),
     SyncContacts,
     ContactsSynced(Res<usize>),
+    NewContact,
+    EditContact,
+    ContactField(ContactField, String),
+    ContactNote(text_editor::Action),
+    /// Another empty address (true) or phone number (false).
+    ContactAddLine(bool),
+    SaveContact,
+    ContactSaved(Res<String>),
+    CancelContact,
+    /// Delete the open contact (false = ask first).
+    DeleteContact(bool),
+    ContactDeleted(Res<()>),
     OpenCalendar,
     /// Moves the calendar by months (0 = back to this month).
     CalendarMonth(i32),
@@ -870,6 +958,11 @@ pub enum Message {
     InviteResponded(Res<String>),
     /// Remove the cancelled event from the calendar.
     InviteRemove,
+    /// Copy a tracking number or code from an insight card.
+    CopyInsight(String),
+    /// Put a bill's due date (day, number, amount) in the calendar.
+    AddDue(chrono::NaiveDate, String, String),
+    DueAdded(Res<String>),
     InviteRemoved(Res<String>),
     NewEvent,
     /// Edit the open event.
@@ -1015,6 +1108,7 @@ impl App {
             agenda_selected: None,
             calendar_sync: SyncState::Idle,
             invite: None,
+            insights: None,
             event_form: None,
             modifiers: keyboard::Modifiers::default(),
             anchor: None,
@@ -1024,6 +1118,8 @@ impl App {
             gmail: false,
             category: ferrowl_core::mail::Category::Primary,
             confirm_event_delete: false,
+            contact_form: None,
+            confirm_contact_delete: false,
         };
         // Development: open a given view directly (used for screenshots).
         match std::env::var("FERROWL_DEV_VIEW").as_deref() {
@@ -1081,6 +1177,13 @@ impl App {
                     .and_then(|n| n.parse().ok())
                     .unwrap_or(0);
                 app.contact_selected = (nth < app.contacts.len()).then_some(nth);
+                // The contact form, new or for the open contact.
+                let _ = match std::env::var("FERROWL_DEV_CONTACT").as_deref() {
+                    Ok("new") => app.update(Message::NewContact),
+                    Ok("edit") => app.update(Message::EditContact),
+                    Ok("delete") => app.update(Message::DeleteContact(false)),
+                    _ => Task::none(),
+                };
             }
             Ok("compose") => {
                 let mut c = Compose::new(ComposeMode::New);
@@ -1837,6 +1940,8 @@ impl App {
         self.contacts_query.clear();
         self.contact_selected = None;
         self.contacts_sync = SyncState::Idle;
+        self.contact_form = None;
+        self.confirm_contact_delete = false;
         self.agenda.clear();
         self.agenda_selected = None;
         self.calendar_sync = SyncState::Idle;
@@ -1936,13 +2041,9 @@ impl App {
         let open = self
             .contact_selected
             .and_then(|i| self.contacts.get(i))
-            .map(|c| (c.name.clone(), c.emails.clone()));
+            .map(|c| c.url.clone());
         self.contacts = Backend::contacts(acc, &self.contacts_query);
-        self.contact_selected = open.and_then(|(name, emails)| {
-            self.contacts
-                .iter()
-                .position(|c| c.name == name && c.emails == emails)
-        });
+        self.contact_selected = open.and_then(|url| self.contacts.iter().position(|c| c.url == url));
     }
 
     fn load_folder(&mut self, folder: String, silent: bool) -> Task<Message> {
@@ -2881,6 +2982,10 @@ impl App {
                 self.body_probe = text_editor::Content::with_text(&msg.body);
                 self.body_link_hover = false;
                 self.invite = self.invite_card(&msg);
+                self.insights = Some((
+                    msg.uid,
+                    ferrowl_core::insights::find(&msg.subject, &msg.from_address, &msg.body),
+                ));
                 self.message = Some(msg);
                 self.html_render = None;
                 self.hover_link = None;
@@ -3688,7 +3793,110 @@ impl App {
             }
             Message::ContactSelect(i) => {
                 self.contact_selected = (i < self.contacts.len()).then_some(i);
+                self.contact_form = None;
+                self.confirm_contact_delete = false;
                 Task::none()
+            }
+            Message::NewContact => {
+                self.contact_form = Some(ContactForm::new(&Default::default()));
+                self.confirm_contact_delete = false;
+                Task::none()
+            }
+            Message::EditContact => {
+                if let Some(c) = self.contact_selected.and_then(|i| self.contacts.get(i)) {
+                    self.contact_form = Some(ContactForm::new(c));
+                }
+                self.confirm_contact_delete = false;
+                Task::none()
+            }
+            Message::ContactField(field, value) => {
+                if let Some(f) = self.contact_form.as_mut() {
+                    let target = match field {
+                        ContactField::Name => Some(&mut f.name),
+                        ContactField::Organization => Some(&mut f.organization),
+                        ContactField::Email(i) => f.emails.get_mut(i),
+                        ContactField::Phone(i) => f.phones.get_mut(i),
+                    };
+                    if let Some(target) = target {
+                        *target = value;
+                    }
+                    f.error = None;
+                }
+                Task::none()
+            }
+            Message::ContactNote(action) => {
+                if let Some(f) = self.contact_form.as_mut() {
+                    f.note.perform(action);
+                }
+                Task::none()
+            }
+            Message::ContactAddLine(email) => {
+                if let Some(f) = self.contact_form.as_mut() {
+                    if email {
+                        f.emails.push(String::new());
+                    } else {
+                        f.phones.push(String::new());
+                    }
+                }
+                Task::none()
+            }
+            Message::SaveContact => {
+                let Some(acc) = self.config.account().cloned() else {
+                    return Task::none();
+                };
+                let Some(f) = self.contact_form.as_mut().filter(|f| f.can_save()) else {
+                    return Task::none();
+                };
+                f.saving = true;
+                let contact = f.contact();
+                self.perform(Backend::save_contact(acc, contact), Message::ContactSaved)
+            }
+            Message::ContactSaved(result) => match result {
+                Ok(url) => {
+                    self.contact_form = None;
+                    // Show the saved contact, whatever the search.
+                    self.contacts_query.clear();
+                    self.reload_contacts();
+                    self.contact_selected = self.contacts.iter().position(|c| c.url == url);
+                    self.toast(t("contact_saved"), false)
+                }
+                Err(e) => {
+                    if let Some(f) = self.contact_form.as_mut() {
+                        f.saving = false;
+                        f.error = Some(e);
+                    }
+                    Task::none()
+                }
+            },
+            Message::CancelContact => {
+                self.contact_form = None;
+                self.confirm_contact_delete = false;
+                Task::none()
+            }
+            Message::DeleteContact(confirmed) => {
+                if !confirmed {
+                    self.confirm_contact_delete = true;
+                    return Task::none();
+                }
+                self.confirm_contact_delete = false;
+                let Some((acc, c)) = self
+                    .config
+                    .account()
+                    .cloned()
+                    .zip(self.contact_selected.and_then(|i| self.contacts.get(i)))
+                else {
+                    return Task::none();
+                };
+                let url = c.url.clone();
+                self.perform(Backend::delete_contact(acc, url), Message::ContactDeleted)
+            }
+            Message::ContactDeleted(result) => {
+                self.contact_selected = None;
+                self.reload_contacts();
+                match result {
+                    Ok(()) => self.toast(t("contact_deleted"), false),
+                    Err(e) => self.toast(e, true),
+                }
             }
             Message::SyncContacts => {
                 if self.contacts_sync == SyncState::Running {
@@ -3762,6 +3970,49 @@ impl App {
                 if let Some(msg) = self.message.clone() {
                     self.invite = self.invite_card(&msg);
                 }
+                self.reload_agenda();
+                toast
+            }
+            Message::CopyInsight(value) => {
+                let toast = self.toast(t("insight_copied"), false);
+                Task::batch([iced::clipboard::write(value), toast])
+            }
+            Message::AddDue(day, number, amount) => {
+                let Some(acc) = self.config.account().cloned() else {
+                    return Task::none();
+                };
+                let Some(calendar) = Backend::calendars(&acc).into_iter().next() else {
+                    return self.toast(t("err_no_calendar"), true);
+                };
+                let what = [number, amount]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                let what = if what.is_empty() {
+                    t("insight_bill").to_string()
+                } else {
+                    what
+                };
+                let draft = ferrowl_core::events::Draft {
+                    summary: tf("insight_due_title", &[("what", &what)]),
+                    all_day: true,
+                    start: day.and_hms_opt(9, 0, 0).unwrap_or_default(),
+                    end: day.and_hms_opt(10, 0, 0).unwrap_or_default(),
+                    location: String::new(),
+                    description: String::new(),
+                    repeat: ferrowl_core::events::Repeat::Never,
+                };
+                self.perform(
+                    Backend::save_event(acc, calendar.url, None, draft),
+                    Message::DueAdded,
+                )
+            }
+            Message::DueAdded(result) => {
+                let toast = match result {
+                    Ok(_) => self.toast(t("insight_due_added"), false),
+                    Err(e) => self.toast(e, true),
+                };
                 self.reload_agenda();
                 toast
             }

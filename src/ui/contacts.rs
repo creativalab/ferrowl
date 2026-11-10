@@ -3,11 +3,11 @@
 //! CardDAV server (see `ferrowl_core::carddav`).
 
 use super::*;
-use crate::app::{App, SyncState};
+use crate::app::{App, ContactField, ContactForm, SyncState};
 use crate::i18n::{t, tf};
 use ferrowl_core::vcard::Contact;
 use iced::widget::{Column, column, row, scrollable, space};
-use iced::{Alignment, Length::Fill, Padding};
+use iced::{Alignment, Background, Border, Length::Fill, Padding};
 
 pub fn list<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
     let syncing = app.contacts_sync == SyncState::Running;
@@ -19,8 +19,17 @@ pub fn list<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
         t("contacts_sync"),
         p,
     );
+    let add = tooltip(
+        button(icon(icons::PLUS, 18.0, p.text2))
+            .padding(8)
+            .style(ghost(p, p.text2))
+            .on_press(Message::NewContact),
+        t("contact_new"),
+        p,
+    );
     let header = dir_row(vec![
         text(t("contacts")).size(20).font(INTER_BOLD).width(Fill).into(),
+        add,
         sync,
     ])
     .align_y(Alignment::Center)
@@ -112,6 +121,9 @@ fn contact_row<'a>(app: &App, i: usize, c: &'a Contact, p: Palette) -> Element<'
 }
 
 pub fn detail<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
+    if let Some(f) = &app.contact_form {
+        return form(f, p);
+    }
     let Some(c) = app.contact_selected.and_then(|i| app.contacts.get(i)) else {
         let inner = column![
             icon(icons::CONTACTS, 48.0, p.field),
@@ -172,9 +184,143 @@ pub fn detail<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
         );
     }
 
+    // Edit / delete (asks first).
+    let actions: Element<'a, Message> = if app.confirm_contact_delete {
+        column![
+            text(t("contact_delete")).size(14).color(p.text),
+            dir_row(vec![
+                button(text(t("delete")).size(13).font(semibold()))
+                    .padding([7, 14])
+                    .style(move |_, st| button::Style {
+                        background: Some(Background::Color(if matches!(st, button::Status::Hovered) {
+                            mix(p.danger, Color::BLACK, 0.15)
+                        } else {
+                            p.danger
+                        })),
+                        text_color: Color::WHITE,
+                        border: Border {
+                            radius: radius(8.0),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                    .on_press(Message::DeleteContact(true))
+                    .into(),
+                button(text(t("cancel")).size(13).font(medium()))
+                    .padding([7, 14])
+                    .style(outline_btn(p, p.text))
+                    .on_press(Message::CancelContact)
+                    .into(),
+            ])
+            .spacing(8),
+        ]
+        .spacing(10)
+        .into()
+    } else {
+        dir_row(vec![
+            button(text(t("contact_edit")).size(13).font(medium()))
+                .padding([7, 14])
+                .style(outline_btn(p, p.text))
+                .on_press(Message::EditContact)
+                .into(),
+            button(text(t("delete")).size(13).font(medium()))
+                .padding([7, 14])
+                .style(outline_btn(p, p.danger))
+                .on_press(Message::DeleteContact(false))
+                .into(),
+        ])
+        .spacing(8)
+        .into()
+    };
+    body = body.push(space().height(8)).push(actions);
+
+    page(body.into(), p)
+}
+
+fn page<'a>(body: Element<'a, Message>, p: Palette) -> Element<'a, Message> {
     container(scrollable(container(body).padding(32).max_width(720)).style(scroll_style(p)))
         .width(Fill)
         .height(Fill)
         .style(panel(p.bg))
         .into()
+}
+
+/// New contact, or changes to the open one.
+fn form<'a>(f: &'a ContactForm, p: Palette) -> Element<'a, Message> {
+    let label = |s: &'static str| text(s).size(13).font(medium()).color(p.text2);
+    let input = |placeholder: &'static str, value: &'a str, field: ContactField| {
+        text_input(placeholder, value)
+            .on_input(move |v| Message::ContactField(field, v))
+            .on_submit(Message::SaveContact)
+            .size(14)
+            .padding([9, 12])
+            .style(super::input(p, 8.0))
+    };
+    let add = |s: &'static str, email: bool| {
+        button(text(s).size(13).font(medium()))
+            .padding([6, 12])
+            .style(outline_btn(p, p.text))
+            .on_press(Message::ContactAddLine(email))
+    };
+
+    let mut col = Column::new()
+        .spacing(10)
+        .push(
+            text(if f.url.is_empty() {
+                t("contact_new")
+            } else {
+                t("contact_edit")
+            })
+            .size(22)
+            .font(INTER_BOLD)
+            .color(p.text),
+        )
+        .push(space().height(4))
+        .push(label(t("contact_name")))
+        .push(input(t("contact_name"), &f.name, ContactField::Name))
+        .push(label(t("contact_org")))
+        .push(input(
+            t("contact_org"),
+            &f.organization,
+            ContactField::Organization,
+        ))
+        .push(label(t("contact_emails")));
+    for (i, e) in f.emails.iter().enumerate() {
+        col = col.push(input("name@example.com", e, ContactField::Email(i)));
+    }
+    col = col
+        .push(add(t("contact_add_email"), true))
+        .push(label(t("contact_phones")));
+    for (i, n) in f.phones.iter().enumerate() {
+        col = col.push(input("+39 …", n, ContactField::Phone(i)));
+    }
+    col = col
+        .push(add(t("contact_add_phone"), false))
+        .push(label(t("contact_note")))
+        .push(
+            iced::widget::text_editor(&f.note)
+                .on_action(Message::ContactNote)
+                .height(120)
+                .size(14)
+                .padding(10),
+        );
+    if let Some(e) = &f.error {
+        col = col.push(text(e.as_str()).size(13).color(p.danger));
+    }
+    col = col.push(space().height(4)).push(
+        dir_row(vec![
+            button(text(t("event_save")).size(14).font(semibold()))
+                .padding([9, 18])
+                .style(accent_btn(p))
+                .on_press_maybe(f.can_save().then_some(Message::SaveContact))
+                .into(),
+            button(text(t("cancel")).size(14).font(medium()))
+                .padding([9, 18])
+                .style(outline_btn(p, p.text))
+                .on_press(Message::CancelContact)
+                .into(),
+        ])
+        .spacing(10),
+    );
+    page(col.into(), p)
 }
