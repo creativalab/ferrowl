@@ -457,7 +457,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.4.11;
+				MARKETING_VERSION = 0.4.12;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"$(SRCROOT)/Engine/lib/$(PLATFORM_NAME)/libferrowl_ffi.a",
@@ -497,7 +497,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.4.11;
+				MARKETING_VERSION = 0.4.12;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"$(SRCROOT)/Engine/lib/$(PLATFORM_NAME)/libferrowl_ffi.a",
@@ -544,7 +544,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.11;
+				MARKETING_VERSION = 0.4.12;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"$(SRCROOT)/Engine/lib/$(PLATFORM_NAME)/libferrowl_ffi.a",
@@ -576,7 +576,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.11;
+				MARKETING_VERSION = 0.4.12;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"$(SRCROOT)/Engine/lib/$(PLATFORM_NAME)/libferrowl_ffi.a",
@@ -607,7 +607,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.11;
+				MARKETING_VERSION = 0.4.12;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ferrowl.app.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -633,7 +633,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.11;
+				MARKETING_VERSION = 0.4.12;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ferrowl.app.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
