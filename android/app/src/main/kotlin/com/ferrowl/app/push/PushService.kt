@@ -64,7 +64,14 @@ class PushService : FirebaseMessagingService() {
      * ones still unread.
      */
     private suspend fun takeBackRead(email: String) = runCatching {
-        val shown = notifier.shownUids(email) ?: return@runCatching
+        val shown = notifier.shownUids(email)
+        if (shown == null) {
+            // No notification on screen: only the counts and the widget.
+            val peek = repo.peekInbox(email, 0, 0) ?: return@runCatching
+            accountUnread.set(email, peek.unread.toInt())
+            accountUnread.dropRead(email, peek.unreadUids.map { it.toLong() }.toSet(), 0)
+            return@runCatching
+        }
         if (shown.isEmpty()) {
             // A plain "New mail": it goes once nothing is unread.
             val peek = repo.peekInbox(email, UInt.MAX_VALUE.toLong(), 0) ?: return@runCatching
@@ -75,6 +82,7 @@ class PushService : FirebaseMessagingService() {
         val peek = repo.peekInbox(email, shown.min() - 1, MailNotifier.MAX_LINES) ?: return@runCatching
         accountUnread.set(email, peek.unread.toInt())
         val unread = peek.unreadUids.map { it.toLong() }.toSet()
+        accountUnread.dropRead(email, unread, shown.min())
         val still = shown.filter { it in unread }
         val listed = peek.fresh.filter { it.uid.toLong() in still }
         when {
@@ -91,7 +99,7 @@ class PushService : FirebaseMessagingService() {
         // Only what the notification shows: loading the inbox may not fit
         // in the time Android gives.
         val peek = repo.peekInbox(address, last, MailNotifier.MAX_LINES) ?: return@runCatching false
-        accountUnread.set(address, peek.unread.toInt())
+        accountUnread.set(address, peek.unread.toInt(), fresh = peek.fresh)
         if (peek.fresh.isNotEmpty()) {
             notifier.show(peek.fresh, peek.freshCount.toInt(), address, peek.unreadUids.map { it.toLong() })
             // Connected automation apps (Tasker…) hear about it too.

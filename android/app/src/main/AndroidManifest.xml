@@ -108,6 +108,18 @@
                 <action android:name="com.ferrowl.app.action.MARK_UNREAD" />
             </intent-filter>
         </receiver>
+        <!-- The Home Screen widget with the unread mail. -->
+        <receiver
+            android:name=".widget.UnreadWidget"
+            android:exported="false"
+            android:label="@string/widget_title">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_unread" />
+        </receiver>
         <!-- "Send" / "Don't send" in the confirmation notification. -->
         <receiver
             android:name=".bridge.BridgeAnswerReceiver"

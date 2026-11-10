@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Home Screen widget: the total of unread mail and the newest unread
+     messages (see UnreadWidget). -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_background"
+    android:baselineAligned="false"
+    android:orientation="horizontal"
+    android:padding="14dp">
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="match_parent"
+        android:minWidth="64dp"
+        android:orientation="vertical">
+
+        <ImageView
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:contentDescription="@null"
+            android:src="@drawable/ic_shortcut_inbox" />
+
+        <TextView
+            android:id="@+id/widget_count"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@color/widget_text"
+            android:textSize="36sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/widget_unread"
+            android:textColor="@color/widget_secondary"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_marginStart="12dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/widget_none"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/widget_none"
+            android:textColor="@color/widget_secondary"
+            android:textSize="13sp" />
+
+        <LinearLayout
+            android:id="@+id/widget_row1"
+            style="@style/WidgetRow">
+
+            <TextView android:id="@+id/widget_from1" style="@style/WidgetFrom" />
+
+            <TextView android:id="@+id/widget_subject1" style="@style/WidgetSubject" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/widget_row2"
+            style="@style/WidgetRow">
+
+            <TextView android:id="@+id/widget_from2" style="@style/WidgetFrom" />
+
+            <TextView android:id="@+id/widget_subject2" style="@style/WidgetSubject" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/widget_row3"
+            style="@style/WidgetRow">
+
+            <TextView android:id="@+id/widget_from3" style="@style/WidgetFrom" />
+
+            <TextView android:id="@+id/widget_subject3" style="@style/WidgetSubject" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

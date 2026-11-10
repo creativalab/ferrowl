@@ -346,7 +346,12 @@ class MailboxViewModel @Inject constructor(
     private suspend fun loadUnread() {
         runCatching { repo.unread() }.onSuccess { counts ->
             _state.update { it.copy(unread = counts) }
-            activeUnread()?.let { accountUnread.set(_state.value.active, it) }
+            activeUnread()?.let { n ->
+                // The inbox's unread messages for the widget, when it is the open folder.
+                val s = _state.value
+                val inbox = if (s.folderId == repo.inboxId()) s.messages.filter { !s.tabs || it.category.toInt() == 0 } else null
+                accountUnread.set(s.active, n, recent = inbox)
+            }
         }
     }
 

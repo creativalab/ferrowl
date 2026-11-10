@@ -53,6 +53,7 @@ class MailRepository @Inject constructor(
     private val accounts: AccountStore,
     private val push: PushRegistrar,
     private val noticeBoard: Notices,
+    private val accountUnread: AccountUnread,
 ) {
     private val connectLock = Mutex()
     private val _folders = MutableStateFlow<List<Folder>>(emptyList())
@@ -134,6 +135,7 @@ class MailRepository @Inject constructor(
         }
         if (!sharesCache) withContext(Dispatchers.IO) { engine.forgetAccount(removed) }
         val next = accounts.remove(removed.email)
+        accountUnread.forget(removed.email)
         runCatching { push.accountChanged() }
         if (next == null) {
             _folders.value = emptyList()
