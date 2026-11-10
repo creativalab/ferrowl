@@ -392,6 +392,108 @@ impl std::fmt::Display for CalendarChoice {
     }
 }
 
+/// "Martedì 15 dicembre 2026": the date on the event form's date buttons.
+fn date_label(d: NaiveDate) -> String {
+    format!("{} {}", day_label(d), d.year())
+}
+
+/// A month of days to pick one from: the event form's date picker.
+fn date_picker<'a>(month: NaiveDate, chosen: Option<NaiveDate>, p: Palette) -> Element<'a, Message> {
+    const CELL: f32 = 36.0;
+    let (back, forward) = if crate::i18n::is_rtl() {
+        (icons::CHEVRON_RIGHT, icons::CHEVRON_LEFT)
+    } else {
+        (icons::CHEVRON_LEFT, icons::CHEVRON_RIGHT)
+    };
+    let nav = |ic: &'static str, delta: i32| -> Element<'a, Message> {
+        button(icon(ic, 16.0, p.text2))
+            .padding(6)
+            .style(ghost(p, p.text2))
+            .on_press(Message::EventPickerMonth(delta))
+            .into()
+    };
+    let header = dir_row(vec![
+        text(month_label(month))
+            .size(14)
+            .font(semibold())
+            .color(p.text)
+            .width(Fill)
+            .into(),
+        nav(back, -1),
+        nav(forward, 1),
+    ])
+    .width(7.0 * CELL + 6.0 * 2.0)
+    .align_y(Alignment::Center);
+    let first = month.with_day(1).unwrap_or(month);
+    let lead = (first.weekday().num_days_from_monday() + 7 - ical::week_start().num_days_from_monday()) % 7;
+    let grid_start = first - chrono::Duration::days(lead as i64);
+    let names = dir_row(
+        (0..7)
+            .map(|i| {
+                let d = grid_start + chrono::Duration::days(i);
+                container(text(ical::weekday_short(d)).size(11).color(p.muted))
+                    .center_x(CELL)
+                    .into()
+            })
+            .collect(),
+    )
+    .spacing(2);
+    let today = ical::today();
+    let mut weeks = Column::new().spacing(2).push(names);
+    for w in 0..6 {
+        let week_first = grid_start + chrono::Duration::days(w * 7);
+        if w > 0 && week_first.month() != first.month() {
+            break;
+        }
+        let days: Vec<Element<'a, Message>> = (0..7)
+            .map(|i| {
+                let d = week_first + chrono::Duration::days(i);
+                let picked = chosen == Some(d);
+                let is_today = d == today;
+                let color = if picked {
+                    p.on_accent
+                } else if d.month() != first.month() {
+                    p.muted
+                } else if is_today {
+                    p.accent_text
+                } else {
+                    p.text
+                };
+                let label = text(d.day().to_string())
+                    .size(13)
+                    .font(if picked || is_today { semibold() } else { medium() })
+                    .color(color);
+                button(container(label).center_x(Fill).center_y(Fill))
+                    .width(CELL)
+                    .height(32)
+                    .padding(0)
+                    .style(move |th, st| {
+                        if picked {
+                            accent_btn(p)(th, st)
+                        } else {
+                            let mut s = ghost(p, color)(th, st);
+                            if is_today {
+                                s.border = iced::Border {
+                                    color: p.accent,
+                                    width: 1.0,
+                                    radius: 8.0.into(),
+                                };
+                            }
+                            s
+                        }
+                    })
+                    .on_press(Message::EventPickDate(d))
+                    .into()
+            })
+            .collect();
+        weeks = weeks.push(dir_row(days).spacing(2));
+    }
+    container(column![header, weeks].spacing(8))
+        .padding(12)
+        .style(card(p, p.line, 12.0))
+        .into()
+}
+
 /// New event, or changes to the open one.
 fn form<'a>(app: &'a App, f: &'a EventForm, p: Palette) -> Element<'a, Message> {
     let label = |s: &'static str| text(s).size(13).font(medium()).color(p.text2);
@@ -405,11 +507,40 @@ fn form<'a>(app: &'a App, f: &'a EventForm, p: Palette) -> Element<'a, Message> 
             .style(super::input(p, 8.0))
     };
     let when = |date: &'a str, time: &'a str, df: EventField, tf_: EventField| -> Element<'a, Message> {
-        let mut r = vec![input(t("event_date_placeholder"), date, df, 150.0).into()];
+        let open = f.picker.is_some_and(|(field, _)| field == df);
+        let shown = NaiveDate::parse_from_str(date, "%Y-%m-%d")
+            .map(date_label)
+            .unwrap_or_else(|_| date.to_string());
+        let date_btn = button(
+            dir_row(vec![
+                icon(icons::CALENDAR, 15.0, p.text2),
+                text(shown).size(14).color(p.text).into(),
+            ])
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .padding([9, 12])
+        .width(230)
+        .style(move |th, st| {
+            let mut s = outline_btn(p, p.text)(th, st);
+            if open {
+                s.border.color = p.accent;
+            }
+            s
+        })
+        .on_press(Message::EventPicker(df));
+        let mut r = vec![date_btn.into()];
         if !f.all_day {
             r.push(input(t("event_time_placeholder"), time, tf_, 90.0).into());
         }
-        dir_row(r).spacing(8).into()
+        let row: Element<'a, Message> = dir_row(r).spacing(8).into();
+        match f.picker.filter(|(field, _)| *field == df) {
+            Some((_, month)) => {
+                let chosen = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok();
+                column![row, date_picker(month, chosen, p)].spacing(6).into()
+            }
+            None => row,
+        }
     };
 
     let mut col = Column::new()

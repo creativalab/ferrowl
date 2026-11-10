@@ -62,6 +62,8 @@ pub struct EventForm {
     pub repeat: ferrowl_core::events::Repeat,
     pub error: Option<String>,
     pub saving: bool,
+    /// The open date picker: which date it sets and the month it shows.
+    pub picker: Option<(EventField, chrono::NaiveDate)>,
 }
 
 impl EventForm {
@@ -80,6 +82,7 @@ impl EventForm {
             repeat: d.repeat,
             error: None,
             saving: false,
+            picker: None,
         }
     }
 
@@ -179,7 +182,7 @@ pub enum ContactField {
 }
 
 /// Which text field of the event form changed.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventField {
     Summary,
     Location,
@@ -995,6 +998,11 @@ pub enum Message {
     EventField(EventField, String),
     EventNotes(text_editor::Action),
     EventAllDay(bool),
+    /// Open or close the date picker of the start or end date.
+    EventPicker(EventField),
+    /// Show the picker's previous (-1) or next (1) month.
+    EventPickerMonth(i32),
+    EventPickDate(chrono::NaiveDate),
     EventRepeat(ferrowl_core::events::Repeat),
     EventCalendar(String),
     SaveEvent,
@@ -1199,6 +1207,11 @@ impl App {
                 // The event form, new or for the open event.
                 let _ = match std::env::var("FERROWL_DEV_EVENT").as_deref() {
                     Ok("new") => app.update(Message::NewEvent),
+                    // The new event with the start date's picker open.
+                    Ok("picker") => {
+                        let _ = app.update(Message::NewEvent);
+                        app.update(Message::EventPicker(EventField::StartDate))
+                    }
                     Ok("edit") => app.update(Message::EditEvent),
                     Ok("delete") => app.update(Message::DeleteEvent(false)),
                     _ => Task::none(),
@@ -4306,6 +4319,55 @@ impl App {
             Message::EventNotes(action) => {
                 if let Some(f) = self.event_form.as_mut() {
                     f.notes.perform(action);
+                }
+                Task::none()
+            }
+            Message::EventPicker(field) => {
+                if let Some(f) = self.event_form.as_mut() {
+                    f.picker = if f.picker.is_some_and(|(open, _)| open == field) {
+                        None
+                    } else {
+                        let typed = if field == EventField::EndDate {
+                            &f.end_date
+                        } else {
+                            &f.start_date
+                        };
+                        let day = chrono::NaiveDate::parse_from_str(typed, "%Y-%m-%d")
+                            .unwrap_or_else(|_| ferrowl_core::ical::today());
+                        Some((field, chrono::Datelike::with_day(&day, 1).unwrap_or(day)))
+                    };
+                }
+                Task::none()
+            }
+            Message::EventPickerMonth(delta) => {
+                if let Some((_, month)) = self.event_form.as_mut().and_then(|f| f.picker.as_mut()) {
+                    let moved = if delta < 0 {
+                        month.checked_sub_months(chrono::Months::new(1))
+                    } else {
+                        month.checked_add_months(chrono::Months::new(1))
+                    };
+                    if let Some(m) = moved {
+                        *month = m;
+                    }
+                }
+                Task::none()
+            }
+            Message::EventPickDate(day) => {
+                if let Some(f) = self.event_form.as_mut()
+                    && let Some((field, _)) = f.picker.take()
+                {
+                    let parse = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok();
+                    let iso = |d: chrono::NaiveDate| d.format("%Y-%m-%d").to_string();
+                    if field == EventField::EndDate {
+                        f.end_date = iso(day);
+                    } else {
+                        // Moving the start moves the end too, keeping the length.
+                        if let (Some(old), Some(end)) = (parse(&f.start_date), parse(&f.end_date)) {
+                            f.end_date = iso(end + (day - old));
+                        }
+                        f.start_date = iso(day);
+                    }
+                    f.error = None;
                 }
                 Task::none()
             }
