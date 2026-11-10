@@ -12,6 +12,8 @@ data class ComposeRequest(
     val cc: String = "",
     val subject: String = "",
     val body: String = "",
+    /** Files shared from another app (content URIs), to attach. */
+    val files: List<String> = emptyList(),
 )
 
 /**

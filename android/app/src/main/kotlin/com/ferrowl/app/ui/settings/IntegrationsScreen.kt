@@ -127,7 +127,9 @@ fun IntegrationsScreen(onBack: () -> Unit, vm: IntegrationsViewModel = hiltViewM
                 """
                 Send Intent
                   Action: com.ferrowl.app.action.UNREAD
-                          (SEARCH: query; SEND: to, subject, body)
+                          (SEARCH: query; SEND: to, subject, body;
+                           AGENDA: day, days; CONTACTS: query;
+                           ARCHIVE, MARK_READ, MARK_UNREAD: link)
                   Extra: token:<key>
                   Package: com.ferrowl.app
                   Target: Broadcast Receiver
@@ -213,7 +215,13 @@ private fun ConnectionCard(
                 enabled = pro,
                 note = if (pro) null else stringResource(R.string.integrations_needs_pro),
             ) { onChange(c.copy(send = it)) }
-            if (c.send && pro) {
+            Toggle(
+                stringResource(R.string.integrations_write),
+                c.write && pro,
+                enabled = pro,
+                note = if (pro) null else stringResource(R.string.integrations_needs_pro),
+            ) { onChange(c.copy(write = it)) }
+            if ((c.send || c.write) && pro) {
                 Toggle(stringResource(R.string.integrations_ask), c.askBeforeSend) { onChange(c.copy(askBeforeSend = it)) }
             }
             Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {

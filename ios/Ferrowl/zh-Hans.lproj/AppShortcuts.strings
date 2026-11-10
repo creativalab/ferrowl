@@ -3,3 +3,6 @@
 "Search mail in ${applicationName}" = "在 ${applicationName} 中搜索邮件";
 "Write a mail with ${applicationName}" = "用 ${applicationName} 写邮件";
 "Send a mail with ${applicationName}" = "用 ${applicationName} 发送邮件";
+"My agenda in ${applicationName}" = "${applicationName} 中我的日程";
+"Find a contact in ${applicationName}" = "在 ${applicationName} 中查找联系人";
+"New event in ${applicationName}" = "在 ${applicationName} 中新建日程";

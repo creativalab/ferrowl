@@ -18,6 +18,7 @@ import com.ferrowl.core.Account
 import com.ferrowl.core.Capability
 import com.ferrowl.core.Engine
 import com.ferrowl.core.FerrowlException
+import com.ferrowl.core.FerrowlLink
 import com.ferrowl.core.Header
 import com.ferrowl.core.InboxPeek
 import com.ferrowl.core.Outgoing
@@ -25,6 +26,7 @@ import com.ferrowl.core.capabilityNeedsConfirmation
 import com.ferrowl.core.capabilityNeedsPro
 import com.ferrowl.core.markdownToHtml
 import com.ferrowl.core.messageLink
+import com.ferrowl.core.parseLink
 import com.ferrowl.core.translate
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.first
@@ -45,6 +47,10 @@ import javax.inject.Singleton
  * in the `token` extra and an optional `request` id echoed in the answer:
  * - [ACTION_UNREAD] (`account`, `limit`): unread mail from the server;
  * - [ACTION_SEARCH] (`query`, `account`, `limit`): mail stored on the phone;
+ * - [ACTION_AGENDA] (`day` YYYY-MM-DD, `days`, `account`): synced events;
+ * - [ACTION_CONTACTS] (`query`, `account`, `limit`): the address book;
+ * - [ACTION_ARCHIVE], [ACTION_MARK_READ], [ACTION_MARK_UNREAD] (`link`: the
+ *   messages' `ferrowl://open` links from `json`): Ferrowl Pro, confirmed;
  * - [ACTION_SEND] (`to`, `subject`, `body`, `account`): Ferrowl Pro; the
  *   user confirms each message in a notification unless they turned that off.
  *
@@ -69,7 +75,10 @@ class Bridge @Inject constructor(
             when (action) {
                 ACTION_UNREAD -> requireRead(connection) { unread(intent) }
                 ACTION_SEARCH -> requireRead(connection) { search(intent) }
+                ACTION_AGENDA -> requireRead(connection) { agenda(intent) }
+                ACTION_CONTACTS -> requireRead(connection) { contacts(intent) }
                 ACTION_SEND -> send(connection, intent, request)
+                ACTION_ARCHIVE, ACTION_MARK_READ, ACTION_MARK_UNREAD -> change(connection, intent, request)
                 else -> Result(ok = false, error = "unknown action")
             }
         } catch (e: FerrowlException) {
@@ -91,6 +100,8 @@ class Bridge @Inject constructor(
         val count: Int = 0,
         val text: String = "",
         val messages: List<Pair<String, Header>> = emptyList(),
+        /** Agenda or contacts, already as JSON (instead of [messages]). */
+        val json: String? = null,
     )
 
     private suspend fun requireRead(connection: Connection, run: suspend () -> Result): Result =
@@ -142,6 +153,65 @@ class Bridge @Inject constructor(
         return Result(ok = true, count = found.size, text = text, messages = found)
     }
 
+    /** Events of `day` (YYYY-MM-DD, today if missing) and the `days` after it. */
+    private suspend fun agenda(intent: Intent): Result {
+        val zone = java.time.ZoneId.systemDefault()
+        val first = intent.getStringExtra(EXTRA_DAY)?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() }
+            ?: java.time.LocalDate.now(zone)
+        val days = (intent.getStringExtra(EXTRA_DAYS)?.toIntOrNull() ?: intent.getIntExtra(EXTRA_DAYS, 1)).coerceIn(1, 31)
+        val from = first.atStartOfDay(zone).toEpochSecond()
+        val to = first.plusDays(days.toLong()).atStartOfDay(zone).toEpochSecond()
+        val events = accounts(intent.getStringExtra(EXTRA_ACCOUNT))
+            .flatMap { repo.agendaFor(it, from, to) }
+            .sortedBy { it.start }
+        val time = java.time.format.DateTimeFormatter.ofPattern("HH:mm")
+        val lines = events.take(5).map { e ->
+            if (e.allDay) e.summary else "${java.time.Instant.ofEpochSecond(e.start).atZone(zone).format(time)} ${e.summary}"
+        }
+        val text = if (events.isEmpty()) {
+            translate("intent_no_events")
+        } else {
+            (listOf(translate("intent_events_count").replace("{n}", events.size.toString())) + lines).joinToString("\n")
+        }
+        val json = JsonArray(
+            events.map { e ->
+                buildJsonObject {
+                    put("title", e.summary)
+                    put("start", e.start)
+                    put("end", e.end)
+                    put("allDay", e.allDay)
+                    put("location", e.location)
+                    put("calendar", e.calendar)
+                    put("organizer", e.organizer)
+                }
+            },
+        ).toString()
+        return Result(ok = true, count = events.size, text = text, json = json)
+    }
+
+    private suspend fun contacts(intent: Intent): Result {
+        val query = intent.getStringExtra(EXTRA_QUERY).orEmpty()
+        if (query.isBlank()) throw BridgeError(translate("intent_ask_contact"))
+        val found = accounts(intent.getStringExtra(EXTRA_ACCOUNT))
+            .flatMap { repo.contactsFor(it, query) }
+            .distinctBy { (it.emails.firstOrNull() ?: it.name).lowercase() }
+            .take(limit(intent))
+        val text = found.firstOrNull()?.let { c ->
+            listOfNotNull(c.name.ifBlank { null }, c.emails.firstOrNull(), c.phones.firstOrNull()).joinToString("\n")
+        } ?: translate("intent_no_contacts")
+        val json = JsonArray(
+            found.map { c ->
+                buildJsonObject {
+                    put("name", c.name)
+                    put("emails", JsonArray(c.emails.map(::JsonPrimitive)))
+                    put("phones", JsonArray(c.phones.map(::JsonPrimitive)))
+                    put("organization", c.organization)
+                }
+            },
+        ).toString()
+        return Result(ok = true, count = found.size, text = text, json = json)
+    }
+
     private suspend fun send(connection: Connection, intent: Intent, request: String): Result {
         if (!connection.send) return Result(ok = false, error = translate("integrations_denied"))
         if (capabilityNeedsPro(Capability.SEND) && !billing.pro.value) {
@@ -171,6 +241,56 @@ class Bridge @Inject constructor(
         return Result(ok = true, status = "sent", text = translate("intent_sent"))
     }
 
+    /**
+     * Archives or marks the messages named by their `ferrowl://open` links
+     * (`link`, several separated by new lines or commas). Ferrowl Pro;
+     * confirmed like sending.
+     */
+    private suspend fun change(connection: Connection, intent: Intent, request: String): Result {
+        if (!connection.write) return Result(ok = false, error = translate("integrations_denied"))
+        if (capabilityNeedsPro(Capability.WRITE) && !billing.pro.value) {
+            return Result(ok = false, error = translate("integrations_needs_pro"))
+        }
+        val links = intent.getStringExtra(EXTRA_LINK).orEmpty()
+            .split('\n', ',').map { it.trim() }.filter { parseLink(it) is FerrowlLink.Open }
+        if (links.isEmpty()) throw BridgeError("link?")
+        val pending = PendingSend(
+            id = UUID.randomUUID().toString(),
+            token = connection.token,
+            request = request,
+            account = "",
+            kind = intent.action!!.substringAfterLast('.'),
+            links = links,
+        )
+        if (capabilityNeedsConfirmation(Capability.WRITE) && connection.askBeforeSend) {
+            if (!canNotify()) return Result(ok = false, error = translate("integrations_no_notifications"))
+            connections.addPending(pending)
+            askToSend(connection, pending)
+            return Result(ok = true, status = "waiting", text = translate("integrations_waiting"))
+        }
+        apply(pending)
+        return Result(ok = true, status = "done", text = translate("intent_done"))
+    }
+
+    /** Carries out a confirmed change, account by account, folder by folder. */
+    private suspend fun apply(pending: PendingSend) {
+        val opens = pending.links.mapNotNull { parseLink(it) as? FerrowlLink.Open }
+        for ((email, mine) in opens.groupBy { it.account.lowercase() }) {
+            val account = accounts(email).first()
+            val engine = Engine(context.filesDir.resolve("mail").path, Locale.getDefault().language)
+            engine.connect(account)
+            for ((folder, inFolder) in mine.groupBy { it.folder }) {
+                val uids = inFolder.map { it.uid }
+                when (pending.kind) {
+                    "ARCHIVE" -> engine.archiveMany(folder, uids)
+                    "MARK_READ" -> engine.setSeenMany(folder, uids, true)
+                    "MARK_UNREAD" -> engine.setSeenMany(folder, uids, false)
+                }
+            }
+            repo.arrived(account.email)
+        }
+    }
+
     /** The user answered the notification of a waiting message. */
     suspend fun answer(id: String, allow: Boolean) {
         NotificationManagerCompat.from(context).cancel(id.hashCode())
@@ -180,16 +300,21 @@ class Bridge @Inject constructor(
             Result(ok = false, status = "refused", error = translate("integrations_refused"))
         } else {
             try {
-                deliver(pending)
-                Result(ok = true, status = "sent", text = translate("intent_sent"))
+                if (pending.kind == "SEND") {
+                    deliver(pending)
+                    Result(ok = true, status = "sent", text = translate("intent_sent"))
+                } else {
+                    apply(pending)
+                    Result(ok = true, status = "done", text = translate("intent_done"))
+                }
             } catch (e: FerrowlException) {
                 Result(ok = false, error = e.message.orEmpty())
             } catch (e: BridgeError) {
                 Result(ok = false, error = e.message.orEmpty())
             }
         }
-        connections.used(connection, "SEND", if (result.ok) "sent" else result.error)
-        reply(connection, ACTION_SEND, pending.request, result)
+        connections.used(connection, pending.kind, if (result.ok) (result.status ?: "ok") else result.error)
+        reply(connection, "com.ferrowl.app.action.${pending.kind}", pending.request, result)
     }
 
     /** Sends on an engine of its own: the app's may be busy, or on another account. */
@@ -239,7 +364,7 @@ class Bridge @Inject constructor(
                 .putExtra("error", r.error)
                 .putExtra("count", r.count)
                 .putExtra("text", r.text)
-                .putExtra("json", json(r.messages)),
+                .putExtra("json", r.json ?: json(r.messages)),
         )
     }
 
@@ -284,20 +409,25 @@ class Bridge @Inject constructor(
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val subject = pending.subject.ifBlank { translate("no_subject") }
+        val sending = pending.kind == "SEND"
+        val title = translate(if (sending) "integrations_send_title" else "integrations_change_title")
+            .replace("{app}", connection.label)
+        val n = pending.links.size.toString()
+        val text = when (pending.kind) {
+            "ARCHIVE" -> translate("intent_archive_confirm").replace("{n}", n)
+            "MARK_READ" -> translate("intent_mark_read_confirm").replace("{n}", n)
+            "MARK_UNREAD" -> translate("intent_mark_unread_confirm").replace("{n}", n)
+            else -> translate("integrations_send_text").replace("{to}", pending.to).replace("{subject}", subject)
+        }
         val notification = NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(translate("integrations_send_title").replace("{app}", connection.label))
-            .setContentText(translate("integrations_send_text").replace("{to}", pending.to).replace("{subject}", subject))
-            .setStyle(
-                NotificationCompat.BigTextStyle().bigText(
-                    translate("integrations_send_text").replace("{to}", pending.to).replace("{subject}", subject) +
-                        "\n\n" + pending.body.take(400),
-                ),
-            )
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(if (sending) text + "\n\n" + pending.body.take(400) else text))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(false)
             .setOngoing(true)
-            .addAction(0, translate("integrations_allow"), answer(true, 1))
+            .addAction(0, translate(if (sending) "integrations_allow" else "integrations_allow_change"), answer(true, 1))
             .addAction(0, translate("integrations_deny"), answer(false, 0))
             .build()
         try {
@@ -311,6 +441,11 @@ class Bridge @Inject constructor(
         const val ACTION_UNREAD = "com.ferrowl.app.action.UNREAD"
         const val ACTION_SEARCH = "com.ferrowl.app.action.SEARCH"
         const val ACTION_SEND = "com.ferrowl.app.action.SEND"
+        const val ACTION_AGENDA = "com.ferrowl.app.action.AGENDA"
+        const val ACTION_CONTACTS = "com.ferrowl.app.action.CONTACTS"
+        const val ACTION_ARCHIVE = "com.ferrowl.app.action.ARCHIVE"
+        const val ACTION_MARK_READ = "com.ferrowl.app.action.MARK_READ"
+        const val ACTION_MARK_UNREAD = "com.ferrowl.app.action.MARK_UNREAD"
         const val EVENT_RESULT = "com.ferrowl.app.event.RESULT"
         const val EVENT_NEW_MAIL = "com.ferrowl.app.event.NEW_MAIL"
 
@@ -322,6 +457,9 @@ class Bridge @Inject constructor(
         const val EXTRA_TO = "to"
         const val EXTRA_SUBJECT = "subject"
         const val EXTRA_BODY = "body"
+        const val EXTRA_DAY = "day"
+        const val EXTRA_DAYS = "days"
+        const val EXTRA_LINK = "link"
 
         private const val CHANNEL = "bridge"
         private const val DEFAULT_LIMIT = 10

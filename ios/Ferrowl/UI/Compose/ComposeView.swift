@@ -53,6 +53,12 @@ final class ComposeModel {
         if request.kind == .forward, let m = request.message {
             for a in m.attachments { add(name: a.name, data: a.data) }
         }
+        // Files shared from another app ("Open in Ferrowl"): attached, and
+        // the copy iOS made for us in Documents/Inbox is removed.
+        for url in request.files {
+            _ = add(file: url)
+            if url.path.contains("/Documents/Inbox/") { try? FileManager.default.removeItem(at: url) }
+        }
         suggestFor = nil
         suggestions = []
     }

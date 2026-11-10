@@ -156,6 +156,15 @@ class ComposeViewModel @Inject constructor(
      * storage (the engine reads files by path; picked documents are only
      * readable through their content address).
      */
+    private var sharedAdded = false
+
+    /** Files shared from another app: attached once (not again after a rotation). */
+    fun addShared(uris: List<Uri>) {
+        if (sharedAdded) return
+        sharedAdded = true
+        addFiles(uris)
+    }
+
     fun addFiles(uris: List<Uri>) {
         if (uris.isEmpty()) return
         viewModelScope.launch {

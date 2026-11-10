@@ -1276,16 +1276,7 @@ impl Engine {
     /// `query` (all when empty), by name. Reads the local copy only.
     pub fn contacts(&self, query: String) -> Vec<Contact> {
         match lock(&self.account).as_ref() {
-            Some(a) => Backend::contacts(a, &query)
-                .into_iter()
-                .map(|c| Contact {
-                    name: c.name,
-                    emails: c.emails,
-                    phones: c.phones,
-                    organization: c.organization,
-                    note: c.note,
-                })
-                .collect(),
+            Some(a) => contacts_of(a, &query),
             None => Vec::new(),
         }
     }
@@ -1306,31 +1297,87 @@ impl Engine {
         let Some(a) = lock(&self.account).clone() else {
             return Vec::new();
         };
-        Backend::agenda(&a, from, to)
+        agenda_of(&a, from, to)
+    }
+
+    /// The agenda of any account on the device (not only the connected
+    /// one), from what was synced: for Shortcuts/Siri and other apps.
+    pub fn agenda_for(&self, account: Account, from: i64, to: i64) -> Vec<CalendarEvent> {
+        agenda_of(&account.into(), from, to)
+    }
+
+    /// The address book of any account on the device (see `agenda_for`).
+    pub fn contacts_for(&self, account: Account, query: String) -> Vec<Contact> {
+        contacts_of(&account.into(), &query)
+    }
+
+    /// The calendars of any account on the device (see `agenda_for`).
+    pub fn calendars_for(&self, account: Account) -> Vec<CalendarInfo> {
+        Backend::calendars(&account.into())
             .into_iter()
-            .map(|e| {
-                let o = e.occurrence;
-                CalendarEvent {
-                    uid: o.uid,
-                    summary: o.summary,
-                    location: o.location,
-                    description: o.description,
-                    start: o.start,
-                    end: o.end,
-                    all_day: o.all_day,
-                    first_day: o.first_day.map(|d| d.to_string()),
-                    last_day: o.last_day.map(|d| d.to_string()),
-                    recurring: o.recurring,
-                    organizer: o.organizer,
-                    calendar: e.calendar,
-                    color: e.color,
-                    url: e.url,
-                    calendar_url: e.calendar_url,
-                }
+            .map(|c| CalendarInfo {
+                url: c.url,
+                name: c.name,
+                color: c.color,
             })
             .collect()
     }
 
+    /// Adds an event to a calendar of any account (see `agenda_for`).
+    pub async fn save_event_for(
+        &self,
+        account: Account,
+        calendar_url: String,
+        draft: EventDraft,
+    ) -> Result<String> {
+        let draft = draft
+            .into_core()
+            .ok_or_else(|| FerrowlError::from(i18n::t("event_bad_time").to_string()))?;
+        Ok(Backend::save_event(account.into(), calendar_url, None, draft).await?)
+    }
+}
+
+fn agenda_of(a: &config::Account, from: i64, to: i64) -> Vec<CalendarEvent> {
+    Backend::agenda(a, from, to)
+        .into_iter()
+        .map(|e| {
+            let o = e.occurrence;
+            CalendarEvent {
+                uid: o.uid,
+                summary: o.summary,
+                location: o.location,
+                description: o.description,
+                start: o.start,
+                end: o.end,
+                all_day: o.all_day,
+                first_day: o.first_day.map(|d| d.to_string()),
+                last_day: o.last_day.map(|d| d.to_string()),
+                recurring: o.recurring,
+                organizer: o.organizer,
+                calendar: e.calendar,
+                color: e.color,
+                url: e.url,
+                calendar_url: e.calendar_url,
+            }
+        })
+        .collect()
+}
+
+fn contacts_of(a: &config::Account, query: &str) -> Vec<Contact> {
+    Backend::contacts(a, query)
+        .into_iter()
+        .map(|c| Contact {
+            name: c.name,
+            emails: c.emails,
+            phones: c.phones,
+            organization: c.organization,
+            note: c.note,
+        })
+        .collect()
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+impl Engine {
     /// The account's calendars.
     pub fn calendars(&self) -> Vec<CalendarInfo> {
         let Some(a) = lock(&self.account).clone() else {

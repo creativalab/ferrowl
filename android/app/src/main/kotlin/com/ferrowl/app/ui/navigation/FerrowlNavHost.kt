@@ -60,6 +60,8 @@ import kotlinx.serialization.Serializable
     val cc: String = "",
     val subject: String = "",
     val body: String = "",
+    /** Files shared from another app (content URIs, one per line). */
+    val files: String = "",
 )
 
 @Composable
@@ -85,7 +87,7 @@ fun FerrowlNavHost(composeRequests: ComposeRequests) {
             LaunchedEffect(compose) {
                 compose?.let { r ->
                     composeRequests.done()
-                    nav.navigate(Write(to = r.to, cc = r.cc, subject = r.subject, body = r.body))
+                    nav.navigate(Write(to = r.to, cc = r.cc, subject = r.subject, body = r.body, files = r.files.joinToString("\n")))
                 }
             }
             MailboxScreen(
@@ -162,6 +164,7 @@ fun FerrowlNavHost(composeRequests: ComposeRequests) {
                 cc = route.cc,
                 subject = route.subject,
                 body = route.body,
+                files = route.files.lines().filter { it.isNotBlank() },
                 onClose = { nav.popBackStack() },
             )
         }

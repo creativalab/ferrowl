@@ -1,5 +1,6 @@
 package com.ferrowl.app.ui.compose
 
+import android.net.Uri
 import android.text.format.Formatter
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -98,9 +99,14 @@ fun ComposeScreen(
     cc: String = "",
     subject: String = "",
     body: String = "",
+    files: List<String> = emptyList(),
     vm: ComposeViewModel = hiltViewModel(),
 ) {
-    LaunchedEffect(Unit) { vm.start(kind, folderId, uid, to, cc, subject, body) }
+    LaunchedEffect(Unit) {
+        vm.start(kind, folderId, uid, to, cc, subject, body)
+        // Files shared from another app, attached once.
+        if (files.isNotEmpty()) vm.addShared(files.map(Uri::parse))
+    }
     val s by vm.state.collectAsStateWithLifecycle()
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> vm.addFiles(uris) }
     // Photos and videos from the gallery (system picker: no permission needed).
