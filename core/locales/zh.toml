@@ -661,3 +661,8 @@ insight_due_title = "到期：{what}"
 # iPhone search (Spotlight)
 spotlight_title = "在 iPhone 搜索中显示邮件"
 spotlight_desc = "收件箱中最新的邮件会出现在 iPhone 搜索中；索引只保存在手机上。"
+
+# Tasker event plugin
+plugin_new_mail = "Ferrowl 新邮件"
+plugin_new_mail_desc = "收到新邮件时触发。字段留空表示不限；否则账户、发件人（姓名或地址）或主题须包含该内容。"
+plugin_connect = "保存后 {app} 将连接到 Ferrowl：它可以读取你的邮件（发送和修改需在 设置 › 集成 中授权）。"

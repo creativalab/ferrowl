@@ -801,6 +801,15 @@ impl Cache {
         Ok(true)
     }
 
+    /// Whether the calendar on this device holds events.
+    pub fn has_local_events(&self, account: &str) -> Result<bool> {
+        Ok(self.lock().query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE account = ?1 AND calendar = ?2)",
+            params![account, LOCAL_CALENDAR],
+            |r| r.get(0),
+        )?)
+    }
+
     pub fn delete_event(&self, account: &str, url: &str) -> Result<()> {
         self.lock().execute(
             "DELETE FROM events WHERE account = ?1 AND url = ?2",

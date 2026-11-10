@@ -144,6 +144,26 @@
                 <action android:name="com.twofortyfouram.locale.intent.action.FIRE_SETTING" />
             </intent-filter>
         </receiver>
+        <!-- "New mail" as a Tasker plugin event: its settings, and the
+             receiver Tasker asks whether a profile fires. -->
+        <activity
+            android:name=".bridge.TaskerEventActivity"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:label="@string/plugin_new_mail"
+            tools:ignore="ExportedActivity">
+            <intent-filter>
+                <action android:name="com.twofortyfouram.locale.intent.action.EDIT_CONDITION" />
+            </intent-filter>
+        </activity>
+        <receiver
+            android:name=".bridge.TaskerEventReceiver"
+            android:exported="true"
+            tools:ignore="ExportedReceiver">
+            <intent-filter>
+                <action android:name="com.twofortyfouram.locale.intent.action.QUERY_CONDITION" />
+            </intent-filter>
+        </receiver>
         <!-- "Send" / "Don't send" in the confirmation notification. -->
         <receiver
             android:name=".bridge.BridgeAnswerReceiver"

@@ -661,3 +661,8 @@ insight_due_title = "الاستحقاق: {what}"
 # iPhone search (Spotlight)
 spotlight_title = "البريد في بحث iPhone"
 spotlight_desc = "تظهر أحدث رسائل البريد الوارد في بحث iPhone، ويبقى الفهرس على الهاتف."
+
+# Tasker event plugin
+plugin_new_mail = "بريد جديد في Ferrowl"
+plugin_new_mail_desc = "يعمل عند وصول بريد جديد. اترك الحقل فارغًا لقبول أي قيمة؛ وإلا يجب أن يحتويه الحساب أو المرسل (الاسم أو العنوان) أو الموضوع."
+plugin_connect = "عند الحفظ يتصل {app} بـ Ferrowl ويمكنه قراءة بريدك (يتطلب الإرسال والتعديل إذنًا من الإعدادات › التكاملات)."

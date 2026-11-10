@@ -56,6 +56,12 @@ pub fn rows(given: &[Entry], expanded: &HashSet<String>) -> Vec<Row> {
         }
     }
     let entries = entries.as_slice();
+    // Servers like Aruba keep every folder of the user under "INBOX."
+    // (a prefix, not a choice): then those are top-level folders, not
+    // hidden under a closed Inbox.
+    let is_inbox = |p: &str| p.eq_ignore_ascii_case("INBOX");
+    let users: Vec<&Entry> = given.iter().filter(|e| e.rank.is_none()).collect();
+    let inbox_prefix = !users.is_empty() && users.iter().all(|e| e.path.len() >= 2 && is_inbox(&e.path[0]));
     let by_path: HashMap<&[String], usize> = entries
         .iter()
         .enumerate()
@@ -65,7 +71,8 @@ pub fn rows(given: &[Entry], expanded: &HashSet<String>) -> Vec<Row> {
     // (always at the top).
     let parent = |i: usize| -> Option<usize> {
         let e = &entries[i];
-        if e.rank.is_some() || e.path.len() < 2 {
+        if e.rank.is_some() || e.path.len() < 2 || (inbox_prefix && e.path.len() == 2 && is_inbox(&e.path[0]))
+        {
             return None;
         }
         by_path.get(&e.path[..e.path.len() - 1]).copied()
@@ -215,6 +222,32 @@ mod tests {
                 ("INBOX/Sent/2002/12-dic".into(), 2, true),
             ]
         );
+    }
+
+    #[test]
+    fn an_inbox_prefix_is_not_a_parent() {
+        // Aruba: every folder of the user is INBOX.something.
+        let entries = vec![
+            e("INBOX", Some(0)),
+            e("INBOX/Sent", Some(2)),
+            e("INBOX/Banche", None),
+            e("INBOX/Lavoro", None),
+            e("INBOX/Lavoro/2024", None),
+        ];
+        assert_eq!(
+            shown(&entries, &[]),
+            [
+                ("INBOX".into(), 0),
+                ("INBOX/Sent".into(), 0),
+                ("INBOX/Banche".into(), 0),
+                ("INBOX/Lavoro".into(), 0)
+            ]
+        );
+        let inbox = rows(&entries, &HashSet::new())[0].clone();
+        assert!(!inbox.has_children);
+        // A real subfolder of the inbox (other folders elsewhere) stays under it.
+        let mixed = vec![e("INBOX", Some(0)), e("INBOX/Clienti", None), e("Progetti", None)];
+        assert_eq!(shown(&mixed, &[]), [("INBOX".into(), 0), ("Progetti".into(), 0)]);
     }
 
     #[test]

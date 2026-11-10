@@ -498,6 +498,15 @@ fn trusted_domains(account: &Account, kind: Kind) -> Vec<String> {
         };
         hosts.push(host_of(&url));
     }
+    // Separate credentials for these servers (a calendar kept elsewhere):
+    // they go only to the typed server's domain (its sibling hosts too,
+    // e.g. iCloud's pNN-caldav), never to the mail provider's.
+    if !account.dav_username.trim().is_empty() {
+        let mut hosts: Vec<String> = hosts.iter().filter_map(|h| base_domain(h)).collect();
+        hosts.retain(|h| !h.is_empty());
+        hosts.dedup();
+        return hosts;
+    }
     let mut bases = vec![account.imap_host.clone(), account.smtp_host.clone()];
     bases.extend(
         start_urls(account, kind)
@@ -1179,5 +1188,23 @@ mod tests {
             .sync(&account, &[(url.clone(), second.items[0].1.etag.clone())])
             .unwrap();
         assert_eq!(third.gone, [url]);
+    }
+
+    #[test]
+    fn separate_credentials_stay_with_the_typed_server() {
+        let account = Account {
+            email: "me@aruba.it".into(),
+            imap_host: "imaps.aruba.it".into(),
+            smtp_host: "smtps.aruba.it".into(),
+            caldav_url: "https://caldav.icloud.com".into(),
+            dav_username: "me@icloud.com".into(),
+            dav_password: "app-password".into(),
+            ..Default::default()
+        };
+        let trusted = trusted_domains(&account, Kind::Calendar);
+        assert_eq!(trusted, ["icloud.com"]);
+        let client = Client::new(&account, Kind::Calendar);
+        assert!(client.may_authenticate("https://p42-caldav.icloud.com/123/calendars/"));
+        assert!(!client.may_authenticate("https://caldav.aruba.it/"));
     }
 }

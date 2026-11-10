@@ -72,7 +72,24 @@ promemoria.
    - **Modificare la posta** (Pro): archiviare, segnare letta o da leggere.
 3. "Chiedimi conferma" è attivo di default: per ogni invio o modifica arriva una notifica con **Invia / Consenti** e **Non inviare**.
 
-In Tasker usa l'azione **Send Intent**:
+**Il modo più semplice: il plugin.**
+- Azione → **Plugin → Ferrowl**: scegli cosa fare (non lette, cerca,
+  dettagli, agenda, contatti, invia, archivia, segna letta o da leggere) e
+  compila i campi, anche con variabili `%`. I risultati arrivano in
+  `%fw_ok`, `%fw_status`, `%fw_error`, `%fw_count`, `%fw_text` e `%fw_json`.
+- Profilo → Evento → **Plugin → Nuova mail in Ferrowl**: puoi filtrare per
+  account, mittente e oggetto (vuoto = qualsiasi). Il profilo riceve
+  `%fw_account`, `%fw_from`, `%fw_address`, `%fw_subject`, `%fw_count`,
+  `%fw_link`, `%fw_text` e `%fw_json`.
+- La prima volta che salvi un'azione o un evento del plugin, l'app che lo
+  usa (Tasker…) viene collegata a Ferrowl con il permesso di lettura: lo
+  vedi scritto prima di salvare.
+- La chiave di collegamento è salvata nel task di Tasker: se esporti o
+  condividi il task (anche su TaskerNet) togli prima l'azione Ferrowl, o
+  dopo scollega e ricollega l'app in Impostazioni → Integrazioni per
+  cambiare la chiave.
+
+**In alternativa, gli intent.** In Tasker usa l'azione **Send Intent**:
 - Package: `com.ferrowl.app`
 - Target: Broadcast Receiver
 - Extra: `token:<chiave>`, più gli extra dell'azione
