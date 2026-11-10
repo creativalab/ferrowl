@@ -699,6 +699,8 @@ pub struct App {
     pub agenda_selected: Option<usize>,
     pub calendar_sync: SyncState,
     pub invite: Option<InviteCard>,
+    /// What the open message is about (shipment, code, bill), by its UID.
+    pub insights: Option<(u32, Vec<ferrowl_core::insights::Insight>)>,
     pub event_form: Option<EventForm>,
     /// Keyboard modifiers held now (for Shift/Ctrl+click in the list).
     pub modifiers: keyboard::Modifiers,
@@ -852,6 +854,8 @@ pub enum Message {
     Raise,
     MouseDown,
     MouseUp,
+    /// The window lost the keyboard focus.
+    Unfocused,
     RowEnter(u32),
     RowExit(u32),
     FolderEnter(String),
@@ -947,6 +951,11 @@ pub enum Message {
     InviteResponded(Res<String>),
     /// Remove the cancelled event from the calendar.
     InviteRemove,
+    /// Copy a tracking number or code from an insight card.
+    CopyInsight(String),
+    /// Put a bill's due date (day, number, amount) in the calendar.
+    AddDue(chrono::NaiveDate, String, String),
+    DueAdded(Res<String>),
     InviteRemoved(Res<String>),
     NewEvent,
     /// Edit the open event.
@@ -1092,6 +1101,7 @@ impl App {
             agenda_selected: None,
             calendar_sync: SyncState::Idle,
             invite: None,
+            insights: None,
             event_form: None,
             modifiers: keyboard::Modifiers::default(),
             anchor: None,
@@ -1234,6 +1244,7 @@ impl App {
                 iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
                     Some(Message::MouseUp)
                 }
+                iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::Unfocused),
                 _ => None,
             }),
         ];
@@ -2964,6 +2975,10 @@ impl App {
                 self.body_probe = text_editor::Content::with_text(&msg.body);
                 self.body_link_hover = false;
                 self.invite = self.invite_card(&msg);
+                self.insights = Some((
+                    msg.uid,
+                    ferrowl_core::insights::find(&msg.subject, &msg.from_address, &msg.body),
+                ));
                 self.message = Some(msg);
                 self.html_render = None;
                 self.hover_link = None;
@@ -3220,6 +3235,15 @@ impl App {
                 (Some(d), Some(target)) if d.active => self.move_message(d.uid, target),
                 _ => Task::none(),
             },
+            // Keys and buttons released in another window never reach us: a
+            // Ctrl or Shift left "held" would turn every click on the list
+            // into a selection, so forget them when the focus goes away.
+            Message::Unfocused => {
+                self.modifiers = keyboard::Modifiers::default();
+                self.drag = None;
+                self.html_press = None;
+                Task::none()
+            }
             Message::RowEnter(uid) => {
                 self.hover_row = Some(uid);
                 Task::none()
@@ -3937,6 +3961,49 @@ impl App {
                 if let Some(msg) = self.message.clone() {
                     self.invite = self.invite_card(&msg);
                 }
+                self.reload_agenda();
+                toast
+            }
+            Message::CopyInsight(value) => {
+                let toast = self.toast(t("insight_copied"), false);
+                Task::batch([iced::clipboard::write(value), toast])
+            }
+            Message::AddDue(day, number, amount) => {
+                let Some(acc) = self.config.account().cloned() else {
+                    return Task::none();
+                };
+                let Some(calendar) = Backend::calendars(&acc).into_iter().next() else {
+                    return self.toast(t("err_no_calendar"), true);
+                };
+                let what = [number, amount]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                let what = if what.is_empty() {
+                    t("insight_bill").to_string()
+                } else {
+                    what
+                };
+                let draft = ferrowl_core::events::Draft {
+                    summary: tf("insight_due_title", &[("what", &what)]),
+                    all_day: true,
+                    start: day.and_hms_opt(9, 0, 0).unwrap_or_default(),
+                    end: day.and_hms_opt(10, 0, 0).unwrap_or_default(),
+                    location: String::new(),
+                    description: String::new(),
+                    repeat: ferrowl_core::events::Repeat::Never,
+                };
+                self.perform(
+                    Backend::save_event(acc, calendar.url, None, draft),
+                    Message::DueAdded,
+                )
+            }
+            Message::DueAdded(result) => {
+                let toast = match result {
+                    Ok(_) => self.toast(t("insight_due_added"), false),
+                    Err(e) => self.toast(e, true),
+                };
                 self.reload_agenda();
                 toast
             }
