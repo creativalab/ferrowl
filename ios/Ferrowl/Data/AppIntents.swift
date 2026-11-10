@@ -632,6 +632,90 @@ struct ArchiveMailIntent: AppIntent {
     }
 }
 
+// MARK: mail details
+
+/// A message's content and what it is about, for the following actions of
+/// a shortcut (the text, the tracking number, the code, the due date…).
+struct MailDetails: TransientAppEntity {
+    static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "intent_details")
+
+    @Property(title: "intent_from") var sender: String
+    @Property(title: "intent_subject") var subject: String
+    @Property(title: "intent_date") var date: Date
+    @Property(title: "intent_text") var text: String
+    @Property(title: "intent_attachments") var attachments: [String]
+    @Property(title: "intent_tracking") var tracking: String
+    @Property(title: "intent_carrier") var carrier: String
+    @Property(title: "intent_tracking_link") var trackingLink: URL?
+    @Property(title: "insight_code") var code: String
+    @Property(title: "intent_amount") var amount: String
+    @Property(title: "intent_due") var due: Date?
+
+    init() {
+        sender = ""
+        subject = ""
+        date = Date()
+        text = ""
+        attachments = []
+        tracking = ""
+        carrier = ""
+        trackingLink = nil
+        code = ""
+        amount = ""
+        due = nil
+    }
+
+    var displayRepresentation: DisplayRepresentation {
+        DisplayRepresentation(title: "\(subject.isEmpty ? t("no_subject") : subject)", subtitle: "\(sender)")
+    }
+}
+
+struct MailDetailsIntent: AppIntent {
+    static var title: LocalizedStringResource = "intent_details_title"
+    static var description = IntentDescription("intent_details_desc")
+
+    @Parameter(title: "intent_message")
+    var message: MailEntity
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ReturnsValue<MailDetails> {
+        let app = try Bridge.app()
+        guard let account = try Bridge.accounts(nil).first(where: {
+            $0.email.caseInsensitiveCompare(message.account) == .orderedSame
+        }) else { throw BridgeError(message: t("intent_no_account")) }
+        // Read without marking it read: a shortcut looking is not the user reading.
+        let full: Message
+        do {
+            full = try await app.engine.peekMessage(account: account, folderId: message.folder, uid: message.uid)
+        } catch {
+            throw BridgeError(message: describe(error))
+        }
+        var details = MailDetails()
+        details.sender = full.from.isEmpty ? full.fromAddress : full.from
+        details.subject = full.subject
+        details.date = Date(timeIntervalSince1970: TimeInterval(full.timestamp))
+        details.text = full.text
+        details.attachments = full.attachments.map(\.name)
+        for insight in mailInsights(message: full) {
+            switch insight {
+            case .shipment(let carrier, let number, let url):
+                details.tracking = number
+                details.carrier = carrier
+                details.trackingLink = URL(string: url)
+            case .code(let code):
+                details.code = code
+            case .payment(_, let amount, let due):
+                details.amount = amount
+                let format = DateFormatter()
+                format.locale = Locale(identifier: "en_US_POSIX")
+                format.dateFormat = "yyyy-MM-dd"
+                details.due = format.date(from: due)
+            }
+        }
+        return .result(value: details)
+    }
+}
+
 // MARK: Siri
 
 struct FerrowlShortcuts: AppShortcutsProvider {

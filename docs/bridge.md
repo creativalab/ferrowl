@@ -35,6 +35,7 @@ oggetti (mail, contatti, eventi) da passare alle azioni successive.
 | Segna mail | Segna come lette o da leggere le mail ricevute da un'altra azione | Pro, chiede conferma |
 | Archivia mail | Archivia le mail ricevute da un'altra azione | Pro, chiede conferma |
 | Apri mail | Apre una mail in Ferrowl | |
+| Dettagli mail | Testo, allegati e ciò che Ferrowl riconosce (numero di tracciamento, corriere e link, codice, importo e scadenza) | Non segna la mail come letta |
 | La mia agenda | Gli impegni di uno o più giorni | |
 | Trova contatto | Cerca nei contatti | |
 | Nuovo evento | Crea un evento | Chiede conferma |
@@ -46,6 +47,11 @@ in Ferrowl".
 
 **Esempio: ogni mattina alle 8.** Automazione "Ora del giorno" → "Mail
 non lette" → "Pronuncia testo" con il risultato.
+
+**Esempio: spedizioni in un'app di tracking.** "Mail non lette" →
+"Ripeti con ciascuno" → "Dettagli mail" → se "Numero di tracciamento" non
+è vuoto, aprilo nell'app del corriere, oppure aggiungilo a una nota o a un
+promemoria.
 
 **Esempio: fatture al commercialista.** "Cerca nella posta" con
 `from:fornitore@ has:attachment is:unread` → "Archivia mail"
@@ -77,6 +83,7 @@ In Tasker usa l'azione **Send Intent**:
 | `SEARCH` | `query`, `account`, `limit` | Leggere |
 | `AGENDA` | `day` (AAAA-MM-GG, oggi se manca), `days` | Leggere |
 | `CONTACTS` | `query` | Leggere |
+| `DETAILS` | `link`: un link `ferrowl://open` | Leggere. Nel `%json` trovi `text` (testo), `attachments` (allegati), e quando ci sono `shipment` (`carrier`, `number`, `url`), `code` e `payment` (`number`, `amount`, `due`). Non segna la mail come letta |
 | `SEND` | `to`, `subject`, `body`, `account` | Inviare (Pro) |
 | `ARCHIVE`, `MARK_READ`, `MARK_UNREAD` | `link`: uno o più link `ferrowl://open`, separati da a capo | Modificare (Pro) |
 
@@ -96,6 +103,10 @@ non riceve niente. In Impostazioni → Integrazioni trovi le ultime 50
 operazioni.
 
 **Esempio: dimmi chi ti scrive.** Profilo `NEW_MAIL` → "Dì" `%from: %subject`.
+
+**Esempio: incolla il codice.** Profilo `NEW_MAIL` → `DETAILS` con il
+link del primo messaggio nel `%json` → nel profilo `RESULT`, se c'è
+`code`, "Imposta appunti" con il codice.
 
 **Esempio: archivia le newsletter lette.** `SEARCH` con
 `from:newsletter@ is:read` → nel profilo `RESULT`, leggi i link da `%json`

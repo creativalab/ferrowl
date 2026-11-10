@@ -961,7 +961,23 @@ pub fn fetch_message(
     keys: &PgpKeys,
 ) -> Result<FullMessage> {
     session.select(folder)?;
-    let fetches = session.uid_fetch(uid.to_string(), "(INTERNALDATE BODY[])")?;
+    fetch_full(session, uid, keys, "(INTERNALDATE BODY[])")
+}
+
+/// Downloads the full message without marking it read (for other apps
+/// reading it on the user's behalf: nothing changes on the server).
+pub fn peek_message(
+    session: &mut ImapSession,
+    folder: &str,
+    uid: u32,
+    keys: &PgpKeys,
+) -> Result<FullMessage> {
+    session.examine(folder)?;
+    fetch_full(session, uid, keys, "(INTERNALDATE BODY.PEEK[])")
+}
+
+fn fetch_full(session: &mut ImapSession, uid: u32, keys: &PgpKeys, items: &str) -> Result<FullMessage> {
+    let fetches = session.uid_fetch(uid.to_string(), items)?;
     let f = fetches
         .iter()
         .find(|f| f.body().is_some())

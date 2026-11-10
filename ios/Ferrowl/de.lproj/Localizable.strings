@@ -55,6 +55,15 @@
 "intent_archive_confirm" = "{n} Nachrichten archivieren?";
 "intent_done" = "Erledigt.";
 "intent_needs_pro_write" = "Mails aus Kurzbefehlen ändern erfordert Ferrowl Pro.";
+"intent_details_title" = "Mail-Details";
+"intent_details_desc" = "Der Text einer Nachricht, ihre Anhänge und was Ferrowl darin erkennt (Sendung, Code, Rechnung), ohne sie als gelesen zu markieren.";
+"intent_details" = "Mail-Details";
+"intent_text" = "Text";
+"intent_tracking" = "Sendungsnummer";
+"intent_carrier" = "Versanddienst";
+"intent_tracking_link" = "Sendungslink";
+"intent_amount" = "Betrag";
+"intent_due" = "Fälligkeit";
 "intent_account" = "Konto";
 "intent_message" = "Nachricht";
 "intent_to" = "An";

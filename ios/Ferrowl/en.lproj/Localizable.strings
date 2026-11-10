@@ -55,6 +55,15 @@
 "intent_archive_confirm" = "Archive {n} messages?";
 "intent_done" = "Done.";
 "intent_needs_pro_write" = "Changing mail from Shortcuts needs Ferrowl Pro.";
+"intent_details_title" = "Mail details";
+"intent_details_desc" = "The text of a message, its attachments and what Ferrowl recognizes in it (shipment, code, bill), without marking it read.";
+"intent_details" = "Mail details";
+"intent_text" = "Text";
+"intent_tracking" = "Tracking number";
+"intent_carrier" = "Carrier";
+"intent_tracking_link" = "Tracking link";
+"intent_amount" = "Amount";
+"intent_due" = "Due date";
 "intent_account" = "Account";
 "intent_message" = "Message";
 "intent_to" = "To";

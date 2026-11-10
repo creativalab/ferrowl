@@ -129,6 +129,7 @@ fun IntegrationsScreen(onBack: () -> Unit, vm: IntegrationsViewModel = hiltViewM
                   Action: com.ferrowl.app.action.UNREAD
                           (SEARCH: query; SEND: to, subject, body;
                            AGENDA: day, days; CONTACTS: query;
+                           DETAILS: link;
                            ARCHIVE, MARK_READ, MARK_UNREAD: link)
                   Extra: token:<key>
                   Package: com.ferrowl.app
