@@ -576,3 +576,10 @@ integrations_send_title = "{app} がメールを送信しようとしていま�
 integrations_send_text = "宛先 {to}：{subject}"
 integrations_allow = "送信"
 integrations_deny = "送信しない"
+
+# Home Screen widget (iOS, Android)
+widget_title = "未読メール"
+widget_desc = "すべてのアカウントの未読メールをひと目で確認。"
+widget_unread = "未読"
+widget_none = "未読メールはありません"
+widget_inline = "未読 {n} 件"

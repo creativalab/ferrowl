@@ -1,0 +1,6 @@
+/* Generated from core/locales by ffi/build-ios.sh: edit those files. */
+"widget_title" = "Correo no leído";
+"widget_desc" = "Tu correo no leído de todas las cuentas, de un vistazo.";
+"widget_unread" = "sin leer";
+"widget_none" = "No hay correo sin leer";
+"widget_inline" = "{n} sin leer";

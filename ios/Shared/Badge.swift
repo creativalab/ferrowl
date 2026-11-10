@@ -21,11 +21,25 @@ enum Badge {
 
     private static func key(_ email: String) -> String { "unread:\(email.lowercased())" }
 
-    /// The total, after saving one account's count.
+    /// The total, after saving one account's count. The widget gets it too,
+    /// with the newest unread messages when `recent` (inbox headers) is
+    /// given, or just the `fresh` ones a notification announced.
     @discardableResult
-    static func set(_ unread: Int, for email: String) -> Int {
+    static func set(_ unread: Int, for email: String, recent: [Header]? = nil, fresh: [Header]? = nil) -> Int {
         let d = SharedStorage.defaults
         d.set(unread, forKey: key(email))
+        let mails = { (headers: [Header]) in
+            headers.filter { !$0.seen }.map {
+                WidgetMail(from: $0.from.isEmpty ? $0.fromAddress : $0.from, subject: $0.subject,
+                           date: Date(timeIntervalSince1970: TimeInterval($0.timestamp)), uid: $0.uid,
+                           link: messageLink(account: email, folder: "INBOX", uid: $0.uid))
+            }
+        }
+        if let fresh {
+            WidgetData.add(email: email, unread: unread, fresh: mails(fresh))
+        } else {
+            WidgetData.update(email: email, unread: unread, recent: recent.map(mails))
+        }
         #if DEBUG
         print("badge: \(email) = \(unread)")
         #endif
@@ -55,6 +69,7 @@ enum Badge {
     /// Forgets a removed account.
     static func forget(_ email: String) {
         SharedStorage.defaults.removeObject(forKey: key(email))
+        WidgetData.keep(AccountStore(directory: SharedStorage.directory).load().accounts.map(\.email))
     }
 
     /// Shows the total on the icon (the app; the extension sets it in the

@@ -1,0 +1,6 @@
+/* Generated from core/locales by ffi/build-ios.sh: edit those files. */
+"widget_title" = "البريد غير المقروء";
+"widget_desc" = "بريدك غير المقروء من كل الحسابات بنظرة واحدة.";
+"widget_unread" = "غير مقروءة";
+"widget_none" = "لا يوجد بريد غير مقروء";
+"widget_inline" = "{n} غير مقروءة";

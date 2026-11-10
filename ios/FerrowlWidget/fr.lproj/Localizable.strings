@@ -1,0 +1,6 @@
+/* Generated from core/locales by ffi/build-ios.sh: edit those files. */
+"widget_title" = "Mails non lus";
+"widget_desc" = "Vos mails non lus de tous les comptes, en un coup d’œil.";
+"widget_unread" = "non lus";
+"widget_none" = "Aucun mail non lu";
+"widget_inline" = "{n} non lus";

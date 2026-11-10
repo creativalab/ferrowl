@@ -73,7 +73,8 @@ enum BackgroundRefresh {
                 }
                 // The number on the app icon: the inbox's unread messages.
                 if let n = Badge.unread(server: unread, headers: headers, gmail: Badge.isGmail(account)) {
-                    Badge.set(n, for: account.email)
+                    let inbox = Badge.isGmail(account) ? headers.filter { $0.category == 0 } : headers
+                    Badge.set(n, for: account.email, recent: inbox)
                 }
                 Badge.show()
                 if active { mail.touch() }

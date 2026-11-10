@@ -181,7 +181,9 @@ final class MailboxModel {
                 let gmail = Badge.isGmail(account)
                 if !gmail || folderId == mail.inboxId,
                    let n = Badge.unread(server: counts[mail.inboxId], headers: messages, gmail: gmail) {
-                    Badge.set(n, for: account.email)
+                    // The inbox's messages for the widget (only when it is the open folder).
+                    let inbox = folderId == mail.inboxId ? messages.filter { !gmail || $0.category == 0 } : nil
+                    Badge.set(n, for: account.email, recent: inbox)
                 }
                 Badge.show()
             }

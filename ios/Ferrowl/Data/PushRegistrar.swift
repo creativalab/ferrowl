@@ -282,6 +282,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         await MailNotifications.clearRead(account: account.email, unread: Set(peek.unreadUids),
                                           from: after + 1, noneUnread: peek.unread == 0)
         Badge.set(Int(peek.unread), for: account.email)
+        WidgetData.dropRead(email: account.email, unread: Set(peek.unreadUids), from: after + 1)
         Badge.show()
         return true
     }
