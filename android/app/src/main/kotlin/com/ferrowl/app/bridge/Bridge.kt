@@ -414,6 +414,24 @@ class Bridge @Inject constructor(
                     .putExtra("from", peek.fresh.first().from.ifBlank { peek.fresh.first().fromAddress })
                     .putExtra("subject", peek.fresh.first().subject),
             )
+            // The same as a Tasker plugin event ("New mail" profiles): Tasker
+            // asks [TaskerEventReceiver] whether each profile's filter matches.
+            val first = peek.fresh.first()
+            val data = android.os.Bundle().apply {
+                putString("account", email)
+                putString("from", first.from.ifBlank { first.fromAddress })
+                putString("address", first.fromAddress)
+                putString("subject", first.subject)
+                putString("count", peek.freshCount.toString())
+                putString("link", messageLink(email, "INBOX", first.uid))
+                putString("text", text)
+                putString("json", json(messages))
+            }
+            context.sendBroadcast(
+                Intent(TaskerPlugin.ACTION_REQUEST_QUERY).setPackage(c.packageName)
+                    .putExtra(TaskerPlugin.EXTRA_ACTIVITY, TaskerEventActivity::class.java.name)
+                    .putExtra(TaskerPlugin.EXTRA_PASS_THROUGH, data),
+            )
         }
     }
 

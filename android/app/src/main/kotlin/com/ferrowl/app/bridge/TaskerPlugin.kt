@@ -63,6 +63,26 @@ internal object TaskerPlugin {
     const val EXTRA_RESULT_CODE = "$TASKER.EXTRA_RESULT_CODE"
     const val EXTRA_VARIABLES = "$TASKER.EXTRA_VARIABLES"
 
+    // Events ("New mail" profiles).
+    const val ACTION_REQUEST_QUERY = "com.twofortyfouram.locale.intent.action.REQUEST_QUERY"
+    const val EXTRA_ACTIVITY = "com.twofortyfouram.locale.intent.extra.ACTIVITY"
+    const val EXTRA_PASS_THROUGH = "$TASKER.extras.PASS_THROUGH_DATA"
+    const val EXTRA_EVENT_VARIABLES = "$TASKER.extras.VARIABLES"
+    const val CONDITION_SATISFIED = 16
+    const val CONDITION_UNSATISFIED = 17
+
+    /** What a "New mail" profile gets. */
+    val EVENT_VARIABLES = arrayOf(
+        "%fw_account\nAccount\nThe account the mail arrived in",
+        "%fw_from\nFrom\nSender's name",
+        "%fw_address\nAddress\nSender's address",
+        "%fw_subject\nSubject\nSubject of the newest message",
+        "%fw_count\nCount\nNew messages",
+        "%fw_link\nLink\nferrowl://open link of the newest message (for DETAILS, ARCHIVE…)",
+        "%fw_text\nText\nA summary to read out",
+        "%fw_json\nJSON\nThe new messages",
+    )
+
     /** The Bridge action's last word ("UNREAD") and the fields it takes. */
     data class Action(val name: String, val title: String, val fields: List<String>, val permission: String)
 
@@ -214,5 +234,101 @@ class TaskerPluginReceiver : BroadcastReceiver() {
         completion.putExtra(TaskerPlugin.EXTRA_RESULT_CODE, if (r?.ok == true) Activity.RESULT_OK else Activity.RESULT_FIRST_USER)
         completion.putExtra(TaskerPlugin.EXTRA_VARIABLES, vars)
         context.sendBroadcast(completion)
+    }
+}
+
+
+/**
+ * The settings of a "New mail" event profile: which account, sender and
+ * subject it fires for (empty: any).
+ */
+@AndroidEntryPoint
+class TaskerEventActivity : ComponentActivity() {
+    @Inject lateinit var connections: Connections
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // The app that opened us is connected on first use: it gets the events.
+        val caller = callingPackage ?: "net.dinglisch.android.taskerm"
+        val label = runCatching {
+            packageManager.getApplicationLabel(packageManager.getApplicationInfo(caller, 0)).toString()
+        }.getOrDefault(caller)
+        connections.forPackage(caller, label)
+        val previous = intent.getBundleExtra(TaskerPlugin.EXTRA_BUNDLE)
+        setContent {
+            FerrowlTheme {
+                EventScreen(previous) { bundle, blurb ->
+                    setResult(
+                        Activity.RESULT_OK,
+                        Intent()
+                            .putExtra(TaskerPlugin.EXTRA_BUNDLE, bundle)
+                            .putExtra(TaskerPlugin.EXTRA_BLURB, blurb)
+                            .putExtra(TaskerPlugin.EXTRA_RELEVANT_VARIABLES, TaskerPlugin.EVENT_VARIABLES),
+                    )
+                    finish()
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun EventScreen(previous: Bundle?, onDone: (Bundle, String) -> Unit) {
+    val fields = listOf("account", "from", "subject")
+    val values = remember { mutableStateMapOf<String, String>().apply { fields.forEach { put(it, previous?.getString(it).orEmpty()) } } }
+    Scaffold(topBar = { TopAppBar(title = { Text(translate("plugin_new_mail")) }) }) { padding ->
+        Column(
+            Modifier.fillMaxSize().padding(padding).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(translate("plugin_new_mail_desc"), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            fields.forEach { field ->
+                OutlinedTextField(
+                    value = values[field].orEmpty(),
+                    onValueChange = { values[field] = it },
+                    label = { Text(field) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Button(onClick = {
+                val bundle = Bundle().apply { fields.forEach { putString(it, values[it].orEmpty().trim()) } }
+                val detail = fields.mapNotNull { f -> values[f]?.trim()?.takeIf(String::isNotEmpty)?.let { "$f: $it" } }.joinToString(", ")
+                onDone(bundle, listOf(translate("plugin_new_mail"), detail).filter(String::isNotBlank).joinToString(" · "))
+            }) { Text(stringResource(R.string.rules_save)) }
+        }
+    }
+}
+
+/**
+ * Tasker asks whether a "New mail" profile fires for the mail Ferrowl
+ * announced (its pass-through data): yes when account, sender and subject
+ * contain what the profile asks, with the mail as %fw_ variables.
+ */
+class TaskerEventReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val mail = intent.getBundleExtra(TaskerPlugin.EXTRA_PASS_THROUGH)
+        val filter = intent.getBundleExtra(TaskerPlugin.EXTRA_BUNDLE)
+        if (mail == null || filter == null) {
+            resultCode = TaskerPlugin.CONDITION_UNSATISFIED
+            return
+        }
+        val matches = listOf("account" to listOf("account"), "from" to listOf("from", "address"), "subject" to listOf("subject"))
+            .all { (key, fields) ->
+                val wanted = filter.getString(key).orEmpty().trim()
+                wanted.isEmpty() || fields.any { mail.getString(it).orEmpty().contains(wanted, ignoreCase = true) }
+            }
+        if (!matches) {
+            resultCode = TaskerPlugin.CONDITION_UNSATISFIED
+            return
+        }
+        val vars = Bundle().apply {
+            listOf("account", "from", "address", "subject", "count", "link", "text", "json").forEach { k ->
+                putString("%fw_$k", mail.getString(k).orEmpty())
+            }
+        }
+        getResultExtras(true).putBundle(TaskerPlugin.EXTRA_EVENT_VARIABLES, vars)
+        resultCode = TaskerPlugin.CONDITION_SATISFIED
     }
 }

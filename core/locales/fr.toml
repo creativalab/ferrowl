@@ -661,3 +661,7 @@ insight_due_title = "Échéance : {what}"
 # iPhone search (Spotlight)
 spotlight_title = "Mails dans la recherche de l’iPhone"
 spotlight_desc = "Les messages récents de votre boîte de réception apparaissent dans la recherche de l’iPhone ; l’index reste sur le téléphone."
+
+# Tasker event plugin
+plugin_new_mail = "Nouveau mail dans Ferrowl"
+plugin_new_mail_desc = "Se déclenche à l’arrivée d’un nouveau mail. Laissez un champ vide pour tout accepter ; sinon le compte, l’expéditeur (nom ou adresse) ou l’objet doit le contenir."

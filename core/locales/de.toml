@@ -661,3 +661,7 @@ insight_due_title = "Fällig: {what}"
 # iPhone search (Spotlight)
 spotlight_title = "Mails in der iPhone-Suche"
 spotlight_desc = "Die neuesten Nachrichten deines Posteingangs erscheinen in der iPhone-Suche; der Index bleibt auf dem Telefon."
+
+# Tasker event plugin
+plugin_new_mail = "Neue Mail in Ferrowl"
+plugin_new_mail_desc = "Löst aus, wenn neue Mail ankommt. Ein leeres Feld akzeptiert alles; sonst muss Konto, Absender (Name oder Adresse) oder Betreff es enthalten."
