@@ -850,6 +850,19 @@ pub fn day_label(d: NaiveDate) -> String {
     capitalize(&d.format_localized(pattern, chrono_locale()).to_string())
 }
 
+/// A short weekday name for a month grid: "lun", "Mon".
+pub fn weekday_short(d: NaiveDate) -> String {
+    capitalize(&d.format_localized("%a", chrono_locale()).to_string())
+}
+
+/// The first day of the week where the UI language is mostly spoken.
+pub fn week_start() -> chrono::Weekday {
+    match crate::i18n::current().code {
+        "en" | "ja" | "ko" | "pt" => chrono::Weekday::Sun,
+        _ => chrono::Weekday::Mon,
+    }
+}
+
 /// A month heading: "novembre 2026".
 pub fn month_label(d: NaiveDate) -> String {
     let pattern = match crate::i18n::current().code {
