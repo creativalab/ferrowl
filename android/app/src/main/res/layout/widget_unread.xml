@@ -6,6 +6,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@drawable/widget_background"
+    android:baselineAligned="false"
     android:orientation="horizontal"
     android:padding="14dp">
 
@@ -25,7 +26,6 @@
             android:id="@+id/widget_count"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="0"
             android:textColor="@color/widget_text"
             android:textSize="36sp"
             android:textStyle="bold" />

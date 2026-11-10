@@ -6,9 +6,9 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.view.View
 import android.widget.RemoteViews
+import androidx.core.net.toUri
 import com.ferrowl.app.MainActivity
 import com.ferrowl.app.R
 import com.ferrowl.app.data.AccountUnread
@@ -40,7 +40,7 @@ class UnreadWidget : AppWidgetProvider() {
         private fun open(context: Context, link: String, code: Int): PendingIntent = PendingIntent.getActivity(
             context,
             code,
-            Intent(Intent.ACTION_VIEW, Uri.parse(link), context, MainActivity::class.java)
+            Intent(Intent.ACTION_VIEW, link.toUri(), context, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
