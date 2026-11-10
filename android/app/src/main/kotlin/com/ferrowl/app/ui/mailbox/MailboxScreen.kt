@@ -34,6 +34,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
@@ -41,6 +42,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Person
@@ -105,6 +107,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ferrowl.app.R
@@ -115,6 +118,7 @@ import com.ferrowl.core.Folder
 import com.ferrowl.core.FolderKind
 import com.ferrowl.core.Header
 import com.ferrowl.core.SortOrder
+import com.ferrowl.core.folderTree
 import kotlin.math.abs
 import kotlinx.coroutines.launch
 
@@ -255,20 +259,50 @@ fun MailboxScreen(
                         style = MaterialTheme.typography.titleSmall,
                         modifier = Modifier.padding(start = 28.dp, top = 24.dp, bottom = 12.dp),
                     )
-                    // As on the desktop: Inbox and the special folders first,
-                    // then the others (sorted by the server's names).
-                    s.folders.filter { it.selectable }.sortedBy { kindRank(it.kind) }.forEach { f ->
-                        val count = s.unread[f.id]?.toInt() ?: 0
-                        // Subfolders are indented under their parent (special
-                        // folders are not, even under Gmail's "[Gmail]").
-                        val depth = if (f.kind == FolderKind.OTHER) (f.path.size - 1).coerceAtLeast(0) else 0
+                    // A tree that folds, as webmails show long lists: the
+                    // standard folders first, folders with subfolders closed
+                    // until opened (remembered per account).
+                    val context = LocalContext.current
+                    val prefs = remember { context.getSharedPreferences("folder_tree", android.content.Context.MODE_PRIVATE) }
+                    val key = "expanded:${s.active.lowercase()}"
+                    var expanded by remember(key) { mutableStateOf(prefs.getStringSet(key, emptySet()).orEmpty()) }
+                    fun toggle(id: String) {
+                        expanded = if (id in expanded) expanded - id else expanded + id
+                        prefs.edit { putStringSet(key, expanded) }
+                    }
+                    folderTree(s.folders, expanded.toList()).forEach { node ->
+                        val f = node.folder
+                        // A closed folder shows its subfolders' unread mail too.
+                        val count = (s.unread[f.id]?.toInt() ?: 0) +
+                            if (node.hasChildren && !node.expanded) node.descendants.sumOf { s.unread[it]?.toInt() ?: 0 } else 0
                         NavigationDrawerItem(
-                            label = { Text(f.name, modifier = Modifier.padding(start = (16 * depth).dp)) },
+                            label = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        if (f.kind == FolderKind.OTHER) f.path.lastOrNull() ?: f.name else f.name,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.padding(start = (16 * node.depth.toInt()).dp).weight(1f, fill = false),
+                                    )
+                                    if (node.hasChildren) {
+                                        IconButton(onClick = { toggle(f.id) }, modifier = Modifier.size(32.dp)) {
+                                            Icon(
+                                                if (node.expanded) Icons.Filled.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                                contentDescription = f.name,
+                                            )
+                                        }
+                                    }
+                                }
+                            },
                             badge = { if (count > 0) Text(count.toString()) },
                             selected = f.id == s.folderId,
                             onClick = {
-                                vm.openFolder(f.id)
-                                scope.launch { drawer.close() }
+                                if (f.selectable) {
+                                    vm.openFolder(f.id)
+                                    scope.launch { drawer.close() }
+                                } else {
+                                    toggle(f.id)
+                                }
                             },
                             modifier = Modifier.padding(horizontal = 12.dp),
                         )

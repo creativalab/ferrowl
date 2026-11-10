@@ -608,3 +608,26 @@ rules_name = "名前（任意）"
 rules_enabled = "有効"
 rules_applied = "ルールが新着メッセージ {n} 件を処理しました"
 rules_delete = "ルールを削除"
+
+# Writing contacts (iOS, Android)
+contact_new = "新しい連絡先"
+contact_edit = "編集"
+contact_name = "名前"
+contact_org = "会社"
+contact_emails = "メールアドレス"
+contact_phones = "電話番号"
+contact_note = "メモ"
+contact_add_email = "アドレスを追加"
+contact_add_phone = "電話番号を追加"
+contact_delete = "連絡先を削除"
+contact_saved = "連絡先を保存しました。"
+contact_deleted = "連絡先を削除しました。"
+
+# Calendar kept on the device
+calendar_local = "このスマートフォン"
+
+# Separate login for contacts and calendar
+dav_credentials = "連絡先とカレンダーのログイン"
+dav_username = "ユーザー名"
+dav_password = "パスワード"
+dav_credentials_hint = "連絡先やカレンダーのサーバーがメールのプロバイダと異なる場合のみ（例：App 用パスワードの iCloud、Fastmail、Nextcloud）。空欄ならメールのログインを使います。上にサーバーのアドレスを入力してください。"

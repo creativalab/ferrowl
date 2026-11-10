@@ -479,6 +479,8 @@ impl AccountDraft {
             keyring: self.keyring,
             carddav_url: self.carddav_url.trim().to_string(),
             caldav_url: self.caldav_url.trim().to_string(),
+            dav_username: String::new(),
+            dav_password: String::new(),
             oauth: self.oauth,
         };
         a.is_complete().then_some(a)

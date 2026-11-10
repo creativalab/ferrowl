@@ -608,3 +608,26 @@ rules_name = "الاسم (اختياري)"
 rules_enabled = "مفعّلة"
 rules_applied = "عالجت القواعد {n} رسائل جديدة"
 rules_delete = "حذف القاعدة"
+
+# Writing contacts (iOS, Android)
+contact_new = "جهة اتصال جديدة"
+contact_edit = "تعديل"
+contact_name = "الاسم"
+contact_org = "الشركة"
+contact_emails = "عناوين البريد"
+contact_phones = "أرقام الهاتف"
+contact_note = "ملاحظة"
+contact_add_email = "إضافة عنوان"
+contact_add_phone = "إضافة رقم هاتف"
+contact_delete = "حذف جهة الاتصال"
+contact_saved = "تم حفظ جهة الاتصال."
+contact_deleted = "تم حذف جهة الاتصال."
+
+# Calendar kept on the device
+calendar_local = "على هذا الهاتف"
+
+# Separate login for contacts and calendar
+dav_credentials = "تسجيل الدخول لجهات الاتصال والتقويم"
+dav_username = "اسم المستخدم"
+dav_password = "كلمة المرور"
+dav_credentials_hint = "فقط إذا لم يكن خادم جهات الاتصال أو التقويم هو مزوّد بريدك (مثل iCloud بكلمة مرور خاصة بالتطبيق، أو Fastmail، أو Nextcloud): اتركه فارغًا لاستخدام تسجيل دخول البريد، واكتب عنوان الخادم في الأعلى."

@@ -608,3 +608,26 @@ rules_name = "Name (optional)"
 rules_enabled = "Active"
 rules_applied = "Rules handled {n} new messages"
 rules_delete = "Delete rule"
+
+# Writing contacts (iOS, Android)
+contact_new = "New contact"
+contact_edit = "Edit"
+contact_name = "Name"
+contact_org = "Company"
+contact_emails = "E-mail addresses"
+contact_phones = "Phone numbers"
+contact_note = "Note"
+contact_add_email = "Add an address"
+contact_add_phone = "Add a phone number"
+contact_delete = "Delete contact"
+contact_saved = "Contact saved."
+contact_deleted = "Contact deleted."
+
+# Calendar kept on the device
+calendar_local = "On this phone"
+
+# Separate login for contacts and calendar
+dav_credentials = "Contacts and calendar login"
+dav_username = "Username"
+dav_password = "Password"
+dav_credentials_hint = "Only if the contacts or calendar server is not your mail provider (for example iCloud with an app-specific password, Fastmail, Nextcloud): leave empty to use the mail login, and type the server's address above."

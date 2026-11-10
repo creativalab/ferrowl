@@ -12,7 +12,9 @@
 //! the server are deleted. This works on every server, including those
 //! without sync-collection (RFC 6578).
 //!
-//! The account's mail username and password are used (Basic auth), only
+//! The account's mail username and password are used (Basic auth), or the
+//! separate ones the user set for these servers (a calendar kept elsewhere
+//! than the mail), only
 //! over HTTPS (except for an `http://` address the user typed, e.g. a server
 //! on the local network), and only to hosts that belong to the mail
 //! provider: the typed address, a known provider's server, or the domain of
@@ -202,8 +204,13 @@ impl Client {
             .user_agent(concat!("Ferrowl/", env!("CARGO_PKG_VERSION")))
             .build()
             .into();
-        let auth = base64::engine::general_purpose::STANDARD
-            .encode(format!("{}:{}", account.username, account.password));
+        // Separate credentials for these servers, when the user set them.
+        let (user, password) = if account.dav_username.trim().is_empty() {
+            (&account.username, &account.password)
+        } else {
+            (&account.dav_username, &account.dav_password)
+        };
+        let auth = base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user.trim(), password));
         Client {
             agent,
             auth: format!("Basic {auth}"),

@@ -1,5 +1,5 @@
-//! vCard (RFC 6350, and the older 3.0) reading: only what the contacts list
-//! needs: name, addresses, phones, organization and note.
+//! vCard (RFC 6350, and the older 3.0) reading and writing: only what the
+//! contacts list needs: name, addresses, phones, organization and note.
 //!
 //! Unknown properties are ignored; the original text is kept by the caller,
 //! so nothing is lost if the contact is written back later.
@@ -7,6 +7,9 @@
 /// One contact, as shown in the contacts list.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Contact {
+    /// Where it is stored: the card's URL on the CardDAV server, or
+    /// `local:…` on this device (empty for one not saved yet).
+    pub url: String,
     /// The vCard UID (may be empty on old cards).
     pub uid: String,
     /// Display name: FN, or built from N, or the first address.
@@ -35,6 +38,38 @@ pub fn build(uid: &str, name: &str, email: &str) -> String {
         esc(name),
         esc(email)
     )
+}
+
+/// A whole vCard 3.0 for a contact written in the app: every address and
+/// phone, the organization and the note.
+pub fn write(c: &Contact) -> String {
+    let esc = |v: &str| {
+        v.replace('\\', "\\\\")
+            .replace(',', "\\,")
+            .replace(';', "\\;")
+            .replace('\n', "\\n")
+            .replace('\r', "")
+    };
+    let mut out = format!(
+        "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:{}\r\nFN:{}\r\nN:{};;;;\r\n",
+        esc(&c.uid),
+        esc(&c.name),
+        esc(&c.name)
+    );
+    for (i, email) in c.emails.iter().filter(|e| !e.trim().is_empty()).enumerate() {
+        let pref = if i == 0 { ",PREF" } else { "" };
+        out += &format!("EMAIL;TYPE=INTERNET{pref}:{}\r\n", esc(email.trim()));
+    }
+    for phone in c.phones.iter().filter(|p| !p.trim().is_empty()) {
+        out += &format!("TEL;TYPE=VOICE:{}\r\n", esc(phone.trim()));
+    }
+    if !c.organization.trim().is_empty() {
+        out += &format!("ORG:{}\r\n", esc(c.organization.trim()));
+    }
+    if !c.note.trim().is_empty() {
+        out += &format!("NOTE:{}\r\n", esc(c.note.trim()));
+    }
+    out + "END:VCARD\r\n"
 }
 
 /// Reads the first vCard in `text`. Returns `None` if there is no
@@ -231,5 +266,24 @@ mod tests {
         let c = parse("BEGIN:VCARD\nEMAIL:solo@x.it\nEND:VCARD").unwrap();
         assert_eq!(c.name, "solo@x.it");
         assert!(parse("not a card").is_none());
+    }
+
+    #[test]
+    fn written_cards_read_back() {
+        let c = Contact {
+            url: String::new(),
+            uid: "1@ferrowl".into(),
+            name: "Rossi, Mario; srl".into(),
+            emails: vec!["m@x.it".into(), "mario@y.it".into()],
+            phones: vec!["+39 333 1".into()],
+            organization: "ACME".into(),
+            note: "riga 1\nriga 2".into(),
+        };
+        let back = parse(&write(&c)).unwrap();
+        assert_eq!(back.name, c.name);
+        assert_eq!(back.emails, c.emails);
+        assert_eq!(back.phones, c.phones);
+        assert_eq!(back.organization, "ACME");
+        assert_eq!(back.note, "riga 1\nriga 2");
     }
 }
