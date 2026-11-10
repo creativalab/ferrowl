@@ -117,6 +117,14 @@ for toml in core/locales/*.toml; do
     done | sed 's/{app}/${applicationName}/g'
   } > "$gen/phrases"
   cmp -s "$gen/phrases" "$phrases" || cp "$gen/phrases" "$phrases"
+  # The widget's own texts (it runs without the engine).
+  widget="ios/FerrowlWidget/$code.lproj/Localizable.strings"
+  mkdir -p "$(dirname "$widget")"
+  {
+    echo "/* Generated from core/locales by ffi/build-ios.sh: edit those files. */"
+    grep -E '^widget_[a-z_]+ = ' "$toml" | sed -E 's/^([a-z_]+) = (".*")$/"\1" = \2;/'
+  } > "$gen/widget"
+  cmp -s "$gen/widget" "$widget" || cp "$gen/widget" "$widget"
 done
 
 if [ "$MODE" = xcode ]; then

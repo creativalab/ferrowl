@@ -1,0 +1,6 @@
+/* Generated from core/locales by ffi/build-ios.sh: edit those files. */
+"widget_title" = "未読メール";
+"widget_desc" = "すべてのアカウントの未読メールをひと目で確認。";
+"widget_unread" = "未読";
+"widget_none" = "未読メールはありません";
+"widget_inline" = "未読 {n} 件";

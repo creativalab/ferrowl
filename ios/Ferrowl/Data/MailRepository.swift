@@ -34,6 +34,8 @@ final class MailRepository {
     private(set) var switches = 0
 
     private var connecting: Task<[Folder], Error>?
+    /// The account the engine is connected to (its folders are `folders`).
+    private var connected: String?
 
     /// Another account is being connected (the screen shows it).
     private(set) var switching: String?
@@ -53,6 +55,7 @@ final class MailRepository {
 
     private func persist() {
         store.save(AccountStore.Snapshot(accounts: accounts, active: activeEmail))
+        WidgetData.keep(accounts.map(\.email))
     }
 
     // MARK: accounts
@@ -64,9 +67,13 @@ final class MailRepository {
 
     /// Connects and, if it works, saves the account (it becomes active).
     func setUp(_ account: Account) async throws {
-        connecting?.cancel()
-        connecting = nil
-        folders = try await engine.connect(account: account)
+        // After any connection in progress (see `switchTo`).
+        while let task = connecting { _ = try? await task.value }
+        let task = Task { try await engine.connect(account: account) }
+        connecting = task
+        defer { connecting = nil }
+        folders = try await task.value
+        connected = account.email
         accounts.removeAll { $0.email.caseInsensitiveCompare(account.email) == .orderedSame }
         accounts.append(account)
         activeEmail = account.email
@@ -80,7 +87,16 @@ final class MailRepository {
         guard let account = accounts.first(where: { $0.email.caseInsensitiveCompare(email) == .orderedSame }) else { return }
         switching = account.email
         defer { switching = nil }
-        folders = try await engine.connect(account: account)
+        // One connection at a time: one still in progress (the previous
+        // account, at start-up) would otherwise finish last and leave the
+        // engine on it, so a message of this account would be fetched (and
+        // marked read) by its number from the other one's inbox.
+        while let task = connecting { _ = try? await task.value }
+        let task = Task { try await engine.connect(account: account) }
+        connecting = task
+        defer { connecting = nil }
+        folders = try await task.value
+        connected = account.email
         activeEmail = account.email
         persist()
         switches += 1
@@ -144,25 +160,33 @@ final class MailRepository {
     /// wait for the same connection).
     @discardableResult
     func ensureConnected() async throws -> Bool {
-        if !folders.isEmpty { return true }
-        if let task = connecting {
-            folders = try await task.value
-            return true
+        while true {
+            if !folders.isEmpty, connected == activeEmail { return true }
+            // Another connection (a switch of account) first, then check again.
+            if let task = connecting {
+                _ = try? await task.value
+                continue
+            }
+            guard let account = activeAccount else { return false }
+            let engine = engine
+            let task = Task { try await engine.connect(account: account) }
+            connecting = task
+            defer { connecting = nil }
+            let list = try await task.value
+            // Still the account in use (not switched meanwhile).
+            if account.email == activeEmail {
+                folders = list
+                connected = account.email
+                afterConnect()
+                return true
+            }
         }
-        guard let account = activeAccount else { return false }
-        let engine = engine
-        let task = Task { try await engine.connect(account: account) }
-        connecting = task
-        defer { connecting = nil }
-        folders = try await task.value
-        afterConnect()
-        return true
     }
 
     /// Before an action on the server: the list can be on screen before the
     /// connection is made (it comes from the phone's copy), so wait for it.
     private func ready() async throws {
-        if folders.isEmpty { try await ensureConnected() }
+        if folders.isEmpty || connected != activeEmail { try await ensureConnected() }
     }
 
     /// Once per connection: the address book learns who we write to from

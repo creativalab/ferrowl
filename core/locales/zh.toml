@@ -576,3 +576,10 @@ integrations_send_title = "{app} 想要发送一封邮件"
 integrations_send_text = "发给 {to}：{subject}"
 integrations_allow = "发送"
 integrations_deny = "不发送"
+
+# Home Screen widget (iOS, Android)
+widget_title = "未读邮件"
+widget_desc = "一眼查看所有账户的未读邮件。"
+widget_unread = "未读"
+widget_none = "没有未读邮件"
+widget_inline = "{n} 封未读"

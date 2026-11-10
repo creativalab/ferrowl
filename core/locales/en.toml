@@ -576,3 +576,10 @@ integrations_send_title = "{app} wants to send a mail"
 integrations_send_text = "To {to}: {subject}"
 integrations_allow = "Send"
 integrations_deny = "Don't send"
+
+# Home Screen widget (iOS, Android)
+widget_title = "Unread mail"
+widget_desc = "Your unread mail at a glance, from every account."
+widget_unread = "unread"
+widget_none = "No unread mail"
+widget_inline = "{n} unread"

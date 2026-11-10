@@ -576,3 +576,10 @@ integrations_send_title = "{app}이(가) 메일을 보내려고 합니다"
 integrations_send_text = "받는 사람 {to}: {subject}"
 integrations_allow = "보내기"
 integrations_deny = "보내지 않기"
+
+# Home Screen widget (iOS, Android)
+widget_title = "읽지 않은 메일"
+widget_desc = "모든 계정의 읽지 않은 메일을 한눈에."
+widget_unread = "읽지 않음"
+widget_none = "읽지 않은 메일 없음"
+widget_inline = "읽지 않음 {n}개"

@@ -1,0 +1,6 @@
+/* Generated from core/locales by ffi/build-ios.sh: edit those files. */
+"widget_title" = "읽지 않은 메일";
+"widget_desc" = "모든 계정의 읽지 않은 메일을 한눈에.";
+"widget_unread" = "읽지 않음";
+"widget_none" = "읽지 않은 메일 없음";
+"widget_inline" = "읽지 않음 {n}개";
