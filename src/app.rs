@@ -635,6 +635,8 @@ pub struct App {
     /// The open message's HTML, rendered into image tiles.
     pub html_render: Option<crate::html_view::Rendered>,
     pub html_rendering: bool,
+    /// A message whose HTML could not be painted: it is shown as text.
+    pub html_failed: Option<u32>,
     /// Width the reader actually gives the HTML message, once measured.
     pub reader_width: Option<f32>,
     /// Remote content loaded for this message despite the setting.
@@ -856,7 +858,8 @@ pub enum Message {
     Open(u32),
     Loaded(Res<FullMessage>),
     ToggleHtml,
-    HtmlRendered(Option<crate::html_view::Rendered>),
+    /// The painted HTML of message `uid`; `None` when it could not be painted.
+    HtmlRendered(u32, Option<crate::html_view::Rendered>),
     LoadRemoteImages,
     ToggleRemoteImages(bool),
     /// Pointer moved over the HTML view (document coordinates).
@@ -1088,6 +1091,7 @@ impl App {
             body_link_hover: false,
             html_render: None,
             html_rendering: false,
+            html_failed: None,
             reader_width: None,
             html_force_remote: None,
             hover_link: None,
@@ -1959,10 +1963,15 @@ impl App {
         let Some(msg) = &self.message else {
             return Task::none();
         };
-        let Some(html) = msg.html.clone().filter(|_| self.config.ui.prefer_html) else {
+        let Some(html) = msg
+            .html
+            .clone()
+            .filter(|_| self.config.ui.prefer_html && self.html_failed != Some(msg.uid))
+        else {
             return Task::none();
         };
         self.html_rendering = true;
+        let uid = msg.uid;
         let job = crate::html_view::Job {
             uid: msg.uid,
             html,
@@ -1978,7 +1987,7 @@ impl App {
                     .ok()
                     .flatten()
             },
-            Message::HtmlRendered,
+            move |rendered| Message::HtmlRendered(uid, rendered),
         )
     }
 
@@ -3232,7 +3241,15 @@ impl App {
                 };
                 Task::batch([self.save_config(), render])
             }
-            Message::HtmlRendered(rendered) => {
+            Message::HtmlRendered(uid, None) => {
+                // The HTML could not be painted: show the text instead.
+                if self.message.as_ref().is_some_and(|m| m.uid == uid) {
+                    self.html_rendering = false;
+                    self.html_failed = Some(uid);
+                }
+                Task::none()
+            }
+            Message::HtmlRendered(_, rendered) => {
                 // Ignore results for a message that is no longer open.
                 if rendered.as_ref().map(|r| r.uid) == self.message.as_ref().map(|m| m.uid) {
                     self.html_rendering = false;

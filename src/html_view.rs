@@ -148,6 +148,19 @@ struct Painted {
 fn run(rx: mpsc::Receiver<Command>) {
     let mut current: Option<Loaded> = None;
     while let Ok(cmd) = rx.recv() {
+        // Blitz may panic on odd mail (e.g. a relative `url()` inside a
+        // `data:` stylesheet). Keep the worker alive: drop the document;
+        // the caller's reply channel closes, so it gets `None` and shows
+        // the plain text instead of waiting forever.
+        let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle(&rx, &mut current, cmd)));
+        if step.is_err() {
+            current = None;
+        }
+    }
+}
+
+fn handle(rx: &mpsc::Receiver<Command>, current: &mut Option<Loaded>, cmd: Command) {
+    {
         match cmd {
             Command::Render(job, reply) => {
                 // Only the most recent request matters: skip stale ones.
@@ -174,20 +187,20 @@ fn run(rx: mpsc::Receiver<Command>) {
                     c.uid == job.uid && c.allow_remote == job.allow_remote && c.html_len == job.html.len()
                 });
                 if !same {
-                    current = Some(load(&job));
+                    *current = Some(load(&job));
                 }
                 let loaded = current.as_mut().expect("loaded above");
                 let _ = reply.send(paint(loaded, job.width, job.scale));
             }
             Command::Hit(uid, x, y, reply) => {
-                let link = match &current {
+                let link = match &*current {
                     Some(c) if c.uid == uid => link_in(&c.doc, x, y),
                     _ => None,
                 };
                 let _ = reply.send(link);
             }
             Command::Select(uid, op, reply) => {
-                let rendered = match &mut current {
+                let rendered = match current {
                     Some(c) if c.uid == uid => {
                         if apply(&mut c.doc, op) {
                             repaint(c)
@@ -200,7 +213,7 @@ fn run(rx: mpsc::Receiver<Command>) {
                 let _ = reply.send(rendered);
             }
             Command::Selected(uid, reply) => {
-                let text = match &current {
+                let text = match &*current {
                     Some(c) if c.uid == uid => c.doc.get_selected_text(),
                     _ => None,
                 };
@@ -208,6 +221,41 @@ fn run(rx: mpsc::Receiver<Command>) {
             }
         }
     }
+}
+
+/// Drops `<base>` tags that do not point to a web page: Blitz panics
+/// resolving relative links against a base such as `data:` (seen in a
+/// real mail).
+fn without_odd_base(html: &str) -> std::borrow::Cow<'_, str> {
+    let lower = html.to_ascii_lowercase();
+    let mut out = String::new();
+    let mut last = 0;
+    let mut from = 0;
+    while let Some(i) = lower[from..].find("<base").map(|i| from + i) {
+        let Some(end) = lower[i..].find('>').map(|e| i + e + 1) else {
+            break;
+        };
+        from = end;
+        let tag = &lower[i..end];
+        let next = tag.as_bytes().get(5).copied().unwrap_or(b'>');
+        if !(next.is_ascii_whitespace() || next == b'>' || next == b'/') {
+            continue;
+        }
+        let web = tag
+            .split("href")
+            .nth(1)
+            .map(|v| v.trim_start_matches(|c: char| c == '=' || c == '"' || c == '\'' || c.is_whitespace()))
+            .is_some_and(|v| v.starts_with("http://") || v.starts_with("https://"));
+        if !web {
+            out.push_str(&html[last..i]);
+            last = end;
+        }
+    }
+    if last == 0 {
+        return std::borrow::Cow::Borrowed(html);
+    }
+    out.push_str(&html[last..]);
+    std::borrow::Cow::Owned(out)
 }
 
 /// Changes the selection; false when it stayed as it was.
@@ -380,6 +428,9 @@ fn load(job: &Job) -> Loaded {
             ColorScheme::Light,
         )),
         net_provider: Some(Arc::new(net)),
+        // Blitz's default base is a `data:` URL, which cannot resolve the
+        // relative links some mail has (it panics). `.invalid` never resolves.
+        base_url: Some("https://ferrowl.invalid/".into()),
         font_ctx: Some(fonts()),
         ua_stylesheets: vec![
             blitz_dom::UserAgentStylesheet::default_sheet(),
@@ -392,7 +443,7 @@ fn load(job: &Job) -> Loaded {
     // the HTML user-agent styles do not apply (head, title and style text
     // show up, paragraphs and tables collapse). A leading comment keeps its
     // sniffing off and is harmless to the HTML parser.
-    let html = format!("<!---->{}", job.html);
+    let html = format!("<!---->{}", without_odd_base(&job.html));
     let mut doc = HtmlDocument::from_html(&html, config);
     doc.resolve(0.0);
     // Wait for images/stylesheets (bounded), then lay out again.
@@ -564,6 +615,34 @@ mod tests {
         assert_eq!(link_at(7, 50.0, 50.0).as_deref(), Some("https://ferrowl.com/x"));
         assert_eq!(link_at(7, 50.0, 2000.0), None);
         assert_eq!(link_at(8, 50.0, 50.0), None, "other message");
+    }
+
+    #[test]
+    fn survives_a_relative_url_in_a_data_stylesheet() {
+        let _turn = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        let job = |uid: u32, html: &str| Job {
+            uid,
+            html: html.into(),
+            width: 600,
+            scale: 1.0,
+            allow_remote: true,
+            inline: HashMap::new(),
+        };
+        // Seen in a real mail: blitz panics resolving a relative URL
+        // against a `data:` base.
+        assert!(
+            without_odd_base(r#"<BASE href="data:x,">a<base href="https://a.b/">"#)
+                == r#"a<base href="https://a.b/">"#
+        );
+        let first = render(job(
+            21,
+            r#"<html><head><base href="data:text/css;charset=utf-8;base64,">
+            <link rel="stylesheet" href="/wss/fonts/?family=Myriad+Set+Pro&v=2"></head>
+            <body>Hi</body></html>"#,
+        ));
+        assert!(first.is_some(), "the odd <base> is dropped, so it renders");
+        // Whatever happened to that one, the next message still renders.
+        assert!(render(job(22, "<html><body>Next</body></html>")).is_some());
     }
 
     #[test]

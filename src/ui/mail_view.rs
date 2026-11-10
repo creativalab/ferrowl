@@ -1292,7 +1292,7 @@ fn reader<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
         return container(inner).center(Fill).style(panel(p.bg)).into();
     };
 
-    let show_html = app.config.ui.prefer_html && msg.html.is_some();
+    let show_html = app.config.ui.prefer_html && msg.html.is_some() && app.html_failed != Some(msg.uid);
     let kind = app.current_kind();
     let mut tools = vec![
         tooltip(
