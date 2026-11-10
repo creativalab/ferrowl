@@ -73,6 +73,16 @@ enum WidgetData {
         save(accounts)
     }
 
+    /// A message read or archived from the widget: it leaves at once.
+    static func removeMail(link: String) {
+        var accounts = load()
+        for i in accounts.indices where accounts[i].recent.contains(where: { $0.link == link }) {
+            accounts[i].recent.removeAll { $0.link == link }
+            accounts[i].unread = max(0, accounts[i].unread - 1)
+        }
+        save(accounts)
+    }
+
     /// The accounts on the phone, in their order: others are dropped.
     static func keep(_ emails: [String]) {
         let accounts = load()

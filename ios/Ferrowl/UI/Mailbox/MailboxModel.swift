@@ -164,6 +164,8 @@ final class MailboxModel {
             if id == mail.inboxId, let email = mail.activeEmail {
                 // What the background check compares with.
                 BackgroundRefresh.notifyNew(fresh, account: email, announce: false)
+                // The inbox in the iPhone's search.
+                if prefs.spotlight { SpotlightIndex.index(fresh, account: email) }
             }
             await loadUnread()
         } catch {

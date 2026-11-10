@@ -64,6 +64,12 @@
 "intent_tracking_link" = "Tracking link";
 "intent_amount" = "Amount";
 "intent_due" = "Due date";
+"focus_title" = "Accounts to show";
+"focus_desc" = "During this Focus Ferrowl shows only these accounts, and the others' notifications wait until it ends.";
+"focus_accounts" = "Accounts";
+"focus_all" = "All accounts";
+"intent_widget_read" = "Mark as read";
+"intent_widget_archive" = "Archive";
 "intent_account" = "Account";
 "intent_message" = "Message";
 "intent_to" = "To";

@@ -52,6 +52,12 @@ struct MainView: View {
         .task(id: "\(app.pendingOpen?.email ?? "")|\(app.pendingOpen?.uid ?? 0)|\(model != nil)") {
             await openFromNotification()
         }
+        // A Focus that does not show the account in use: one it shows.
+        .task(id: mail.focus) {
+            guard let first = mail.visibleAccounts.first,
+                  !mail.visibleAccounts.contains(where: { $0.email == mail.activeEmail }) else { return }
+            try? await mail.switchTo(first.email)
+        }
         // A link or a shortcut asked for a new message.
         .task(id: "\(app.pendingCompose?.id.uuidString ?? "")|\(model != nil)") {
             guard let request = app.pendingCompose, model != nil else { return }
@@ -181,7 +187,7 @@ struct Sidebar: View {
         List {
             if !mail.accounts.isEmpty {
                 Section(t("section_account")) {
-                    ForEach(mail.accounts, id: \.email) { account in
+                    ForEach(mail.visibleAccounts, id: \.email) { account in
                         Button {
                             use(account.email)
                         } label: {

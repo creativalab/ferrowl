@@ -103,7 +103,7 @@ for toml in core/locales/*.toml; do
   mkdir -p "$(dirname "$file")"
   {
     echo "/* Generated from core/locales by ffi/build-ios.sh: edit those files. */"
-    grep -E '^(notif_new_mail|intent_[a-z_]+) = ' "$toml" | sed -E 's/^([a-z_]+) = (".*")$/"\1" = \2;/'
+    grep -E '^(notif_new_mail|intent_[a-z_]+|focus_[a-z_]+) = ' "$toml" | sed -E 's/^([a-z_]+) = (".*")$/"\1" = \2;/'
   } > "$gen/strings"
   cmp -s "$gen/strings" "$file" || cp "$gen/strings" "$file"
   phrases="ios/Ferrowl/$code.lproj/AppShortcuts.strings"

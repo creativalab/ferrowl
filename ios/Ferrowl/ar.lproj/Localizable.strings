@@ -64,6 +64,12 @@
 "intent_tracking_link" = "رابط التتبّع";
 "intent_amount" = "المبلغ";
 "intent_due" = "تاريخ الاستحقاق";
+"focus_title" = "الحسابات المعروضة";
+"focus_desc" = "أثناء وضع التركيز هذا يعرض Ferrowl هذه الحسابات فقط، وتنتظر إشعارات الحسابات الأخرى حتى ينتهي.";
+"focus_accounts" = "الحسابات";
+"focus_all" = "كل الحسابات";
+"intent_widget_read" = "تعليم كمقروءة";
+"intent_widget_archive" = "أرشفة";
 "intent_account" = "الحساب";
 "intent_message" = "الرسالة";
 "intent_to" = "إلى";

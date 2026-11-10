@@ -90,6 +90,11 @@ class Connections @Inject constructor(@ApplicationContext context: Context) {
         return connection
     }
 
+    /** The connection of an app (the Tasker plugin connects it on first use: it may read). */
+    @Synchronized
+    fun forPackage(packageName: String, label: String): Connection =
+        _list.value.firstOrNull { it.packageName == packageName } ?: add(packageName, label)
+
     @Synchronized
     fun update(connection: Connection) =
         save(_list.value.map { if (it.token == connection.token) connection else it })

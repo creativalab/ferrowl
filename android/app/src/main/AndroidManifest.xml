@@ -121,6 +121,30 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_unread" />
         </receiver>
+        <!-- The widget's "read" and "archive" buttons. -->
+        <receiver
+            android:name=".widget.WidgetActionReceiver"
+            android:exported="false" />
+        <!-- Ferrowl as a Tasker plugin (Locale plugin protocol): its settings
+             screen, and the receiver that runs it. -->
+        <activity
+            android:name=".bridge.TaskerPluginActivity"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:label="Ferrowl"
+            tools:ignore="ExportedActivity">
+            <intent-filter>
+                <action android:name="com.twofortyfouram.locale.intent.action.EDIT_SETTING" />
+            </intent-filter>
+        </activity>
+        <receiver
+            android:name=".bridge.TaskerPluginReceiver"
+            android:exported="true"
+            tools:ignore="ExportedReceiver">
+            <intent-filter>
+                <action android:name="com.twofortyfouram.locale.intent.action.FIRE_SETTING" />
+            </intent-filter>
+        </receiver>
         <!-- "Send" / "Don't send" in the confirmation notification. -->
         <receiver
             android:name=".bridge.BridgeAnswerReceiver"

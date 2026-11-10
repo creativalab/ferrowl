@@ -64,6 +64,12 @@
 "intent_tracking_link" = "跟踪链接";
 "intent_amount" = "金额";
 "intent_due" = "到期日";
+"focus_title" = "要显示的账户";
+"focus_desc" = "在此专注模式下，Ferrowl 只显示这些账户，其他账户的通知会等到结束后再显示。";
+"focus_accounts" = "账户";
+"focus_all" = "所有账户";
+"intent_widget_read" = "标为已读";
+"intent_widget_archive" = "归档";
 "intent_account" = "账户";
 "intent_message" = "邮件";
 "intent_to" = "收件人";

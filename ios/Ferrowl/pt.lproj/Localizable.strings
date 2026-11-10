@@ -64,6 +64,12 @@
 "intent_tracking_link" = "Link de rastreio";
 "intent_amount" = "Valor";
 "intent_due" = "Vencimento";
+"focus_title" = "Contas a mostrar";
+"focus_desc" = "Durante este Foco, o Ferrowl mostra só estas contas, e as notificações das outras esperam até ele terminar.";
+"focus_accounts" = "Contas";
+"focus_all" = "Todas as contas";
+"intent_widget_read" = "Marcar como lida";
+"intent_widget_archive" = "Arquivar";
 "intent_account" = "Conta";
 "intent_message" = "Mensagem";
 "intent_to" = "Para";
