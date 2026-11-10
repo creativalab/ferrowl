@@ -4,16 +4,23 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ferrowl.app.data.MailRepository
 import com.ferrowl.app.ui.notice.Notices
+import com.ferrowl.core.EventDraft
 import com.ferrowl.core.FerrowlException
 import com.ferrowl.core.InviteReply
+import com.ferrowl.core.MailInsight
 import com.ferrowl.core.Message
+import com.ferrowl.core.Repeat
+import com.ferrowl.core.mailInsights
+import com.ferrowl.core.translate
 import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import javax.inject.Inject
+import kotlinx.coroutines.withContext
 
 sealed interface MessageState {
     data object Loading : MessageState
@@ -49,6 +56,29 @@ class MessageViewModel @Inject constructor(
     /** The message's star (IMAP \\Flagged). */
     val starred: StateFlow<Boolean> = _starred.asStateFlow()
 
+    private val _insights = MutableStateFlow<List<MailInsight>>(emptyList())
+
+    /** What the message is about (a shipment, a code, a bill). */
+    val insights: StateFlow<List<MailInsight>> = _insights.asStateFlow()
+
+    /** An all-day reminder on a bill's due date, in the account's first calendar. */
+    fun addDue(due: String, number: String, amount: String) {
+        viewModelScope.launch {
+            try {
+                val calendar = repo.calendars().firstOrNull() ?: return@launch notices.error(translate("err_no_calendar"))
+                val what = listOf(number, amount).filter { it.isNotEmpty() }.joinToString(" · ").ifEmpty { translate("insight_bill") }
+                repo.saveEvent(
+                    calendar.url,
+                    null,
+                    EventDraft(translate("insight_due_title").replace("{what}", what), "", "", true, "${due}T09:00", "${due}T10:00", Repeat.NEVER),
+                )
+                notices.info(translate("insight_due_added"))
+            } catch (e: FerrowlException) {
+                notices.error(e.message.orEmpty())
+            }
+        }
+    }
+
     fun load(folderId: String, uid: UInt, starred: Boolean = false) {
         if (this.folderId == folderId && this.uid == uid) return
         this.folderId = folderId
@@ -56,7 +86,9 @@ class MessageViewModel @Inject constructor(
         _starred.value = starred
         viewModelScope.launch {
             _state.value = try {
-                MessageState.Shown(repo.message(folderId, uid))
+                val message = repo.message(folderId, uid)
+                _insights.value = withContext(Dispatchers.Default) { mailInsights(message) }
+                MessageState.Shown(message)
             } catch (e: FerrowlException) {
                 MessageState.Failed(e.message ?: "")
             }

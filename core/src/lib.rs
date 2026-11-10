@@ -16,6 +16,7 @@ pub mod folder_tree;
 pub mod html;
 pub mod i18n;
 pub mod ical;
+pub mod insights;
 pub mod invite;
 pub mod local;
 pub mod mail;
