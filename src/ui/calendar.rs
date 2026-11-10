@@ -124,6 +124,10 @@ pub fn list<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
 
     let status: Option<Element<'a, Message>> = match &app.calendar_sync {
         SyncState::Running => Some(text(t("calendar_syncing")).size(12).color(p.muted).into()),
+        // No calendar server: not an error, events stay on this computer.
+        SyncState::Failed(e) if e == t("err_caldav_none") => {
+            Some(text(t("calendar_local_note")).size(12).color(p.muted).into())
+        }
         SyncState::Failed(e) => Some(text(e.as_str()).size(12).color(p.danger).into()),
         _ => None,
     };
@@ -277,7 +281,7 @@ pub fn detail<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
         body = body.push(line(icons::PIN, o.location.clone()));
     }
     if !e.calendar.is_empty() {
-        body = body.push(line(icons::CALENDAR, e.calendar.clone()));
+        body = body.push(line(icons::CALENDAR, calendar_name(&e.calendar_url, &e.calendar)));
     }
     if !o.organizer.is_empty() {
         body = body.push(line(icons::MAIL, format!("{}: {}", t("organizer"), o.organizer)));
@@ -346,6 +350,16 @@ pub fn detail<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
         .height(Fill)
         .style(panel(p.bg))
         .into()
+}
+
+/// A calendar's name; the one kept on the device is "On this computer"
+/// here (the engine names it for the phones).
+fn calendar_name(url: &str, name: &str) -> String {
+    if url == ferrowl_core::cache::LOCAL_CALENDAR {
+        t("calendar_local_desktop").to_string()
+    } else {
+        name.to_string()
+    }
 }
 
 /// A repeat choice in the picker, with its label.
@@ -485,8 +499,8 @@ fn form<'a>(app: &'a App, f: &'a EventForm, p: Palette) -> Element<'a, Message> 
             .unwrap_or_default()
             .into_iter()
             .map(|c| CalendarChoice {
+                name: calendar_name(&c.url, &c.name),
                 url: c.url,
-                name: c.name,
             })
             .collect();
         if calendars.len() > 1 {

@@ -49,6 +49,10 @@ pub fn list<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
     // What the last sync did: running, failed (why), or how many contacts.
     let status: Element<'a, Message> = match &app.contacts_sync {
         SyncState::Running => text(t("contacts_syncing")).size(12).color(p.muted).into(),
+        // No contacts server: not an error, contacts stay on this computer.
+        SyncState::Failed(e) if e == t("err_dav_none") => {
+            text(t("contacts_local_note")).size(12).color(p.muted).into()
+        }
         SyncState::Failed(e) => text(e.as_str()).size(12).color(p.danger).into(),
         _ => text(tf("contacts_count", &[("n", &app.contacts.len().to_string())]))
             .size(12)

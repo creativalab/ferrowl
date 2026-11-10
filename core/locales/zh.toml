@@ -640,6 +640,10 @@ contact_deleted = "联系人已删除。"
 
 # Calendar kept on the device
 calendar_local = "在此手机上"
+# Desktop: calendar and contacts kept on this computer
+calendar_local_desktop = "在此电脑上"
+calendar_local_note = "此账户没有日历服务器：日程保存在此电脑上。"
+contacts_local_note = "此账户没有通讯录服务器：联系人保存在此电脑上。"
 
 # Separate login for contacts and calendar
 dav_credentials = "联系人和日历登录"

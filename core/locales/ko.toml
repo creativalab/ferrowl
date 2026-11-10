@@ -640,6 +640,10 @@ contact_deleted = "연락처를 삭제했습니다."
 
 # Calendar kept on the device
 calendar_local = "이 휴대폰"
+# Desktop: calendar and contacts kept on this computer
+calendar_local_desktop = "이 컴퓨터"
+calendar_local_note = "이 계정에는 캘린더 서버가 없습니다. 일정은 이 컴퓨터에 저장됩니다."
+contacts_local_note = "이 계정에는 연락처 서버가 없습니다. 연락처는 이 컴퓨터에 저장됩니다."
 
 # Separate login for contacts and calendar
 dav_credentials = "연락처 및 캘린더 로그인"
