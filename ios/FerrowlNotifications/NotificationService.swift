@@ -57,7 +57,17 @@ final class NotificationService: UNNotificationServiceExtension {
             let count = last == 0 ? min(peek.freshCount, 1) : peek.freshCount
             // Nothing unread is new (the open app already saw it, or it was
             // read elsewhere): the newest message rather than a bare "New mail".
-            guard let first = peek.fresh.first ?? peek.newest else { return }
+            guard var first = peek.fresh.first ?? peek.newest else { return }
+            // The user's rules may keep messages quiet ("silent"): shown
+            // without sound or banner when every new one is.
+            let silenced = Set(engine.silenced(account: account, headers: peek.fresh))
+            let loud = peek.fresh.filter { !silenced.contains($0.uid) }
+            if !peek.fresh.isEmpty, loud.isEmpty {
+                content.sound = nil
+                content.interruptionLevel = .passive
+            } else if let shown = loud.first {
+                first = shown
+            }
             // Tapping it opens this message.
             content.userInfo["email"] = account.email
             content.userInfo["uid"] = NSNumber(value: first.uid)

@@ -21,6 +21,7 @@ import com.ferrowl.app.ui.mailbox.MailboxViewModel
 import com.ferrowl.app.ui.message.MessageScreen
 import com.ferrowl.app.ui.message.ReplyKind
 import com.ferrowl.app.ui.settings.IntegrationsScreen
+import com.ferrowl.app.ui.settings.RulesScreen
 import com.ferrowl.app.ui.settings.SettingsScreen
 import com.ferrowl.app.ui.setup.SetupScreen
 import com.ferrowl.app.ui.start.StartScreen
@@ -35,6 +36,8 @@ import kotlinx.serialization.Serializable
 @Serializable object Settings
 
 @Serializable object Integrations
+
+@Serializable object Rules
 @Serializable object Contacts
 @Serializable object Agenda
 
@@ -106,9 +109,12 @@ fun FerrowlNavHost(composeRequests: ComposeRequests) {
                 onBack = { nav.popBackStack() },
                 onNoAccount = { nav.navigate(Setup) { popUpTo(nav.graph.id) { inclusive = true } } },
                 onIntegrations = { nav.navigate(Integrations) },
+                onRules = { nav.navigate(Rules) },
+                onAddAccount = { nav.navigate(Setup) },
             )
         }
         composable<Integrations> { IntegrationsScreen(onBack = { nav.popBackStack() }) }
+        composable<Rules> { RulesScreen(onBack = { nav.popBackStack() }) }
         composable<Agenda> {
             CalendarScreen(
                 onBack = { nav.popBackStack() },

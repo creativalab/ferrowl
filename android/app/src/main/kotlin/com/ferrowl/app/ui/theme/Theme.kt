@@ -5,6 +5,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
 // Colors of the desktop themes (design/themes.json): Ruggine (light) and
@@ -67,8 +68,15 @@ private val Notte = darkColorScheme(
     error = Color(0xFFF28B82),
 )
 
-/** App theme: follows the system light/dark setting. */
+/** Pictures in HTML mail load from the network (Settings › Load remote images). */
+val LocalRemoteImages = staticCompositionLocalOf { true }
+
+/**
+ * App theme: one of design/themes.json chosen in the settings, or "auto"
+ * (Ruggine, Notte when the system is dark).
+ */
 @Composable
-fun FerrowlTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = if (isSystemInDarkTheme()) Notte else Ruggine, content = content)
+fun FerrowlTheme(theme: String = "auto", content: @Composable () -> Unit) {
+    val scheme = THEMES[theme] ?: if (isSystemInDarkTheme()) Notte else Ruggine
+    MaterialTheme(colorScheme = scheme, content = content)
 }

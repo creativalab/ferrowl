@@ -9,11 +9,14 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.core.content.IntentCompat
 import com.ferrowl.app.data.Billing
 import com.ferrowl.app.data.MicrosoftSignIn
+import com.ferrowl.app.data.SettingsStore
 import com.ferrowl.app.push.ComposeRequest
 import com.ferrowl.app.push.ComposeRequests
 import com.ferrowl.app.ui.navigation.FerrowlNavHost
@@ -22,6 +25,7 @@ import com.ferrowl.app.ui.notice.LocalNotices
 import com.ferrowl.app.ui.notice.NoticeHost
 import com.ferrowl.app.ui.notice.Notices
 import com.ferrowl.app.ui.theme.FerrowlTheme
+import com.ferrowl.app.ui.theme.LocalRemoteImages
 import com.ferrowl.core.FerrowlLink
 import com.ferrowl.core.parseLink
 import dagger.hilt.android.AndroidEntryPoint
@@ -40,6 +44,8 @@ class MainActivity : ComponentActivity() {
 
     @Inject lateinit var billing: Billing
 
+    @Inject lateinit var settings: SettingsStore
+
     @Inject lateinit var notificationOpen: com.ferrowl.app.push.NotificationOpen
 
     @Inject lateinit var composeRequests: ComposeRequests
@@ -49,8 +55,14 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         if (savedInstanceState == null) handle(intent)
         setContent {
-            FerrowlTheme {
-                CompositionLocalProvider(LocalNotices provides notices, LocalBilling provides billing) {
+            val theme by settings.theme.collectAsState(initial = "auto")
+            val remoteImages by settings.remoteImages.collectAsState(initial = true)
+            FerrowlTheme(theme) {
+                CompositionLocalProvider(
+                    LocalNotices provides notices,
+                    LocalBilling provides billing,
+                    LocalRemoteImages provides remoteImages,
+                ) {
                     // Notices (confirmations and errors) over every screen, at the bottom.
                     Box(Modifier.fillMaxSize()) {
                         FerrowlNavHost(composeRequests)
