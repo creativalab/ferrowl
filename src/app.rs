@@ -778,6 +778,8 @@ pub enum Message {
     Raise,
     MouseDown,
     MouseUp,
+    /// The window lost the keyboard focus.
+    Unfocused,
     RowEnter(u32),
     RowExit(u32),
     FolderEnter(String),
@@ -1139,6 +1141,7 @@ impl App {
                 iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
                     Some(Message::MouseUp)
                 }
+                iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::Unfocused),
                 _ => None,
             }),
         ];
@@ -3127,6 +3130,15 @@ impl App {
                 (Some(d), Some(target)) if d.active => self.move_message(d.uid, target),
                 _ => Task::none(),
             },
+            // Keys and buttons released in another window never reach us: a
+            // Ctrl or Shift left "held" would turn every click on the list
+            // into a selection, so forget them when the focus goes away.
+            Message::Unfocused => {
+                self.modifiers = keyboard::Modifiers::default();
+                self.drag = None;
+                self.html_press = None;
+                Task::none()
+            }
             Message::RowEnter(uid) => {
                 self.hover_row = Some(uid);
                 Task::none()
