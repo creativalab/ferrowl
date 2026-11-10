@@ -46,6 +46,15 @@ class AccountStore @Inject constructor(
         }
     }
 
+    /** Changes an account's settings in place (its order and the active one stay). */
+    suspend fun update(account: Account) {
+        context.dataStore.edit { prefs ->
+            val current = read(prefs)
+            val list = current.list.map { if (it.email.equals(account.email, ignoreCase = true)) account else it }
+            write(prefs, list, current.active?.email ?: account.email)
+        }
+    }
+
     /** Makes the account with this address the active one. */
     suspend fun setActive(email: String) {
         context.dataStore.edit { prefs ->

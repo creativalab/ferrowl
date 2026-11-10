@@ -101,7 +101,16 @@ class PushService : FirebaseMessagingService() {
         val peek = repo.peekInbox(address, last, MailNotifier.MAX_LINES) ?: return@runCatching false
         accountUnread.set(address, peek.unread.toInt(), fresh = peek.fresh)
         if (peek.fresh.isNotEmpty()) {
-            notifier.show(peek.fresh, peek.freshCount.toInt(), address, peek.unreadUids.map { it.toLong() })
+            // The user's rules may keep messages quiet: then no sound.
+            val quiet = runCatching { repo.silenced(address, peek.fresh) }.getOrDefault(emptySet())
+            val loud = peek.fresh.filter { it.uid !in quiet }
+            notifier.show(
+                loud.ifEmpty { peek.fresh },
+                peek.freshCount.toInt(),
+                address,
+                peek.unreadUids.map { it.toLong() },
+                quietly = loud.isEmpty(),
+            )
             // Connected automation apps (Tasker…) hear about it too.
             runCatching { bridge.newMail(address, peek) }
             store.setLastNotified(address, peek.fresh.first().uid.toLong())

@@ -357,6 +357,40 @@ final class MailRepository {
         return moved
     }
 
+    // MARK: rules
+
+    /// The inbox's new messages through the user's rules (each once).
+    func applyRules(_ folderId: String, _ headers: [Header]) async -> RulesOutcome? {
+        guard folderId == inboxId, !headers.isEmpty else { return nil }
+        guard let outcome = try? await engine.applyRules(folderId: folderId, headers: headers) else { return nil }
+        let touched = Set(outcome.removed + outcome.read + outcome.starred)
+        if !touched.isEmpty { notices.info(t("rules_applied", ["n": "\(touched.count)"])) }
+        return outcome
+    }
+
+    /// The active account's rules.
+    func rules() -> [Rule] {
+        guard let account = activeAccount else { return [] }
+        return engine.rules(account: account)
+    }
+
+    func saveRule(_ rule: Rule) throws {
+        guard let account = activeAccount else { return }
+        try engine.saveRule(account: account, rule: rule)
+    }
+
+    func deleteRule(_ id: String) throws {
+        guard let account = activeAccount else { return }
+        try engine.deleteRule(account: account, id: id)
+    }
+
+    /// The inbox messages on the phone a condition picks.
+    func rulePreview(_ condition: String) async -> [Header] {
+        guard let account = activeAccount else { return [] }
+        let engine = engine
+        return await Task.detached { engine.rulePreview(account: account, condition: condition, limit: 5) }.value
+    }
+
     // MARK: contacts and calendar
 
     func contacts(_ query: String) async -> [Contact] {

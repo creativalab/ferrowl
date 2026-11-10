@@ -151,6 +151,14 @@ final class MailboxModel {
             if let moved = try? await mail.applySenderRules(id, fresh), !moved.isEmpty {
                 fresh.removeAll { moved.contains($0.uid) }
             }
+            // The user's rules on the inbox's new messages.
+            if let done = await mail.applyRules(id, fresh) {
+                fresh.removeAll { done.removed.contains($0.uid) }
+                for i in fresh.indices {
+                    if done.read.contains(fresh[i].uid) { fresh[i].seen = true }
+                    if done.starred.contains(fresh[i].uid) { fresh[i].flagged = true }
+                }
+            }
             guard folderId == id else { return }
             messages = fresh
             if id == mail.inboxId, let email = mail.activeEmail {

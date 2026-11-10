@@ -89,6 +89,7 @@ struct SettingsView: View {
                     }
                     .disabled(pushBusy)
                     NavigationLink(t("senders_title")) { SenderListsView() }
+                    NavigationLink(t("rules_title")) { RulesView() }
                 } header: {
                     Text(t("section_general"))
                 }

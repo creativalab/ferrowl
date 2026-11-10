@@ -335,6 +335,12 @@ class MailboxViewModel @Inject constructor(
                 // Sender lists: blocked mail leaves the inbox, allowed mail leaves Spam.
                 val moved = runCatching { repo.applySenderRules(id, fresh) }.getOrDefault(emptyList())
                 if (moved.isNotEmpty()) fresh = fresh.filter { it.uid !in moved }
+                // The user's rules on the inbox's new messages.
+                repo.applyRules(id, fresh)?.let { done ->
+                    fresh = fresh.filter { it.uid !in done.removed }.map {
+                        it.copy(seen = it.seen || it.uid in done.read, flagged = it.flagged || it.uid in done.starred)
+                    }
+                }
                 _state.update { if (it.folderId == id) it.copy(messages = fresh, refreshing = false) else it }
                 loadUnread()
             } catch (e: FerrowlException) {

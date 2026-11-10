@@ -250,6 +250,9 @@ struct MessageView: View {
                 Image(systemName: model.starred ? "star.fill" : "star")
             }
             .accessibilityLabel(t(model.starred ? "star_remove" : "star_add"))
+            // At the top, as on Android: away from the reply buttons.
+            Button(action: trash) { Image(systemName: "trash") }
+                .accessibilityLabel(t("delete"))
             Menu {
                 Button { close { try await mail.setSeen(model.folderId, [model.uid], false) } } label: {
                     Label(t("mark_unread"), systemImage: "envelope.badge")
@@ -267,24 +270,26 @@ struct MessageView: View {
         }
     }
 
-    /// Archive, delete, reply, reply all, forward: small, at the bottom left, on a frosted
+    /// To the Trash (in the Trash: for good, after asking).
+    private func trash() {
+        if model.deletesForever {
+            confirmDelete = true
+        } else if let mailbox, let header = mailbox.header(model.uid) {
+            // As a swipe in the list: "Moved to Trash · Undo".
+            let unread: UInt32 = header.seen ? 0 : 1
+            mailbox.deleteWithUndo(Row(conversation: Conversation(latest: header, uids: [model.uid], unread: unread)))
+            leave()
+        } else {
+            close { try await mail.delete(model.folderId, [model.uid]) }
+        }
+    }
+
+    /// Archive, reply, reply all, forward: small, at the bottom left, on a frosted
     /// pill that stands out over the message.
     private var actions: some View {
         HStack(spacing: 2) {
             ActionIcon(name: "archivebox", label: t("archive")) {
                 close { try await mail.archive(model.folderId, [model.uid]) }
-            }
-            ActionIcon(name: "trash", label: t("delete")) {
-                if model.deletesForever {
-                    confirmDelete = true
-                } else if let mailbox, let header = mailbox.header(model.uid) {
-                    // As a swipe in the list: "Moved to Trash · Undo".
-                    let unread: UInt32 = header.seen ? 0 : 1
-                    mailbox.deleteWithUndo(Row(conversation: Conversation(latest: header, uids: [model.uid], unread: unread)))
-                    leave()
-                } else {
-                    close { try await mail.delete(model.folderId, [model.uid]) }
-                }
             }
             ActionIcon(name: "arrowshape.turn.up.left", label: t("reply")) { reply(.reply) }
             ActionIcon(name: "arrowshape.turn.up.left.2", label: t("reply_all")) { reply(.replyAll) }
