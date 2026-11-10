@@ -161,6 +161,8 @@ struct AccountDetail: View {
     @State private var name = ""
     @State private var carddav = ""
     @State private var caldav = ""
+    @State private var davUser = ""
+    @State private var davPassword = ""
 
     private func remove() {
         removing = true
@@ -193,6 +195,15 @@ struct AccountDetail: View {
                 Text(t("carddav_url_hint"))
             }
             Section {
+                TextField(t("dav_username"), text: $davUser)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().textContentType(.username)
+                SecureField(t("dav_password"), text: $davPassword)
+            } header: {
+                Text(t("dav_credentials"))
+            } footer: {
+                Text(t("dav_credentials_hint"))
+            }
+            Section {
                 Button(role: .destructive) {
                     confirmRemove = true
                 } label: {
@@ -216,6 +227,8 @@ struct AccountDetail: View {
             name = account.displayName
             carddav = account.carddavUrl
             caldav = account.caldavUrl
+            davUser = account.davUsername
+            davPassword = account.davPassword
         }
         .onDisappear {
             guard !removing else { return }
@@ -223,6 +236,8 @@ struct AccountDetail: View {
             changed.displayName = name.trimmingCharacters(in: .whitespaces)
             changed.carddavUrl = carddav.trimmingCharacters(in: .whitespaces)
             changed.caldavUrl = caldav.trimmingCharacters(in: .whitespaces)
+            changed.davUsername = davUser.trimmingCharacters(in: .whitespaces)
+            changed.davPassword = changed.davUsername.isEmpty ? "" : davPassword
             if changed != account { mail.update(changed) }
         }
     }

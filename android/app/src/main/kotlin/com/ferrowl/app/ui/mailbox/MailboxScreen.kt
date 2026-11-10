@@ -1,13 +1,20 @@
 package com.ferrowl.app.ui.mailbox
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.text.format.DateUtils
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,25 +26,33 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -52,6 +67,8 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SuggestionChip
+import androidx.compose.material3.Surface
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Tab
@@ -79,11 +96,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ferrowl.app.R
@@ -94,26 +118,9 @@ import com.ferrowl.core.Folder
 import com.ferrowl.core.FolderKind
 import com.ferrowl.core.Header
 import com.ferrowl.core.SortOrder
-import kotlinx.coroutines.launch
+import com.ferrowl.core.folderTree
 import kotlin.math.abs
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.material3.SuggestionChip
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.TextRange
-import android.Manifest
-import android.content.pm.PackageManager
-import android.os.Build
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.ui.platform.LocalContext
-import androidx.core.content.ContextCompat
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Surface
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+import kotlinx.coroutines.launch
 
 /**
  * The mail list of one folder, with the folder list in a side drawer,
@@ -247,10 +254,65 @@ fun MailboxScreen(
                         },
                         modifier = Modifier.padding(horizontal = 12.dp),
                     )
+                    Text(
+                        stringResource(R.string.section_folders),
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.padding(start = 28.dp, top = 24.dp, bottom = 12.dp),
+                    )
+                    // A tree that folds, as webmails show long lists: the
+                    // standard folders first, folders with subfolders closed
+                    // until opened (remembered per account).
+                    val context = LocalContext.current
+                    val prefs = remember { context.getSharedPreferences("folder_tree", android.content.Context.MODE_PRIVATE) }
+                    val key = "expanded:${s.active.lowercase()}"
+                    var expanded by remember(key) { mutableStateOf(prefs.getStringSet(key, emptySet()).orEmpty()) }
+                    fun toggle(id: String) {
+                        expanded = if (id in expanded) expanded - id else expanded + id
+                        prefs.edit { putStringSet(key, expanded) }
+                    }
+                    folderTree(s.folders, expanded.toList()).forEach { node ->
+                        val f = node.folder
+                        // A closed folder shows its subfolders' unread mail too.
+                        val count = (s.unread[f.id]?.toInt() ?: 0) +
+                            if (node.hasChildren && !node.expanded) node.descendants.sumOf { s.unread[it]?.toInt() ?: 0 } else 0
+                        NavigationDrawerItem(
+                            label = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        if (f.kind == FolderKind.OTHER) f.path.lastOrNull() ?: f.name else f.name,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.padding(start = (16 * node.depth.toInt()).dp).weight(1f, fill = false),
+                                    )
+                                    if (node.hasChildren) {
+                                        IconButton(onClick = { toggle(f.id) }, modifier = Modifier.size(32.dp)) {
+                                            Icon(
+                                                if (node.expanded) Icons.Filled.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                                contentDescription = f.name,
+                                            )
+                                        }
+                                    }
+                                }
+                            },
+                            badge = { if (count > 0) Text(count.toString()) },
+                            selected = f.id == s.folderId,
+                            onClick = {
+                                if (f.selectable) {
+                                    vm.openFolder(f.id)
+                                    scope.launch { drawer.close() }
+                                } else {
+                                    toggle(f.id)
+                                }
+                            },
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                        )
+                    }
                     HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                    // Contacts and calendar on top: the folder list can be long.
+                    // Contacts, calendar and settings together after the
+                    // folders, as on iOS.
                     NavigationDrawerItem(
                         label = { Text(stringResource(R.string.contacts)) },
+                        icon = { Icon(Icons.Filled.Person, contentDescription = null) },
                         selected = false,
                         onClick = {
                             scope.launch { drawer.close() }
@@ -260,6 +322,7 @@ fun MailboxScreen(
                     )
                     NavigationDrawerItem(
                         label = { Text(stringResource(R.string.calendar)) },
+                        icon = { Icon(Icons.Filled.DateRange, contentDescription = null) },
                         selected = false,
                         onClick = {
                             scope.launch { drawer.close() }
@@ -267,31 +330,8 @@ fun MailboxScreen(
                         },
                         modifier = Modifier.padding(horizontal = 12.dp),
                     )
-                    Text(
-                        stringResource(R.string.section_folders),
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.padding(start = 28.dp, top = 24.dp, bottom = 12.dp),
-                    )
-                    // As on the desktop: Inbox and the special folders first,
-                    // then the others (sorted by the server's names).
-                    s.folders.filter { it.selectable }.sortedBy { kindRank(it.kind) }.forEach { f ->
-                        val count = s.unread[f.id]?.toInt() ?: 0
-                        // Subfolders are indented under their parent (special
-                        // folders are not, even under Gmail's "[Gmail]").
-                        val depth = if (f.kind == FolderKind.OTHER) (f.path.size - 1).coerceAtLeast(0) else 0
-                        NavigationDrawerItem(
-                            label = { Text(f.name, modifier = Modifier.padding(start = (16 * depth).dp)) },
-                            badge = { if (count > 0) Text(count.toString()) },
-                            selected = f.id == s.folderId,
-                            onClick = {
-                                vm.openFolder(f.id)
-                                scope.launch { drawer.close() }
-                            },
-                            modifier = Modifier.padding(horizontal = 12.dp),
-                        )
-                    }
-                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
                     NavigationDrawerItem(
+                        icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
                         label = { Text(stringResource(R.string.settings)) },
                         selected = false,
                         onClick = {

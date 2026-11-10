@@ -35,6 +35,14 @@ pub struct Account {
     /// Calendar server (CalDAV); empty = found from the address's domain.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub caldav_url: String,
+    /// Username for the contacts and calendar servers when they do not take
+    /// the mail one (a calendar elsewhere); empty = the mail username and
+    /// password.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub dav_username: String,
+    /// Its password (in the keychain, like the mail password).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub dav_password: String,
     /// Signed in with Google or Microsoft (OAuth2) instead of a password;
     /// the tokens live in the keychain, not here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -66,6 +74,8 @@ impl Default for Account {
             keyring: false,
             carddav_url: String::new(),
             caldav_url: String::new(),
+            dav_username: String::new(),
+            dav_password: String::new(),
             oauth: None,
         }
     }

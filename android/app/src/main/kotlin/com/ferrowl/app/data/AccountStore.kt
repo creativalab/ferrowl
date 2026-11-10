@@ -121,6 +121,11 @@ class AccountStore @Inject constructor(
         val pgpPassphraseSealed: String = "",
         /** "MICROSOFT" / "GOOGLE" when the account signs in instead of a password. */
         val oauth: String? = null,
+        val carddavUrl: String = "",
+        val caldavUrl: String = "",
+        /** Contacts/calendar servers' own username and (sealed) password, when not the mail ones. */
+        val davUsername: String = "",
+        val davPasswordSealed: String = "",
     ) {
         fun toAccount(secrets: SecretBox) = Account(
             displayName = displayName,
@@ -135,6 +140,10 @@ class AccountStore @Inject constructor(
             pop3KeepDays = pop3KeepDays?.toUInt(),
             pgpPassphrase = if (pgpPassphraseSealed.isEmpty()) "" else secrets.decrypt(pgpPassphraseSealed),
             oauth = oauth?.let { name -> OAuthProvider.entries.firstOrNull { it.name == name } },
+            carddavUrl = carddavUrl,
+            caldavUrl = caldavUrl,
+            davUsername = davUsername,
+            davPassword = if (davPasswordSealed.isEmpty()) "" else secrets.decrypt(davPasswordSealed),
         )
 
         companion object {
@@ -151,6 +160,10 @@ class AccountStore @Inject constructor(
                 pop3KeepDays = a.pop3KeepDays?.toInt(),
                 pgpPassphraseSealed = if (a.pgpPassphrase.isEmpty()) "" else secrets.encrypt(a.pgpPassphrase),
                 oauth = a.oauth?.name,
+                carddavUrl = a.carddavUrl,
+                caldavUrl = a.caldavUrl,
+                davUsername = a.davUsername,
+                davPasswordSealed = if (a.davPassword.isEmpty()) "" else secrets.encrypt(a.davPassword),
             )
         }
     }

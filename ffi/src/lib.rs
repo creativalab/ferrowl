@@ -77,6 +77,12 @@ pub struct Account {
     /// Calendar server (CalDAV); empty = found from the address's domain.
     #[uniffi(default = "")]
     pub caldav_url: String,
+    /// Username and password for the contacts and calendar servers when
+    /// they are not the mail ones; empty = the mail credentials.
+    #[uniffi(default = "")]
+    pub dav_username: String,
+    #[uniffi(default = "")]
+    pub dav_password: String,
     /// Signed in with Microsoft/Google instead of a password.
     #[uniffi(default = None)]
     pub oauth: Option<OAuthProvider>,
@@ -127,6 +133,8 @@ impl From<Account> for config::Account {
             keyring: false,
             carddav_url: a.carddav_url,
             caldav_url: a.caldav_url,
+            dav_username: a.dav_username,
+            dav_password: a.dav_password,
             oauth: a.oauth.map(Into::into),
         }
     }
@@ -583,6 +591,10 @@ pub struct AddressSuggestion {
 /// A contact from the account's contacts server.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct Contact {
+    /// Where it is stored (the server card's URL, or `local:…` on this
+    /// device); empty for a new one.
+    #[uniffi(default = "")]
+    pub url: String,
     pub name: String,
     /// Preferred address first.
     pub emails: Vec<String>,
@@ -887,6 +899,8 @@ pub fn oauth_account(provider: OAuthProvider, email: String, display_name: Strin
         pgp_passphrase: String::new(),
         carddav_url: String::new(),
         caldav_url: String::new(),
+        dav_username: String::new(),
+        dav_password: String::new(),
         oauth: Some(provider),
     }
 }
@@ -1010,6 +1024,64 @@ pub struct RulesOutcome {
     pub removed: Vec<u32>,
     pub read: Vec<u32>,
     pub starred: Vec<u32>,
+}
+
+// MARK: folder tree
+
+/// A row of the folder list (see `ferrowl_core::folder_tree`).
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct FolderNode {
+    pub folder: Folder,
+    /// Nesting level (0: top).
+    pub depth: u32,
+    /// It has subfolders: an arrow opens and closes them.
+    pub has_children: bool,
+    pub expanded: bool,
+    /// Every folder under it, for the unread count of a closed one.
+    pub descendants: Vec<String>,
+}
+
+/// The folders to show as a tree that folds: standard folders first, then
+/// the user's by name, each under its parent; what is under a closed
+/// folder (not in `expanded`) is left out.
+#[uniffi::export]
+pub fn folder_tree(folders: Vec<Folder>, expanded: Vec<String>) -> Vec<FolderNode> {
+    use ferrowl_core::folder_tree::{Entry, rows};
+    let entries: Vec<Entry> = folders
+        .iter()
+        .map(|f| Entry {
+            id: f.id.clone(),
+            path: f.path.clone(),
+            rank: match f.kind {
+                FolderKind::Inbox => Some(0),
+                FolderKind::Drafts => Some(1),
+                FolderKind::Sent => Some(2),
+                FolderKind::Archive => Some(3),
+                FolderKind::Spam => Some(4),
+                FolderKind::Trash => Some(5),
+                FolderKind::Other => None,
+            },
+            selectable: f.selectable,
+        })
+        .collect();
+    let open: std::collections::HashSet<String> = expanded.into_iter().collect();
+    rows(&entries, &open)
+        .into_iter()
+        .map(|r| FolderNode {
+            // A level the server does not list: a folder that only opens.
+            folder: folders.get(r.index).cloned().unwrap_or_else(|| Folder {
+                id: r.entry.id.clone(),
+                name: r.entry.path.last().cloned().unwrap_or_default(),
+                path: r.entry.path.clone(),
+                kind: FolderKind::Other,
+                selectable: false,
+            }),
+            depth: r.depth,
+            has_children: r.has_children,
+            expanded: r.expanded,
+            descendants: r.descendants,
+        })
+        .collect()
 }
 
 // MARK: Ferrowl Bridge (other apps, Shortcuts/Siri, intents, links)
@@ -1387,6 +1459,33 @@ impl Engine {
         agenda_of(&account.into(), from, to)
     }
 
+    /// Saves a contact written in the app: a new one (empty `url`) on the
+    /// account's contacts server when it has one, otherwise on this device;
+    /// a stored one where it is. Returns where it is now.
+    pub async fn save_contact(&self, contact: Contact) -> Result<String> {
+        let Some(account) = lock(&self.account).clone() else {
+            return Err(i18n::t("err_no_account").to_string().into());
+        };
+        let core = ferrowl_core::vcard::Contact {
+            url: contact.url,
+            uid: String::new(),
+            name: contact.name.trim().to_string(),
+            emails: contact.emails,
+            phones: contact.phones,
+            organization: contact.organization,
+            note: contact.note,
+        };
+        Ok(Backend::save_contact(account, core).await?)
+    }
+
+    /// Deletes a contact (from the contacts server too when it is there).
+    pub async fn delete_contact(&self, url: String) -> Result<()> {
+        let Some(account) = lock(&self.account).clone() else {
+            return Err(i18n::t("err_no_account").to_string().into());
+        };
+        Ok(Backend::delete_contact(account, url).await?)
+    }
+
     /// The address book of any account on the device (see `agenda_for`).
     pub fn contacts_for(&self, account: Account, query: String) -> Vec<Contact> {
         contacts_of(&account.into(), &query)
@@ -1448,6 +1547,7 @@ fn contacts_of(a: &config::Account, query: &str) -> Vec<Contact> {
     Backend::contacts(a, query)
         .into_iter()
         .map(|c| Contact {
+            url: c.url,
             name: c.name,
             emails: c.emails,
             phones: c.phones,
@@ -1816,6 +1916,8 @@ mod tests {
             pgp_passphrase: String::new(),
             carddav_url: String::new(),
             caldav_url: String::new(),
+            dav_username: String::new(),
+            dav_password: String::new(),
             oauth: None,
         });
         let back: config::Account = serde_json::from_str(&json).unwrap();
@@ -1839,6 +1941,8 @@ mod tests {
             pgp_passphrase: String::new(),
             carddav_url: String::new(),
             caldav_url: String::new(),
+            dav_username: String::new(),
+            dav_password: String::new(),
             oauth: None,
         };
         let core: config::Account = a.into();

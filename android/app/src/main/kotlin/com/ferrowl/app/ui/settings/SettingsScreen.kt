@@ -58,6 +58,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
@@ -308,6 +309,8 @@ private fun AccountDialog(account: Account, onDismiss: () -> Unit, onSave: (Acco
     var name by rememberSaveable { mutableStateOf(account.displayName) }
     var carddav by rememberSaveable { mutableStateOf(account.carddavUrl) }
     var caldav by rememberSaveable { mutableStateOf(account.caldavUrl) }
+    var davUser by rememberSaveable { mutableStateOf(account.davUsername) }
+    var davPassword by remember { mutableStateOf(account.davPassword) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.account_settings)) },
@@ -354,6 +357,22 @@ private fun AccountDialog(account: Account, onDismiss: () -> Unit, onSave: (Acco
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 )
+                Text(stringResource(R.string.dav_credentials), style = MaterialTheme.typography.titleSmall)
+                OutlinedTextField(
+                    value = davUser,
+                    onValueChange = { davUser = it.trim() },
+                    label = { Text(stringResource(R.string.dav_username)) },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = davPassword,
+                    onValueChange = { davPassword = it },
+                    label = { Text(stringResource(R.string.dav_password)) },
+                    supportingText = { Text(stringResource(R.string.dav_credentials_hint)) },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                )
                 TextButton(onClick = onRemove) {
                     Text(stringResource(R.string.remove_account), color = MaterialTheme.colorScheme.error)
                 }
@@ -361,7 +380,15 @@ private fun AccountDialog(account: Account, onDismiss: () -> Unit, onSave: (Acco
         },
         confirmButton = {
             TextButton(onClick = {
-                onSave(account.copy(displayName = name.trim(), carddavUrl = carddav, caldavUrl = caldav))
+                onSave(
+                    account.copy(
+                        displayName = name.trim(),
+                        carddavUrl = carddav,
+                        caldavUrl = caldav,
+                        davUsername = davUser,
+                        davPassword = if (davUser.isEmpty()) "" else davPassword,
+                    ),
+                )
             }) { Text(stringResource(R.string.rules_save)) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },

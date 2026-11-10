@@ -212,3 +212,24 @@ Ogni passo va in una PR separata, con CI verde e merge.
   l'FFI in `ffi/`: se un tipo del Bridge serve al mobile, esporlo lì.
 - Niente dati delle mail verso servizi esterni. Il server push resta "cieco".
 - Nessuna credenziale nel registro o nelle risposte JSON.
+
+## Da portare sul desktop (aggiornato al 10 novembre 2026)
+
+Su iOS e Android sono già pronti questi pezzi, tutti con la logica nel
+motore comune (`core/`). Al desktop resta solo l'interfaccia iced.
+
+| Funzione | Nel motore | Cosa manca sul desktop |
+|---|---|---|
+| Regole automatiche (#117) | `core/src/rules.rs`; `Backend::rules`, `save_rule`, `delete_rule`, `rule_preview`, `apply_rules`, `silenced`; la query di ricerca accetta anche `subject:` | Una schermata Regole nelle impostazioni (elenco, editor con anteprima). `apply_rules` va chiamato dopo il caricamento della Posta in arrivo. Le notifiche delle mail colpite da una regola "silenziosa" devono essere senza suono. |
+| Cartelle ad albero (#118) | `core/src/folder_tree.rs` (`rows`): crea anche i livelli che il server non elenca | La barra laterale usa `folder_tree::rows`, con la freccia per aprire e chiudere ogni cartella. Le cartelle aperte vanno ricordate per account. |
+| Contatti modificabili (#118) | `vcard::write`; `Backend::save_contact`, `delete_contact`: salvano su CardDAV, oppure in locale se l'account non ha CardDAV | Nella finestra contatti: "Nuovo", "Modifica", "Elimina". |
+| Calendario sul telefono/PC (#118) | `cache::LOCAL_CALENDAR`; `Backend::calendars` propone "Sul telefono" quando manca CalDAV; `save_event`, `delete_event` e gli inviti lo gestiscono | Nessun cambio necessario: compare nell'elenco dei calendari. Va rinominata la chiave `calendar_local` se sul desktop si preferisce "Su questo computer". |
+| Accesso separato a contatti e calendario (#118) | `Account.dav_username` / `dav_password`, salvati nel keyring (`secrets.rs`) | Due campi nelle impostazioni dell'account. |
+| Temi colore | `design/themes.json` (già usato dal desktop) | Nessun cambio. |
+
+**Google Calendar:** non si collega con nome utente e password (Google
+accetta solo OAuth per CalDAV/CardDAV). Va fatto con l'accesso Google
+OAuth già presente per la posta, aggiungendo gli scope calendario e
+contatti e un token "Bearer" nel client DAV (`dav.rs`). Gli scope
+calendario sono "sensibili" e richiedono la verifica dell'app da parte
+di Google.

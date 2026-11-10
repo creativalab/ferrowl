@@ -12,6 +12,7 @@ pub mod crypto;
 pub mod dav;
 pub mod errors;
 pub mod events;
+pub mod folder_tree;
 pub mod html;
 pub mod i18n;
 pub mod ical;

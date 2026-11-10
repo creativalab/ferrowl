@@ -34,6 +34,7 @@ struct AccountStore {
         for a in snapshot.accounts {
             Self.storeSecret("password", a.email, a.password)
             Self.storeSecret("pgp", a.email, a.pgpPassphrase)
+            Self.storeSecret("dav", a.email, a.davPassword)
         }
         let saved = Saved(accounts: snapshot.accounts.map(Stored.init), active: snapshot.active)
         guard let data = try? JSONEncoder().encode(saved) else { return }
@@ -48,6 +49,7 @@ struct AccountStore {
     func removeSecrets(of email: String) {
         Keychain.delete(Self.secrets, "password:\(email.lowercased())")
         Keychain.delete(Self.secrets, "pgp:\(email.lowercased())")
+        Keychain.delete(Self.secrets, "dav:\(email.lowercased())")
     }
 
     private static func storeSecret(_ kind: String, _ email: String, _ value: String) {
@@ -81,6 +83,8 @@ struct AccountStore {
         var pop3KeepDays: UInt32?
         var carddavUrl: String
         var caldavUrl: String
+        /// Contacts/calendar servers' own username (its password: Keychain).
+        var davUsername: String?
         /// "microsoft" / "google" when the account signs in instead of a password.
         var oauth: String?
 
@@ -96,6 +100,7 @@ struct AccountStore {
             pop3KeepDays = a.pop3KeepDays
             carddavUrl = a.carddavUrl
             caldavUrl = a.caldavUrl
+            davUsername = a.davUsername.isEmpty ? nil : a.davUsername
             oauth = switch a.oauth {
             case .microsoft: "microsoft"
             case .google: "google"
@@ -123,6 +128,8 @@ struct AccountStore {
                 pgpPassphrase: AccountStore.secret("pgp", email),
                 carddavUrl: carddavUrl,
                 caldavUrl: caldavUrl,
+                davUsername: davUsername ?? "",
+                davPassword: AccountStore.secret("dav", email),
                 oauth: provider
             )
         }

@@ -608,3 +608,26 @@ rules_name = "이름(선택)"
 rules_enabled = "사용"
 rules_applied = "규칙이 새 메시지 {n}개를 처리했습니다"
 rules_delete = "규칙 삭제"
+
+# Writing contacts (iOS, Android)
+contact_new = "새 연락처"
+contact_edit = "편집"
+contact_name = "이름"
+contact_org = "회사"
+contact_emails = "이메일 주소"
+contact_phones = "전화번호"
+contact_note = "메모"
+contact_add_email = "주소 추가"
+contact_add_phone = "전화번호 추가"
+contact_delete = "연락처 삭제"
+contact_saved = "연락처를 저장했습니다."
+contact_deleted = "연락처를 삭제했습니다."
+
+# Calendar kept on the device
+calendar_local = "이 휴대폰"
+
+# Separate login for contacts and calendar
+dav_credentials = "연락처 및 캘린더 로그인"
+dav_username = "사용자 이름"
+dav_password = "암호"
+dav_credentials_hint = "연락처나 캘린더 서버가 메일 제공업체와 다를 때만 입력하세요(예: 앱 암호를 쓰는 iCloud, Fastmail, Nextcloud). 비워 두면 메일 로그인을 사용하며, 위에 서버 주소를 입력하세요."
