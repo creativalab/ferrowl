@@ -3,3 +3,6 @@
 "Search mail in ${applicationName}" = "البحث في بريد ${applicationName}";
 "Write a mail with ${applicationName}" = "كتابة بريد باستخدام ${applicationName}";
 "Send a mail with ${applicationName}" = "إرسال بريد باستخدام ${applicationName}";
+"My agenda in ${applicationName}" = "جدول أعمالي في ${applicationName}";
+"Find a contact in ${applicationName}" = "البحث عن جهة اتصال في ${applicationName}";
+"New event in ${applicationName}" = "حدث جديد في ${applicationName}";

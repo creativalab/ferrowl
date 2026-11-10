@@ -1,6 +1,7 @@
 package com.ferrowl.app
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.core.content.IntentCompat
 import com.ferrowl.app.data.Billing
 import com.ferrowl.app.data.MicrosoftSignIn
 import com.ferrowl.app.push.ComposeRequest
@@ -70,6 +72,18 @@ class MainActivity : ComponentActivity() {
         handle(intent)
     }
 
+    /** The files of a "share" intent (one or several). */
+    private fun sharedFiles(intent: Intent): List<Uri> {
+        val streams = if (intent.action == Intent.ACTION_SEND_MULTIPLE) {
+            IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
+        } else {
+            listOfNotNull(IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java))
+        }
+        // Some apps only put them in the clip data.
+        val clips = intent.clipData?.let { c -> (0 until c.itemCount).mapNotNull { c.getItemAt(it).uri } }.orEmpty()
+        return (streams + clips).distinct()
+    }
+
     private fun handle(intent: Intent?) {
         // A tapped new-mail notification: open its message.
         intent?.getStringExtra(com.ferrowl.app.push.NotificationOpen.EXTRA_EMAIL)?.let { email ->
@@ -78,13 +92,14 @@ class MainActivity : ComponentActivity() {
             intent.removeExtra(com.ferrowl.app.push.NotificationOpen.EXTRA_EMAIL)
         }
         if (intent == null) return
-        // Text shared from another app: a new message with it.
-        if (intent.action == Intent.ACTION_SEND) {
+        // Text or files shared from another app: a new message with them.
+        if (intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE) {
             composeRequests.request(
                 ComposeRequest(
                     to = intent.getStringArrayExtra(Intent.EXTRA_EMAIL)?.joinToString(", ").orEmpty(),
                     subject = intent.getStringExtra(Intent.EXTRA_SUBJECT).orEmpty(),
                     body = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty(),
+                    files = sharedFiles(intent).map(Uri::toString),
                 ),
             )
             setIntent(Intent(intent).setAction(Intent.ACTION_MAIN))

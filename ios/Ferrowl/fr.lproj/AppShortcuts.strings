@@ -3,3 +3,6 @@
 "Search mail in ${applicationName}" = "Rechercher des mails dans ${applicationName}";
 "Write a mail with ${applicationName}" = "Écrire un mail avec ${applicationName}";
 "Send a mail with ${applicationName}" = "Envoyer un mail avec ${applicationName}";
+"My agenda in ${applicationName}" = "Mon agenda dans ${applicationName}";
+"Find a contact in ${applicationName}" = "Trouver un contact dans ${applicationName}";
+"New event in ${applicationName}" = "Nouvel événement dans ${applicationName}";

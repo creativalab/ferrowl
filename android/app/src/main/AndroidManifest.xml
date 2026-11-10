@@ -50,11 +50,13 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="mailto" />
             </intent-filter>
-            <!-- Text shared to Ferrowl becomes a new message. -->
+            <!-- Text or files shared to Ferrowl become a new message (files
+                 attached). -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="text/plain" />
+                <data android:mimeType="*/*" />
             </intent-filter>
             <meta-data
                 android:name="android.app.shortcuts"
@@ -99,6 +101,11 @@
                 <action android:name="com.ferrowl.app.action.UNREAD" />
                 <action android:name="com.ferrowl.app.action.SEARCH" />
                 <action android:name="com.ferrowl.app.action.SEND" />
+                <action android:name="com.ferrowl.app.action.AGENDA" />
+                <action android:name="com.ferrowl.app.action.CONTACTS" />
+                <action android:name="com.ferrowl.app.action.ARCHIVE" />
+                <action android:name="com.ferrowl.app.action.MARK_READ" />
+                <action android:name="com.ferrowl.app.action.MARK_UNREAD" />
             </intent-filter>
         </receiver>
         <!-- "Send" / "Don't send" in the confirmation notification. -->

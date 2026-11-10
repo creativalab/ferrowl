@@ -3,3 +3,6 @@
 "Search mail in ${applicationName}" = "${applicationName} でメールを検索";
 "Write a mail with ${applicationName}" = "${applicationName} でメールを作成";
 "Send a mail with ${applicationName}" = "${applicationName} でメールを送信";
+"My agenda in ${applicationName}" = "${applicationName} の予定一覧";
+"Find a contact in ${applicationName}" = "${applicationName} で連絡先を検索";
+"New event in ${applicationName}" = "${applicationName} で新しい予定";

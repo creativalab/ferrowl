@@ -13,6 +13,8 @@ struct ComposeRequest: Identifiable {
     var cc = ""
     var subject = ""
     var body = ""
+    /// Files shared to Ferrowl from another app, to attach.
+    var files: [URL] = []
 }
 
 /// An opened message, as `MessageViewModel` on Android.

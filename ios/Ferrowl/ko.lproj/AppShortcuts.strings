@@ -3,3 +3,6 @@
 "Search mail in ${applicationName}" = "${applicationName}에서 메일 검색";
 "Write a mail with ${applicationName}" = "${applicationName}로 메일 쓰기";
 "Send a mail with ${applicationName}" = "${applicationName}로 메일 보내기";
+"My agenda in ${applicationName}" = "${applicationName}의 내 일정";
+"Find a contact in ${applicationName}" = "${applicationName}에서 연락처 찾기";
+"New event in ${applicationName}" = "${applicationName}에서 새 일정";

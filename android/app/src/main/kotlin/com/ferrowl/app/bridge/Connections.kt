@@ -28,7 +28,9 @@ data class Connection(
     val read: Boolean = true,
     /** May send mail (Ferrowl Pro). */
     val send: Boolean = false,
-    /** Each message is confirmed by the user in a notification first. */
+    /** May change mail: archive, mark read or unread (Ferrowl Pro). */
+    val write: Boolean = false,
+    /** Each message to send, and each change, is confirmed by the user in a notification first. */
     val askBeforeSend: Boolean = true,
     val lastUsed: Long = 0,
 )
@@ -37,16 +39,20 @@ data class Connection(
 @Serializable
 data class LogEntry(val time: Long, val label: String, val action: String, val outcome: String)
 
-/** A message an app asked to send, waiting for the user's answer. */
+/** A message an app asked to send, or a change to mail, waiting for the user's answer. */
 @Serializable
 data class PendingSend(
     val id: String,
     val token: String,
     val request: String,
     val account: String,
-    val to: String,
-    val subject: String,
-    val body: String,
+    val to: String = "",
+    val subject: String = "",
+    val body: String = "",
+    /** The request's action: SEND, ARCHIVE, MARK_READ or MARK_UNREAD. */
+    val kind: String = "SEND",
+    /** For changes: the messages' `ferrowl://open` links. */
+    val links: List<String> = emptyList(),
 )
 
 /**

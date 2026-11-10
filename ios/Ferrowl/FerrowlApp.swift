@@ -49,8 +49,13 @@ final class AppModel {
         Self.shared = self
     }
 
-    /// A `ferrowl://` or `mailto:` link opened from another app.
+    /// A `ferrowl://` or `mailto:` link opened from another app, or a file
+    /// shared to Ferrowl (it becomes a new message with it attached).
     func open(link url: URL) {
+        if url.isFileURL {
+            pendingCompose = ComposeRequest(files: [url])
+            return
+        }
         switch parseLink(url: url.absoluteString) {
         case .open(let account, _, let uid):
             // Only inbox messages can be opened directly for now.

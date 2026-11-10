@@ -297,6 +297,14 @@ class MailRepository @Inject constructor(
     suspend fun searchAccount(account: Account, query: String, limit: Int): List<Header> =
         withContext(Dispatchers.IO) { engine.searchAccount(account, "INBOX", query, limit.toUInt()) }
 
+    /** The synced agenda of any account, between two Unix times (other apps). */
+    suspend fun agendaFor(account: Account, from: Long, to: Long): List<CalendarEvent> =
+        withContext(Dispatchers.IO) { engine.agendaFor(account, from, to) }
+
+    /** The address book of any account (other apps). */
+    suspend fun contactsFor(account: Account, query: String): List<Contact> =
+        withContext(Dispatchers.IO) { engine.contactsFor(account, query) }
+
     /** Messages already on the phone (local database, off the main thread). */
     suspend fun cachedHeaders(folderId: String): List<Header> =
         withContext(Dispatchers.IO) { engine.cachedHeaders(folderId) }
