@@ -35,8 +35,24 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         context.settings.edit { it[SORT] = order.name }
     }
 
+    /** Color theme: an id of design/themes.json, or "auto" (light/dark as the system). */
+    val theme: Flow<String> = context.settings.data.map { it[THEME] ?: "auto" }
+
+    suspend fun setTheme(id: String) {
+        context.settings.edit { it[THEME] = id }
+    }
+
+    /** Pictures in HTML mail load from the network (on by default, as on iOS and desktop). */
+    val remoteImages: Flow<Boolean> = context.settings.data.map { it[REMOTE_IMAGES] ?: true }
+
+    suspend fun setRemoteImages(on: Boolean) {
+        context.settings.edit { it[REMOTE_IMAGES] = on }
+    }
+
     private companion object {
         val THREADED = booleanPreferencesKey("threaded")
         val SORT = stringPreferencesKey("sort")
+        val THEME = stringPreferencesKey("theme")
+        val REMOTE_IMAGES = booleanPreferencesKey("remote_images")
     }
 }

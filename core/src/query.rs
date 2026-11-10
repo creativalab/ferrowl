@@ -3,6 +3,7 @@
 //! interface language:
 //!
 //! - `from:mario` — sender's name or address contains "mario"
+//! - `subject:fattura` — the subject contains "fattura"
 //! - `has:attachment` (or `has:attach…`) — with attachments
 //! - `is:unread`, `is:read`, `is:starred`
 //!
@@ -17,6 +18,8 @@ pub struct Query {
     pub words: Vec<String>,
     /// `from:` values (lowercase); all must match.
     pub from: Vec<String>,
+    /// `subject:` values (lowercase); all must match.
+    pub subject: Vec<String>,
     pub attachment: bool,
     /// `is:unread` (Some(false)) / `is:read` (Some(true)).
     pub seen: Option<bool>,
@@ -31,6 +34,10 @@ impl Query {
             if let Some(v) = lower.strip_prefix("from:") {
                 if !v.is_empty() {
                     q.from.push(v.to_string());
+                }
+            } else if let Some(v) = lower.strip_prefix("subject:") {
+                if !v.is_empty() {
+                    q.subject.push(v.to_string());
                 }
             } else if lower.starts_with("has:attach") {
                 q.attachment = true;
@@ -50,7 +57,11 @@ impl Query {
     /// Whether there is any operator (a search without free words then
     /// filters the messages already on the device).
     pub fn has_filters(&self) -> bool {
-        !self.from.is_empty() || self.attachment || self.seen.is_some() || self.starred
+        !self.from.is_empty()
+            || !self.subject.is_empty()
+            || self.attachment
+            || self.seen.is_some()
+            || self.starred
     }
 
     pub fn is_empty(&self) -> bool {
@@ -60,7 +71,9 @@ impl Query {
     /// Whether a message passes the operators (not the free words).
     pub fn matches(&self, h: &Header) -> bool {
         let sender = format!("{} {}", h.from, h.from_address).to_lowercase();
+        let subject = h.subject.to_lowercase();
         self.from.iter().all(|f| sender.contains(f.as_str()))
+            && self.subject.iter().all(|s| subject.contains(s.as_str()))
             && (!self.attachment || h.has_attachment)
             && self.seen.is_none_or(|seen| h.seen == seen)
             && (!self.starred || h.flagged)
@@ -104,5 +117,8 @@ mod tests {
         assert!(Query::parse("is:starred").matches(&h("A", "", true, false, true)));
         assert!(q.matches_words(&h("A", "", true, false, false)));
         assert!(Query::parse("Re:").is_empty());
+        let s = Query::parse("subject:FATTURA");
+        assert!(s.has_filters() && s.matches(&h("A", "", true, false, false)));
+        assert!(!Query::parse("subject:ordine").matches(&h("A", "", true, false, false)));
     }
 }

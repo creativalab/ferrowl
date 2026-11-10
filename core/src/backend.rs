@@ -962,6 +962,106 @@ impl Backend {
     /// mail from blocked senders goes to Spam; in Spam, mail from allowed
     /// senders comes back to the inbox. Returns the moved messages (to
     /// take out of the list on screen).
+    /// The account's rules (see [crate::rules]), in their order.
+    pub fn rules(account: &Account) -> Vec<crate::rules::Rule> {
+        cache::get()
+            .and_then(|c| c.rules(&cache::account_key(account)).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save_rule(account: &Account, rule: &crate::rules::Rule) -> Res<()> {
+        cache::get()
+            .ok_or_else(generic_error)?
+            .save_rule(&cache::account_key(account), rule)
+            .map_err(text)
+    }
+
+    pub fn delete_rule(account: &Account, id: &str) -> Res<()> {
+        cache::get()
+            .ok_or_else(generic_error)?
+            .delete_rule(&cache::account_key(account), id)
+            .map_err(text)
+    }
+
+    /// Which of `headers` an enabled rule keeps from being notified.
+    pub fn silenced(account: &Account, headers: &[Header]) -> Vec<u32> {
+        let rules = Self::rules(account);
+        headers
+            .iter()
+            .filter(|h| crate::rules::silenced(&rules, h))
+            .map(|h| h.uid)
+            .collect()
+    }
+
+    /// The inbox messages on the device a condition would pick (newest
+    /// first, at most `limit`): the preview of a rule being written.
+    pub fn rule_preview(account: &Account, condition: &str, limit: usize) -> Vec<Header> {
+        let rule = crate::rules::Rule {
+            id: String::new(),
+            name: String::new(),
+            condition: condition.to_string(),
+            actions: Vec::new(),
+            enabled: true,
+        };
+        let mut found: Vec<Header> = Self::cached_headers_up_to(account, "INBOX", 500)
+            .into_iter()
+            .filter(|h| rule.matches(h))
+            .collect();
+        found.sort_by_key(|h| std::cmp::Reverse(h.timestamp));
+        found.truncate(limit);
+        found
+    }
+
+    /// Applies the rules to the inbox's new messages (each once; the first
+    /// run only remembers where the inbox is). Returns what was done.
+    pub async fn apply_rules(
+        &self,
+        folder: String,
+        headers: Vec<Header>,
+        folders: Vec<Folder>,
+    ) -> Res<crate::rules::Plan> {
+        let inbox = folders
+            .iter()
+            .any(|f| f.name == folder && f.kind == FolderKind::Inbox);
+        let Some(account) = self.lock().account.clone() else {
+            return Ok(Default::default());
+        };
+        let (Some(newest), true) = (headers.iter().map(|h| h.uid).max(), inbox) else {
+            return Ok(Default::default());
+        };
+        let rules = Self::rules(&account);
+        let Some(c) = cache::get() else {
+            return Ok(Default::default());
+        };
+        let key = cache::account_key(&account);
+        let done = c.rules_done(&key).ok().flatten();
+        let fresh: Vec<Header> = match done {
+            Some(done) if !rules.is_empty() => headers.into_iter().filter(|h| h.uid > done).collect(),
+            _ => Vec::new(),
+        };
+        let plan = crate::rules::plan(&rules, &fresh);
+        if !plan.mark_read.is_empty() {
+            self.set_seen_many(folder.clone(), plan.mark_read.clone(), true)
+                .await?;
+        }
+        if !plan.star.is_empty() {
+            self.set_flagged_many(folder.clone(), plan.star.clone(), true)
+                .await?;
+        }
+        if !plan.archive.is_empty() {
+            self.archive_many(folder.clone(), plan.archive.clone(), folders.clone())
+                .await?;
+        }
+        for (target, uids) in &plan.moves {
+            self.move_many(folder.clone(), uids.clone(), target.clone())
+                .await?;
+        }
+        if done.is_none_or(|d| newest > d) {
+            let _ = c.set_rules_done(&key, newest);
+        }
+        Ok(plan)
+    }
+
     pub async fn apply_sender_rules(
         &self,
         folder: String,

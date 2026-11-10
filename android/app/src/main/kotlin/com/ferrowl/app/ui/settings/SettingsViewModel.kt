@@ -7,6 +7,7 @@ import com.ferrowl.app.data.MailRepository
 import com.ferrowl.app.data.SettingsStore
 import com.ferrowl.app.push.PushRegistrar
 import com.ferrowl.app.push.PushStore
+import com.ferrowl.core.Account
 import com.ferrowl.core.Protocol
 import com.ferrowl.core.translate
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -86,6 +87,40 @@ class SettingsViewModel @Inject constructor(
                 else -> null
             }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** Every account on the phone, in their order. */
+    val accounts: StateFlow<List<Account>> =
+        repo.accountList.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** The color theme (an id of design/themes.json, or "auto"). */
+    val theme: StateFlow<String> = settings.theme.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "auto")
+
+    fun setTheme(id: String) {
+        viewModelScope.launch { settings.setTheme(id) }
+    }
+
+    /** Pictures in HTML mail load from the network. */
+    val remoteImages: StateFlow<Boolean> =
+        settings.remoteImages.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
+    fun setRemoteImages(on: Boolean) {
+        viewModelScope.launch { settings.setRemoteImages(on) }
+    }
+
+    /** Saves an account's name and contacts/calendar servers. */
+    fun updateAccount(account: Account) {
+        viewModelScope.launch {
+            runCatching { repo.updateAccount(account) }.onFailure { _pushError.value = it.message }
+        }
+    }
+
+    /** Removes an account from the phone (mail on the server is not touched). */
+    fun removeAccount(email: String) {
+        viewModelScope.launch {
+            val left = runCatching { repo.removeAccount(email) }.getOrDefault(true)
+            if (!left) _noAccount.value = true
+        }
+    }
 
     /** Address of the active account (for "Remove account"). */
     val activeEmail: StateFlow<String> =

@@ -55,7 +55,12 @@ enum BackgroundRefresh {
                 let unread: UInt32?
                 if active {
                     try await mail.ensureConnected()
-                    headers = try await mail.headers(mail.inboxId)
+                    var inbox = try await mail.headers(mail.inboxId)
+                    // The user's rules first: what they move or mark is not announced.
+                    if let done = await mail.applyRules(mail.inboxId, inbox) {
+                        inbox.removeAll { done.removed.contains($0.uid) || done.read.contains($0.uid) }
+                    }
+                    headers = inbox
                     unread = try? await mail.engine.unread(folderIds: [mail.inboxId])[mail.inboxId]
                 } else {
                     // A second engine: the account on screen stays connected.
@@ -64,7 +69,9 @@ enum BackgroundRefresh {
                     headers = try await app.side.headers(folderId: inbox).headers
                     unread = try? await app.side.unread(folderIds: [inbox])[inbox]
                 }
-                notifyNew(headers, account: account.email, announce: !(foreground && active))
+                // Messages a rule keeps quiet are not announced.
+                let quiet = Set(mail.engine.silenced(account: account, headers: headers))
+                notifyNew(headers, account: account.email, announce: !(foreground && active), quiet: quiet)
                 // Notifications of messages read since (here or elsewhere) go.
                 if let oldest = headers.map(\.uid).min() {
                     let unread = Set(headers.filter { !$0.seen }.map(\.uid))
@@ -99,7 +106,7 @@ enum BackgroundRefresh {
 
     /// Remembers the newest message of the inbox (and announces the unread
     /// ones newer than the last time when `announce`).
-    static func notifyNew(_ headers: [Header], account: String, announce: Bool) {
+    static func notifyNew(_ headers: [Header], account: String, announce: Bool, quiet: Set<UInt32> = []) {
         let key = "lastUid:\(account.lowercased())"
         let defaults = SharedStorage.defaults
         let last = UInt32(defaults.integer(forKey: key))
@@ -107,7 +114,7 @@ enum BackgroundRefresh {
         defaults.set(Int(max(newest, last)), forKey: key)
         // First check for this account: only remember where we are.
         guard announce, last > 0 else { return }
-        let fresh = headers.filter { $0.uid > last && !$0.seen }.sorted { $0.uid > $1.uid }
+        let fresh = headers.filter { $0.uid > last && !$0.seen && !quiet.contains($0.uid) }.sorted { $0.uid > $1.uid }
         guard let first = fresh.first else { return }
         let content = UNMutableNotificationContent()
         if fresh.count == 1 {

@@ -100,6 +100,19 @@ CREATE TABLE IF NOT EXISTS sender_rules (
     allow   INTEGER NOT NULL,
     PRIMARY KEY (account, address)
 );
+-- The user's rules (see rules.rs), in their order, and the newest inbox
+-- message they were applied to.
+CREATE TABLE IF NOT EXISTS rules (
+    account  TEXT NOT NULL,
+    id       TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    json     TEXT NOT NULL,
+    PRIMARY KEY (account, id)
+);
+CREATE TABLE IF NOT EXISTS rules_done (
+    account  TEXT PRIMARY KEY,
+    last_uid INTEGER NOT NULL
+);
 -- Our answers to invitations, by event UID (shown on the invitation even
 -- without a calendar server).
 CREATE TABLE IF NOT EXISTS invite_replies (
@@ -411,6 +424,8 @@ impl Cache {
             "calendars",
             "events",
             "sender_rules",
+            "rules",
+            "rules_done",
             "invite_replies",
         ] {
             tx.execute(
@@ -839,6 +854,69 @@ impl Cache {
         Ok(None)
     }
 
+    /// The account's rules, in their order.
+    pub fn rules(&self, account: &str) -> Result<Vec<crate::rules::Rule>> {
+        let conn = self.lock();
+        let mut stmt =
+            conn.prepare_cached("SELECT json FROM rules WHERE account = ?1 ORDER BY position, id")?;
+        let rows = stmt.query_map(params![account], |r| r.get::<_, String>(0))?;
+        Ok(rows
+            .filter_map(|r| r.ok())
+            .filter_map(|json| serde_json::from_str(&json).ok())
+            .collect())
+    }
+
+    /// Adds a rule (at the end) or replaces the one with its id (in place).
+    pub fn save_rule(&self, account: &str, rule: &crate::rules::Rule) -> Result<()> {
+        let json = serde_json::to_string(rule)?;
+        let conn = self.lock();
+        let position: i64 = conn
+            .query_row(
+                "SELECT position FROM rules WHERE account = ?1 AND id = ?2",
+                params![account, rule.id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(conn.query_row(
+                "SELECT COALESCE(MAX(position) + 1, 0) FROM rules WHERE account = ?1",
+                params![account],
+                |r| r.get(0),
+            )?);
+        conn.execute(
+            "INSERT OR REPLACE INTO rules (account, id, position, json) VALUES (?1, ?2, ?3, ?4)",
+            params![account, rule.id, position, json],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_rule(&self, account: &str, id: &str) -> Result<()> {
+        self.lock().execute(
+            "DELETE FROM rules WHERE account = ?1 AND id = ?2",
+            params![account, id],
+        )?;
+        Ok(())
+    }
+
+    /// The newest inbox message the rules already saw (None: never ran).
+    pub fn rules_done(&self, account: &str) -> Result<Option<u32>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT last_uid FROM rules_done WHERE account = ?1",
+                params![account],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn set_rules_done(&self, account: &str, last_uid: u32) -> Result<()> {
+        self.lock().execute(
+            "INSERT OR REPLACE INTO rules_done (account, last_uid) VALUES (?1, ?2)",
+            params![account, last_uid],
+        )?;
+        Ok(())
+    }
+
     /// The account's calendars.
     pub fn calendars(&self, account: &str) -> Result<Vec<crate::dav::Collection>> {
         let conn = self.lock();
@@ -1078,6 +1156,34 @@ mod tests {
         assert_eq!(c.headers("a", "Sent", 10).unwrap().len(), 1);
         drop(c);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn rules_keep_their_order() {
+        use crate::rules::{Action, Rule};
+        let c = Cache::in_memory();
+        let rule = |id: &str, condition: &str| Rule {
+            id: id.into(),
+            name: String::new(),
+            condition: condition.into(),
+            actions: vec![Action::MarkRead],
+            enabled: true,
+        };
+        c.save_rule("a", &rule("2", "from:b")).unwrap();
+        c.save_rule("a", &rule("1", "from:a")).unwrap();
+        // Replaced in place, not moved to the end.
+        c.save_rule("a", &rule("2", "from:c")).unwrap();
+        let saved = c.rules("a").unwrap();
+        assert_eq!(
+            saved.iter().map(|r| r.condition.as_str()).collect::<Vec<_>>(),
+            ["from:c", "from:a"]
+        );
+        c.delete_rule("a", "2").unwrap();
+        assert_eq!(c.rules("a").unwrap().len(), 1);
+        assert!(c.rules("b").unwrap().is_empty());
+        assert_eq!(c.rules_done("a").unwrap(), None);
+        c.set_rules_done("a", 42).unwrap();
+        assert_eq!(c.rules_done("a").unwrap(), Some(42));
     }
 
     #[test]

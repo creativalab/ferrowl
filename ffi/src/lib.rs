@@ -931,6 +931,87 @@ pub fn markdown_to_html(markdown: String) -> Option<String> {
         .then(|| ferrowl_core::markdown::to_html_document(&markdown))
 }
 
+// MARK: rules
+
+/// What a rule does (see `ferrowl_core::rules`).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum RuleAction {
+    MarkRead,
+    Star,
+    Archive,
+    /// Move to a folder (its id).
+    MoveTo {
+        folder: String,
+    },
+    /// No new-mail notification.
+    Silence,
+}
+
+/// "When a message arrives that matches `condition` (a search), do `actions`."
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct Rule {
+    pub id: String,
+    pub name: String,
+    pub condition: String,
+    pub actions: Vec<RuleAction>,
+    pub enabled: bool,
+}
+
+impl From<ferrowl_core::rules::Rule> for Rule {
+    fn from(r: ferrowl_core::rules::Rule) -> Self {
+        use ferrowl_core::rules::Action as A;
+        Rule {
+            id: r.id,
+            name: r.name,
+            condition: r.condition,
+            actions: r
+                .actions
+                .into_iter()
+                .map(|a| match a {
+                    A::MarkRead => RuleAction::MarkRead,
+                    A::Star => RuleAction::Star,
+                    A::Archive => RuleAction::Archive,
+                    A::MoveTo(folder) => RuleAction::MoveTo { folder },
+                    A::Silence => RuleAction::Silence,
+                })
+                .collect(),
+            enabled: r.enabled,
+        }
+    }
+}
+
+impl From<Rule> for ferrowl_core::rules::Rule {
+    fn from(r: Rule) -> Self {
+        use ferrowl_core::rules::Action as A;
+        ferrowl_core::rules::Rule {
+            id: r.id,
+            name: r.name,
+            condition: r.condition,
+            actions: r
+                .actions
+                .into_iter()
+                .map(|a| match a {
+                    RuleAction::MarkRead => A::MarkRead,
+                    RuleAction::Star => A::Star,
+                    RuleAction::Archive => A::Archive,
+                    RuleAction::MoveTo { folder } => A::MoveTo(folder),
+                    RuleAction::Silence => A::Silence,
+                })
+                .collect(),
+            enabled: r.enabled,
+        }
+    }
+}
+
+/// What the rules did to new messages.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct RulesOutcome {
+    /// Moved or archived: they left the inbox.
+    pub removed: Vec<u32>,
+    pub read: Vec<u32>,
+    pub starred: Vec<u32>,
+}
+
 // MARK: Ferrowl Bridge (other apps, Shortcuts/Siri, intents, links)
 
 /// What a `ferrowl://` or `mailto:` link asks for (see `ferrowl_core::bridge`).
@@ -1535,6 +1616,49 @@ impl Engine {
 
     /// Applies the sender lists to a loaded folder (inbox: blocked senders
     /// to Spam; Spam: allowed senders back). Returns the moved uids.
+    /// An account's rules, in their order.
+    pub fn rules(&self, account: Account) -> Vec<Rule> {
+        Backend::rules(&account.into())
+            .into_iter()
+            .map(Rule::from)
+            .collect()
+    }
+
+    /// Adds a rule or replaces the one with its id.
+    pub fn save_rule(&self, account: Account, rule: Rule) -> Result<()> {
+        Ok(Backend::save_rule(&account.into(), &rule.into())?)
+    }
+
+    pub fn delete_rule(&self, account: Account, id: String) -> Result<()> {
+        Ok(Backend::delete_rule(&account.into(), &id)?)
+    }
+
+    /// The inbox messages on the device a condition picks (a rule's preview).
+    pub fn rule_preview(&self, account: Account, condition: String, limit: u32) -> Vec<Header> {
+        Backend::rule_preview(&account.into(), &condition, limit as usize)
+            .into_iter()
+            .map(Header::from)
+            .collect()
+    }
+
+    /// Which of these messages a rule keeps from being notified.
+    pub fn silenced(&self, account: Account, headers: Vec<Header>) -> Vec<u32> {
+        let core: Vec<mail::Header> = headers.iter().map(mail::Header::from).collect();
+        Backend::silenced(&account.into(), &core)
+    }
+
+    /// Applies the rules to the inbox's new messages (each once).
+    pub async fn apply_rules(&self, folder_id: String, headers: Vec<Header>) -> Result<RulesOutcome> {
+        let folders = lock(&self.folders).clone();
+        let core: Vec<mail::Header> = headers.iter().map(mail::Header::from).collect();
+        let plan = self.backend.apply_rules(folder_id, core, folders).await?;
+        Ok(RulesOutcome {
+            removed: plan.removed(),
+            read: plan.mark_read,
+            starred: plan.star,
+        })
+    }
+
     pub async fn apply_sender_rules(&self, folder_id: String, headers: Vec<Header>) -> Result<Vec<u32>> {
         let folders = lock(&self.folders).clone();
         let core: Vec<mail::Header> = headers.iter().map(mail::Header::from).collect();

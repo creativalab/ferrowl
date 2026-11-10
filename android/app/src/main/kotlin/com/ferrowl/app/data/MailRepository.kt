@@ -16,6 +16,8 @@ import com.ferrowl.core.InboxPeek
 import com.ferrowl.core.InviteReply
 import com.ferrowl.core.Message
 import com.ferrowl.core.Outgoing
+import com.ferrowl.core.Rule
+import com.ferrowl.core.RulesOutcome
 import com.ferrowl.core.markdownToHtml
 import com.ferrowl.core.oauthForget
 import com.ferrowl.core.translate
@@ -144,6 +146,18 @@ class MailRepository @Inject constructor(
         connectLock.withLock { _folders.value = engine.connect(next) }
         _switched.tryEmit(Unit)
         return true
+    }
+
+    /**
+     * Saves an account's name and contacts/calendar servers. The account in
+     * use connects again, so its address book and calendars follow them.
+     */
+    suspend fun updateAccount(account: Account) {
+        accounts.update(account)
+        if (account.email.equals(savedAccount()?.email, ignoreCase = true)) {
+            connectLock.withLock { _folders.value = engine.connect(account) }
+            syncContactsQuietly()
+        }
     }
 
     /** Checks settings without saving them. Returns a confirmation text. */
@@ -399,6 +413,37 @@ class MailRepository @Inject constructor(
         val moved = engine.applySenderRules(folderId, headers)
         if (moved.isNotEmpty()) noticeBoard.info(translate("rules_moved").replace("{n}", moved.size.toString()))
         return moved
+    }
+
+    /** The inbox's new messages through the user's rules (each once). */
+    suspend fun applyRules(folderId: String, headers: List<Header>): RulesOutcome? {
+        if (folderId != inboxId() || headers.isEmpty()) return null
+        val outcome = runCatching { engine.applyRules(folderId, headers) }.getOrNull() ?: return null
+        val touched = (outcome.removed + outcome.read + outcome.starred).toSet()
+        if (touched.isNotEmpty()) noticeBoard.info(translate("rules_applied").replace("{n}", touched.size.toString()))
+        return outcome
+    }
+
+    /** The active account's rules. */
+    suspend fun rules(): List<Rule> = savedAccount()?.let { engine.rules(it) }.orEmpty()
+
+    suspend fun saveRule(rule: Rule) {
+        savedAccount()?.let { engine.saveRule(it, rule) }
+    }
+
+    suspend fun deleteRule(id: String) {
+        savedAccount()?.let { engine.deleteRule(it, id) }
+    }
+
+    /** The inbox messages on the phone a condition picks (a rule's preview). */
+    suspend fun rulePreview(condition: String): List<Header> = withContext(Dispatchers.IO) {
+        savedAccount()?.let { engine.rulePreview(it, condition, 5u) }.orEmpty()
+    }
+
+    /** Which of these messages of [email] a rule keeps quiet. */
+    suspend fun silenced(email: String, headers: List<Header>): Set<UInt> {
+        val account = accounts.accounts.first().firstOrNull { it.email.equals(email, ignoreCase = true) } ?: return emptySet()
+        return withContext(Dispatchers.IO) { engine.silenced(account, headers).toSet() }
     }
 
     /** Stars or unstars messages (IMAP \\Flagged, shown by every client). */
