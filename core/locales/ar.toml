@@ -640,6 +640,10 @@ contact_deleted = "تم حذف جهة الاتصال."
 
 # Calendar kept on the device
 calendar_local = "على هذا الهاتف"
+# Desktop: calendar and contacts kept on this computer
+calendar_local_desktop = "على هذا الحاسوب"
+calendar_local_note = "لا يوجد خادم تقويم لهذا الحساب: تُحفظ الأحداث على هذا الحاسوب."
+contacts_local_note = "لا يوجد خادم جهات اتصال لهذا الحساب: تُحفظ جهات الاتصال على هذا الحاسوب."
 
 # Separate login for contacts and calendar
 dav_credentials = "تسجيل الدخول لجهات الاتصال والتقويم"

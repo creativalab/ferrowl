@@ -640,6 +640,10 @@ contact_deleted = "Contact deleted."
 
 # Calendar kept on the device
 calendar_local = "On this phone"
+# Desktop: calendar and contacts kept on this computer
+calendar_local_desktop = "On this computer"
+calendar_local_note = "No calendar server for this account: events are kept on this computer."
+contacts_local_note = "No contacts server for this account: contacts are kept on this computer."
 
 # Separate login for contacts and calendar
 dav_credentials = "Contacts and calendar login"

@@ -640,6 +640,10 @@ contact_deleted = "連絡先を削除しました。"
 
 # Calendar kept on the device
 calendar_local = "このスマートフォン"
+# Desktop: calendar and contacts kept on this computer
+calendar_local_desktop = "このコンピュータ"
+calendar_local_note = "このアカウントにはカレンダーサーバーがありません。予定はこのコンピュータに保存されます。"
+contacts_local_note = "このアカウントには連絡先サーバーがありません。連絡先はこのコンピュータに保存されます。"
 
 # Separate login for contacts and calendar
 dav_credentials = "連絡先とカレンダーのログイン"
