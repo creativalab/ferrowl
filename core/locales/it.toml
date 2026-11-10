@@ -665,3 +665,4 @@ spotlight_desc = "Le mail più recenti della posta in arrivo compaiono nella ric
 # Tasker event plugin
 plugin_new_mail = "Nuova mail in Ferrowl"
 plugin_new_mail_desc = "Parte quando arriva una mail nuova. Lascia vuoto un campo per accettare qualsiasi valore; altrimenti l'account, il mittente (nome o indirizzo) o l'oggetto devono contenerlo."
+plugin_connect = "Salvando colleghi {app} a Ferrowl: potrà leggere la posta (inviare e modificare richiedono il permesso in Impostazioni › Integrazioni)."

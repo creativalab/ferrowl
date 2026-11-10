@@ -8,9 +8,22 @@ import Foundation
 enum WidgetActions {
     /// (message link, archive instead of marking read). Set by the app.
     @MainActor static var run: ((String, Bool) async throws -> Void)?
+
+    /// The app was not there to do it.
+    struct Unavailable: Error {}
+
+    @MainActor
+    static func perform(_ link: String, archive: Bool) async throws {
+        guard let run else { throw Unavailable() }
+        try await run(link, archive)
+    }
 }
 
 struct WidgetMarkReadIntent: LiveActivityIntent {
+    /// The widget's own button, not an action offered in Shortcuts
+    /// (Shortcuts has "Archive mail" and "Mark mail", with Pro and a
+    /// confirmation).
+    static var isDiscoverable: Bool { false }
     static var title: LocalizedStringResource = "intent_widget_read"
     static var openAppWhenRun = false
 
@@ -25,12 +38,16 @@ struct WidgetMarkReadIntent: LiveActivityIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        try await WidgetActions.run?(link, false)
+        try await WidgetActions.perform(link, archive: false)
         return .result()
     }
 }
 
 struct WidgetArchiveIntent: LiveActivityIntent {
+    /// The widget's own button, not an action offered in Shortcuts
+    /// (Shortcuts has "Archive mail" and "Mark mail", with Pro and a
+    /// confirmation).
+    static var isDiscoverable: Bool { false }
     static var title: LocalizedStringResource = "intent_widget_archive"
     static var openAppWhenRun = false
 
@@ -45,7 +62,7 @@ struct WidgetArchiveIntent: LiveActivityIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        try await WidgetActions.run?(link, true)
+        try await WidgetActions.perform(link, archive: true)
         return .result()
     }
 }

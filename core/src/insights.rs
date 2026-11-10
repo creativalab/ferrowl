@@ -41,12 +41,23 @@ static SHIPPING_WORDS: LazyLock<Regex> = LazyLock::new(|| {
 });
 static CODE: LazyLock<Regex> = LazyLock::new(|| {
     re(
-        r"(?i)\b(codice|code|otp|pin|passcode|verifica|verification|one[- ]time|sicurezza|security)\b[^\d\n]{0,40}?\b(\d{4,8})\b",
+        r"(?i)\b(codice (?:di )?(?:verifica|sicurezza|accesso|conferma|autorizzazione|controllo)|codice (?:otp|monouso|temporaneo)|il tuo codice(?: è)?|otp|verification code|security code|confirmation code|login code|one[- ]time (?:pass)?code|passcode|your code(?: is)?)\b([^\d\n]{0,25}?)\b(\d{4,8})\b",
+    )
+});
+static NOT_A_CODE: LazyLock<Regex> = LazyLock::new(|| {
+    re(
+        r"(?i)\b(cliente|ordine|fiscale|postale|sconto|promo\w*|prodotto|articolo|pratica|contratto|utente|account|customer|order|discount|coupon|postal|zip)\b",
     )
 });
 static BILL_WORDS: LazyLock<Regex> = LazyLock::new(|| {
     re(
-        r"(?i)\b(fattur\w*|invoice|bollett\w*|pagament\w*|payment|scadenz\w*|rata|f24|avviso di pagamento|importo|amount due|da pagare)\b",
+        r"(?i)\b(fattur\w*|invoice|bollett\w*|f24|avviso di pagamento|rata|amount due|da pagare|scadenz\w*|due date)\b",
+    )
+});
+/// A bill already paid (a receipt): nothing to do about it.
+static PAID: LazyLock<Regex> = LazyLock::new(|| {
+    re(
+        r"(?i)\b(pagamento ricevuto|pagamento effettuato|abbiamo ricevuto il (?:tuo )?pagamento|grazie per il (?:tuo )?pagamento|payment received|thank you for your payment|paid in full|già pagat\w*|pagat[ao] con successo)\b",
     )
 });
 static INVOICE_NUMBER: LazyLock<Regex> = LazyLock::new(|| {
@@ -186,7 +197,8 @@ fn shipment(all: &str, from: &str) -> Option<Insight> {
                 .captures(all)
                 .and_then(|cap| cap.get(1))
                 .map(|m| m.as_str().to_uppercase())
-                .filter(|n| distinctive || n.chars().any(|ch| ch.is_ascii_digit()))
+                // Digits alone (a phone number?) only right after a tracking word.
+                .filter(|n| distinctive || n.chars().any(|ch| ch.is_ascii_alphabetic()))
         });
         if let Some(number) = number {
             return Some(Insight::Shipment {
@@ -210,14 +222,16 @@ fn shipment(all: &str, from: &str) -> Option<Insight> {
 
 fn code(all: &str) -> Option<Insight> {
     CODE.captures_iter(all)
-        .filter_map(|cap| cap.get(2).map(|m| m.as_str().to_string()))
+        // "Il tuo codice cliente 1234…": a number that is not a code.
+        .filter(|cap| !NOT_A_CODE.is_match(cap.get(2).map_or("", |m| m.as_str())))
+        .filter_map(|cap| cap.get(3).map(|m| m.as_str().to_string()))
         // A year is not a code.
         .find(|c| !(c.len() == 4 && (c.starts_with("19") || c.starts_with("20"))))
         .map(|code| Insight::Code { code })
 }
 
 fn payment(all: &str) -> Option<Insight> {
-    if !BILL_WORDS.is_match(all) {
+    if !BILL_WORDS.is_match(all) || PAID.is_match(all) {
         return None;
     }
     let amount = AMOUNT_NEAR
@@ -227,15 +241,16 @@ fn payment(all: &str) -> Option<Insight> {
         .map(|m| m.as_str().split_whitespace().collect::<Vec<_>>().join(" "))
         .unwrap_or_default();
     let due = due_date(all);
-    if amount.is_empty() && due.is_none() {
-        return None;
-    }
     let number = INVOICE_NUMBER
         .captures(all)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string())
         .filter(|n| n.chars().any(|ch| ch.is_ascii_digit()))
         .unwrap_or_default();
+    // A price alone is not a bill: it takes a due date or an invoice number.
+    if due.is_none() && number.is_empty() {
+        return None;
+    }
     Some(Insight::Payment { number, amount, due })
 }
 
@@ -314,6 +329,23 @@ mod tests {
         );
         // A number in a newsletter without shipping words is not a parcel.
         assert!(find("Offerte DHL", "news@x.it", "Chiamaci allo 0612345678").is_empty());
+        // Nor a phone number in a carrier's mail about deliveries.
+        assert!(
+            find(
+                "DHL: consegne più veloci",
+                "news@dhl.it",
+                "Spedizioni in 24 ore, chiamaci allo 0212345678"
+            )
+            .is_empty()
+        );
+        let dhl = find(
+            "DHL",
+            "noreply@dhl.it",
+            "La tua spedizione: numero di tracciamento 1234567890",
+        );
+        assert!(
+            matches!(&dhl[0], Insight::Shipment { carrier, number, .. } if carrier == "DHL" && number == "1234567890")
+        );
     }
 
     #[test]
@@ -334,6 +366,22 @@ mod tests {
         );
         // A year after "code" is not a code.
         assert!(find("Code of conduct 2026", "", "Aggiornato per il 2026").is_empty());
+        // Customer numbers, order numbers, postcodes, security news, times.
+        for text in [
+            "Il tuo codice cliente 12345678 è attivo",
+            "Codice ordine 40512345",
+            "Postal code 20121",
+            "Security update: 3500 vulnerabilities fixed",
+            "Ritira il pin in filiale alle 1830",
+        ] {
+            assert!(find("Avviso", "", text).is_empty(), "{text}");
+        }
+        assert_eq!(
+            find("Accesso", "", "Il tuo codice è 551234"),
+            [Insight::Code {
+                code: "551234".into()
+            }]
+        );
     }
 
     #[test]
@@ -358,7 +406,16 @@ mod tests {
         );
         assert!(matches!(&words[0], Insight::Payment { amount, due, .. }
             if amount == "89,90 €" && *due == NaiveDate::from_ymd_opt(2026, 12, 15)));
-        // Prices in an ad are not a bill.
+        // Prices in an ad are not a bill, nor is a receipt.
         assert!(find("Saldi!", "", "Scarpe a 49,90 €, borse a 29,90 €").is_empty());
+        assert!(find("Newsletter", "", "Pagamento sicuro con carta: abbonati a 19,99 €").is_empty());
+        assert!(
+            find(
+                "Ricevuta",
+                "",
+                "Pagamento ricevuto, grazie. Fattura n. 88. Totale 49,00 €"
+            )
+            .is_empty()
+        );
     }
 }

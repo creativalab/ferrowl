@@ -665,3 +665,4 @@ spotlight_desc = "Los mensajes recientes de tu bandeja de entrada aparecen en la
 # Tasker event plugin
 plugin_new_mail = "Correo nuevo en Ferrowl"
 plugin_new_mail_desc = "Se activa cuando llega correo nuevo. Deja un campo vacío para aceptar cualquiera; si no, la cuenta, el remitente (nombre o dirección) o el asunto deben contenerlo."
+plugin_connect = "Al guardar conectas {app} con Ferrowl: podrá leer tu correo (enviar y modificar requieren permiso en Ajustes › Integraciones)."

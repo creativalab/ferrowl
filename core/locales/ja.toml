@@ -665,3 +665,4 @@ spotlight_desc = "受信トレイの最新メッセージが iPhone の検索に
 # Tasker event plugin
 plugin_new_mail = "Ferrowl の新着メール"
 plugin_new_mail_desc = "新しいメールが届いたときに実行します。空欄は何でも可。入力した場合、アカウント・差出人（名前またはアドレス）・件名にそれが含まれる必要があります。"
+plugin_connect = "保存すると {app} が Ferrowl に接続され、メールを読めるようになります（送信と変更には 設定 › 連携 での許可が必要です）。"

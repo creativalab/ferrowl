@@ -301,17 +301,22 @@ impl Backend {
     /// The account's calendars; without a calendar server, the one kept on
     /// this device.
     pub fn calendars(account: &Account) -> Vec<crate::dav::Collection> {
-        let server = cache::get()
-            .and_then(|c| c.calendars(&cache::account_key(account)).ok())
-            .unwrap_or_default();
-        if !server.is_empty() {
-            return server;
-        }
-        vec![crate::dav::Collection {
+        let local = crate::dav::Collection {
             url: cache::LOCAL_CALENDAR.to_string(),
             name: t("calendar_local").to_string(),
             color: String::new(),
-        }]
+        };
+        let Some(c) = cache::get() else {
+            return vec![local];
+        };
+        let key = cache::account_key(account);
+        let mut calendars = c.calendars(&key).unwrap_or_default();
+        // Without a calendar server, or with events made on the phone before
+        // the account had one: the calendar on this device is listed too.
+        if calendars.is_empty() || c.has_local_events(&key).unwrap_or(false) {
+            calendars.push(local);
+        }
+        calendars
     }
 
     /// The form for a stored event (by item URL).

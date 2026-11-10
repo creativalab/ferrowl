@@ -81,7 +81,13 @@ promemoria.
   account, mittente e oggetto (vuoto = qualsiasi). Il profilo riceve
   `%fw_account`, `%fw_from`, `%fw_address`, `%fw_subject`, `%fw_count`,
   `%fw_link`, `%fw_text` e `%fw_json`.
-- L'app viene collegata da sola al primo uso, con il permesso di lettura.
+- La prima volta che salvi un'azione o un evento del plugin, l'app che lo
+  usa (Tasker…) viene collegata a Ferrowl con il permesso di lettura: lo
+  vedi scritto prima di salvare.
+- La chiave di collegamento è salvata nel task di Tasker: se esporti o
+  condividi il task (anche su TaskerNet) togli prima l'azione Ferrowl, o
+  dopo scollega e ricollega l'app in Impostazioni → Integrazioni per
+  cambiare la chiave.
 
 **In alternativa, gli intent.** In Tasker usa l'azione **Send Intent**:
 - Package: `com.ferrowl.app`

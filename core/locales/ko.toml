@@ -665,3 +665,4 @@ spotlight_desc = "받은편지함의 최근 메시지가 iPhone 검색에 나타
 # Tasker event plugin
 plugin_new_mail = "Ferrowl 새 메일"
 plugin_new_mail_desc = "새 메일이 도착하면 실행됩니다. 비워 두면 모두 허용하고, 입력하면 계정, 보낸 사람(이름 또는 주소), 제목에 그 내용이 포함되어야 합니다."
+plugin_connect = "저장하면 {app}이(가) Ferrowl에 연결되어 메일을 읽을 수 있습니다(보내기와 변경은 설정 › 연동에서 허용해야 함)."
