@@ -1508,6 +1508,9 @@ fn reader<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
     if let Some(card) = super::invite::view(app, msg.uid, p) {
         content = content.push(card);
     }
+    if let Some(cards) = super::insights::view(app, msg.uid, p) {
+        content = content.push(cards);
+    }
     content = content.push(body);
 
     if !msg.attachments.is_empty() {
