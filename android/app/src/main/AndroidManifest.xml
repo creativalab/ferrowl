@@ -131,7 +131,6 @@
             android:name=".bridge.TaskerPluginActivity"
             android:exported="true"
             android:icon="@mipmap/ic_launcher"
-            android:label="Ferrowl"
             tools:ignore="ExportedActivity">
             <intent-filter>
                 <action android:name="com.twofortyfouram.locale.intent.action.EDIT_SETTING" />
