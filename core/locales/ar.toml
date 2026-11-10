@@ -576,3 +576,10 @@ integrations_send_title = "يريد {app} إرسال بريد"
 integrations_send_text = "إلى {to}: {subject}"
 integrations_allow = "إرسال"
 integrations_deny = "عدم الإرسال"
+
+# Home Screen widget (iOS, Android)
+widget_title = "البريد غير المقروء"
+widget_desc = "بريدك غير المقروء من كل الحسابات بنظرة واحدة."
+widget_unread = "غير مقروءة"
+widget_none = "لا يوجد بريد غير مقروء"
+widget_inline = "{n} غير مقروءة"
