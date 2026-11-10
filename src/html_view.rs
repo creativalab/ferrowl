@@ -223,6 +223,90 @@ fn handle(rx: &mpsc::Receiver<Command>, current: &mut Option<Loaded>, cmd: Comma
     }
 }
 
+/// Web addresses written as text ("…all'indirizzo: https://…") become
+/// links, looking like the mail's other links: blue and underlined. An
+/// address may be split across inline tags (`…teamId=</span><span>5C6…`):
+/// each piece is wrapped in a link to the whole address.
+fn link_bare_addresses(html: &str) -> std::borrow::Cow<'_, str> {
+    // Where text is not shown or already links somewhere.
+    const SKIP: [&str; 6] = ["a", "style", "script", "title", "textarea", "head"];
+    // Inline tags do not break a word; any other tag does.
+    const INLINE: [&str; 12] = [
+        "span", "b", "i", "u", "em", "strong", "font", "small", "big", "sub", "sup", "wbr",
+    ];
+    let mut stream = String::new();
+    // (source start, stream start, length) of each shown piece of text.
+    let mut pieces: Vec<(usize, usize, usize)> = Vec::new();
+    let mut skip: Vec<String> = Vec::new();
+    let lower = html.to_ascii_lowercase();
+    let mut i = 0;
+    while i < html.len() {
+        if html.as_bytes()[i] == b'<' {
+            let end = if lower[i..].starts_with("<!--") {
+                lower[i..].find("-->").map(|e| i + e + 3)
+            } else {
+                lower[i..].find('>').map(|e| i + e + 1)
+            }
+            .unwrap_or(html.len());
+            let tag = &lower[i + 1..end.saturating_sub(1)];
+            let closing = tag.starts_with('/');
+            let name: String = tag
+                .trim_start_matches('/')
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            if SKIP.contains(&name.as_str()) {
+                if closing {
+                    if let Some(at) = skip.iter().rposition(|n| *n == name) {
+                        skip.truncate(at);
+                    }
+                } else if !tag.ends_with('/') {
+                    skip.push(name.clone());
+                }
+            }
+            if !INLINE.contains(&name.as_str()) {
+                stream.push('\n');
+            }
+            i = end;
+            continue;
+        }
+        let end = html[i..].find('<').map(|e| i + e).unwrap_or(html.len());
+        if skip.is_empty() {
+            pieces.push((i, stream.len(), end - i));
+            stream.push_str(&html[i..end]);
+        } else {
+            stream.push('\n');
+        }
+        i = end;
+    }
+    let mut inserts: Vec<(usize, String)> = Vec::new();
+    for (range, url) in crate::linkify::find(&stream) {
+        let open = format!(
+            r#"<a href="{}" style="color:#0b57d0;text-decoration:underline">"#,
+            url.replace('"', "&quot;")
+        );
+        for &(src, at, len) in &pieces {
+            let (from, to) = (range.start.max(at), range.end.min(at + len));
+            if from < to {
+                inserts.push((src + from - at, open.clone()));
+                inserts.push((src + to - at, "</a>".to_string()));
+            }
+        }
+    }
+    if inserts.is_empty() {
+        return std::borrow::Cow::Borrowed(html);
+    }
+    let mut out = String::with_capacity(html.len() + inserts.len() * 80);
+    let mut last = 0;
+    for (at, text) in inserts {
+        out.push_str(&html[last..at]);
+        out.push_str(&text);
+        last = at;
+    }
+    out.push_str(&html[last..]);
+    std::borrow::Cow::Owned(out)
+}
+
 /// Drops `<base>` tags that do not point to a web page: Blitz panics
 /// resolving relative links against a base such as `data:` (seen in a
 /// real mail).
@@ -324,15 +408,7 @@ fn link_in(doc: &HtmlDocument, x: f32, y: f32) -> Option<String> {
         }
         node = n.parent.and_then(|p| doc.get_node(p));
     }
-    // A web address written as plain text ("…all'indirizzo:
-    // https://…"), maybe split across spans: take the paragraph's text.
-    let (node, offset) = doc.find_text_position(x, y)?;
-    let text = doc
-        .get_node(node)
-        .and_then(|n| n.element_data())
-        .and_then(|e| e.inline_layout_data.as_ref())
-        .map(|l| l.text.clone())?;
-    crate::linkify::at(&text, offset.min(text.len()))
+    None
 }
 
 /// Fetches resources on background threads; counts what is in flight.
@@ -403,15 +479,65 @@ const NO_HOST: &str = "ferrowl.invalid";
 /// The message's own styles still win over this.
 const DEFAULT_STYLE: &str = "body { font-family: Inter, sans-serif; }";
 
+/// Sans-serif fonts mail asks for that Linux usually lacks: shown in Inter.
+const SANS_ALIASES: [&str; 14] = [
+    "Helvetica Neue",
+    "Helvetica",
+    "Arial",
+    "Verdana",
+    "Tahoma",
+    "Segoe UI",
+    "-apple-system",
+    "BlinkMacSystemFont",
+    "SF Pro Text",
+    "SF Pro Display",
+    "Myriad Set Pro",
+    "Lucida Grande",
+    "Geneva",
+    "Calibri",
+];
+
 /// System fonts plus the fonts bundled with the app.
 fn fonts() -> parley::FontContext {
     static FONTS: OnceLock<parley::FontContext> = OnceLock::new();
     FONTS
         .get_or_init(|| {
+            use parley::fontique::{Blob, FontInfoOverride, GenericFamily};
             let mut ctx = parley::FontContext::new();
+            let mut inter = Vec::new();
             for font in crate::ui::FONTS {
+                for (family, _) in ctx.collection.register_fonts(Blob::new(Arc::new(font)), None) {
+                    if ctx.collection.family_name(family) == Some("Inter") && !inter.contains(&family) {
+                        inter.push(family);
+                    }
+                }
+            }
+            // Mail asks for the fonts of Mac and Windows, missing on Linux,
+            // where each fell back to a different system font. They all get
+            // Inter, the app's font, as do the generic sans-serif families.
+            for font in &crate::ui::FONTS[..4] {
+                for name in SANS_ALIASES {
+                    ctx.collection.register_fonts(
+                        Blob::new(Arc::new(*font)),
+                        Some(FontInfoOverride {
+                            family_name: Some(name),
+                            ..Default::default()
+                        }),
+                    );
+                }
+            }
+            for generic in [
+                GenericFamily::SansSerif,
+                GenericFamily::SystemUi,
+                GenericFamily::UiSansSerif,
+            ] {
+                let others: Vec<_> = ctx.collection.generic_families(generic).collect();
+                let all = inter
+                    .iter()
+                    .copied()
+                    .chain(others.into_iter().filter(|f| !inter.contains(f)));
                 ctx.collection
-                    .register_fonts(parley::fontique::Blob::new(Arc::new(font)), None);
+                    .set_generic_families(generic, all.collect::<Vec<_>>().into_iter());
             }
             ctx
         })
@@ -459,7 +585,7 @@ fn load(job: &Job) -> Loaded {
     // the HTML user-agent styles do not apply (head, title and style text
     // show up, paragraphs and tables collapse). A leading comment keeps its
     // sniffing off and is harmless to the HTML parser.
-    let html = format!("<!---->{}", without_odd_base(&job.html));
+    let html = format!("<!---->{}", link_bare_addresses(&without_odd_base(&job.html)));
     let mut doc = HtmlDocument::from_html(&html, config);
     doc.resolve(0.0);
     // Wait for images/stylesheets (bounded), then lay out again.
@@ -631,6 +757,24 @@ mod tests {
         assert_eq!(link_at(7, 50.0, 50.0).as_deref(), Some("https://ferrowl.com/x"));
         assert_eq!(link_at(7, 50.0, 2000.0), None);
         assert_eq!(link_at(8, 50.0, 50.0), None, "other message");
+    }
+
+    #[test]
+    fn bare_addresses_become_styled_links() {
+        let got = link_bare_addresses(
+            r#"<style>a{x:url(https://no.example)}</style><p>Vai su https://a.example/x?id=</span><span>42</span>. Già <a href="https://b.example">https://b.example</a></p>"#,
+        );
+        let open = r#"<a href="https://a.example/x?id=42" style="color:#0b57d0;text-decoration:underline">"#;
+        assert_eq!(
+            got,
+            format!(
+                r#"<style>a{{x:url(https://no.example)}}</style><p>Vai su {open}https://a.example/x?id=</a></span><span>{open}42</a></span>. Già <a href="https://b.example">https://b.example</a></p>"#
+            )
+        );
+        assert!(matches!(
+            link_bare_addresses("<p>niente</p>"),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 
     #[test]
