@@ -64,6 +64,12 @@
 "intent_tracking_link" = "Lien de suivi";
 "intent_amount" = "Montant";
 "intent_due" = "Échéance";
+"focus_title" = "Comptes à afficher";
+"focus_desc" = "Pendant ce Focus, Ferrowl n’affiche que ces comptes, et les notifications des autres attendent la fin.";
+"focus_accounts" = "Comptes";
+"focus_all" = "Tous les comptes";
+"intent_widget_read" = "Marquer comme lu";
+"intent_widget_archive" = "Archiver";
 "intent_account" = "Compte";
 "intent_message" = "Message";
 "intent_to" = "À";

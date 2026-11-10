@@ -128,6 +128,7 @@ enum BackgroundRefresh {
         content.sound = .default
         content.badge = NSNumber(value: Badge.total())
         content.threadIdentifier = account
+        content.filterCriteria = account.lowercased()
         // Tapping it opens the newest message.
         content.userInfo = ["email": account, "uid": NSNumber(value: first.uid)]
         let request = UNNotificationRequest(identifier: "mail:\(account):\(first.uid)", content: content, trigger: nil)

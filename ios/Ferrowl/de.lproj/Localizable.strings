@@ -64,6 +64,12 @@
 "intent_tracking_link" = "Sendungslink";
 "intent_amount" = "Betrag";
 "intent_due" = "Fälligkeit";
+"focus_title" = "Angezeigte Konten";
+"focus_desc" = "Während dieses Fokus zeigt Ferrowl nur diese Konten; Mitteilungen der anderen warten, bis er endet.";
+"focus_accounts" = "Konten";
+"focus_all" = "Alle Konten";
+"intent_widget_read" = "Als gelesen markieren";
+"intent_widget_archive" = "Archivieren";
 "intent_account" = "Konto";
 "intent_message" = "Nachricht";
 "intent_to" = "An";

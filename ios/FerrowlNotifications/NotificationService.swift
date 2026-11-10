@@ -39,6 +39,8 @@ final class NotificationService: UNNotificationServiceExtension {
         guard let account = MailNotifications.account(pushId: accountId) else { return }
         content.subtitle = account.email
         content.threadIdentifier = account.email
+        // Focus filters keep the notifications of the accounts they show.
+        content.filterCriteria = account.email.lowercased()
 
         setTokenVault(vault: KeychainTokenVault())
         let engine = Engine(dataDir: SharedStorage.mail.path, language: Language.code)

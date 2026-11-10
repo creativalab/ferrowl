@@ -64,6 +64,12 @@
 "intent_tracking_link" = "Link di tracciamento";
 "intent_amount" = "Importo";
 "intent_due" = "Scadenza";
+"focus_title" = "Account da mostrare";
+"focus_desc" = "Durante questa modalità Focus Ferrowl mostra solo questi account, e le notifiche degli altri aspettano che finisca.";
+"focus_accounts" = "Account";
+"focus_all" = "Tutti gli account";
+"intent_widget_read" = "Segna come letta";
+"intent_widget_archive" = "Archivia";
 "intent_account" = "Account";
 "intent_message" = "Messaggio";
 "intent_to" = "A";

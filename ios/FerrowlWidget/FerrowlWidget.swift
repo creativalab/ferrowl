@@ -101,11 +101,23 @@ struct UnreadView: View {
                         Spacer()
                     }
                     ForEach(entry.recent.prefix(3), id: \.self) { mail in
-                        Link(destination: URL(string: mail.link) ?? URL(string: "ferrowl://inbox")!) {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(mail.from).font(.subheadline.weight(.semibold)).lineLimit(1)
-                                Text(mail.subject).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        HStack(spacing: 6) {
+                            Link(destination: URL(string: mail.link) ?? URL(string: "ferrowl://inbox")!) {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(mail.from).font(.subheadline.weight(.semibold)).lineLimit(1)
+                                    Text(mail.subject).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
+                            // Without opening the app.
+                            Button(intent: WidgetMarkReadIntent(link: mail.link)) {
+                                Image(systemName: "envelope.open")
+                            }
+                            .buttonStyle(.plain).foregroundStyle(accent)
+                            Button(intent: WidgetArchiveIntent(link: mail.link)) {
+                                Image(systemName: "archivebox")
+                            }
+                            .buttonStyle(.plain).foregroundStyle(accent)
                         }
                     }
                     Spacer(minLength: 0)

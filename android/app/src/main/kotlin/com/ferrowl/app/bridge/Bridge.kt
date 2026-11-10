@@ -70,9 +70,18 @@ class Bridge @Inject constructor(
     private val billing: Billing,
 ) {
     suspend fun handle(intent: Intent) {
-        // An unknown key gets no answer: there is nobody to send it to.
-        val connection = connections.find(intent.getStringExtra(EXTRA_TOKEN)) ?: return
-        val action = intent.action ?: return
+        val (connection, result) = run(intent) ?: return
+        reply(connection, intent.action.orEmpty(), intent.getStringExtra(EXTRA_REQUEST).orEmpty(), result)
+    }
+
+    /**
+     * Carries out a request (checked by its key, logged) and returns what
+     * it gave, without answering: the Tasker plugin hands it back itself.
+     * Null for an unknown key: there is nobody to answer.
+     */
+    internal suspend fun run(intent: Intent): Pair<Connection, Result>? {
+        val connection = connections.find(intent.getStringExtra(EXTRA_TOKEN)) ?: return null
+        val action = intent.action ?: return null
         val request = intent.getStringExtra(EXTRA_REQUEST).orEmpty()
         val name = action.substringAfterLast('.')
         val result = try {
@@ -92,13 +101,13 @@ class Bridge @Inject constructor(
             Result(ok = false, error = e.message.orEmpty())
         }
         connections.used(connection, name, if (result.ok) (result.status ?: "ok") else result.error)
-        reply(connection, action, request, result)
+        return connection to result.copy(json = result.json ?: json(result.messages))
     }
 
     private class BridgeError(message: String) : Exception(message)
 
     /** What an answer carries. */
-    private data class Result(
+    internal data class Result(
         val ok: Boolean,
         val error: String = "",
         val status: String? = null,

@@ -81,6 +81,22 @@ class AccountUnread @Inject constructor(@ApplicationContext private val context:
         UnreadWidget.refresh(context)
     }
 
+    /** A message read or archived from the widget: it leaves at once. */
+    @Synchronized
+    fun removeMail(link: String) {
+        val owner = prefs.all.keys.filter { it.startsWith(RECENT_PREFIX) }
+            .firstOrNull { k -> recentOf(k.removePrefix(RECENT_PREFIX)).any { it.link == link } }
+            ?.removePrefix(RECENT_PREFIX) ?: return
+        val next = recentOf(owner).filterNot { it.link == link }
+        val unread = (_counts.value[owner] ?: 0) - 1
+        prefs.edit {
+            putString(RECENT_PREFIX + owner, json.encodeToString(next))
+            putInt(owner, unread.coerceAtLeast(0))
+        }
+        _counts.value = _counts.value + (owner to unread.coerceAtLeast(0))
+        UnreadWidget.refresh(context)
+    }
+
     /** A removed account: its numbers go. */
     @Synchronized
     fun forget(email: String) {

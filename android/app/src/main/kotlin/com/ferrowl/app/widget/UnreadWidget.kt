@@ -24,10 +24,22 @@ class UnreadWidget : AppWidgetProvider() {
     }
 
     companion object {
-        private val ROWS = listOf(
-            Triple(R.id.widget_row1, R.id.widget_from1, R.id.widget_subject1),
-            Triple(R.id.widget_row2, R.id.widget_from2, R.id.widget_subject2),
-            Triple(R.id.widget_row3, R.id.widget_from3, R.id.widget_subject3),
+        private data class Line(val line: Int, val row: Int, val from: Int, val subject: Int, val read: Int, val archive: Int)
+
+        private val LINES = listOf(
+            Line(R.id.widget_line1, R.id.widget_row1, R.id.widget_from1, R.id.widget_subject1, R.id.widget_read1, R.id.widget_archive1),
+            Line(R.id.widget_line2, R.id.widget_row2, R.id.widget_from2, R.id.widget_subject2, R.id.widget_read2, R.id.widget_archive2),
+            Line(R.id.widget_line3, R.id.widget_row3, R.id.widget_from3, R.id.widget_subject3, R.id.widget_read3, R.id.widget_archive3),
+        )
+
+        /** "Read" or "archive" for a message, run by [WidgetActionReceiver]. */
+        private fun act(context: Context, link: String, archive: Boolean, code: Int): PendingIntent = PendingIntent.getBroadcast(
+            context,
+            code,
+            Intent(context, WidgetActionReceiver::class.java)
+                .putExtra(WidgetActionReceiver.EXTRA_LINK, link)
+                .putExtra(WidgetActionReceiver.EXTRA_ARCHIVE, archive),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
         /** Redraws every Ferrowl widget on the Home Screen (none: nothing to do). */
@@ -51,13 +63,15 @@ class UnreadWidget : AppWidgetProvider() {
             views.setTextViewText(R.id.widget_count, total.toString())
             views.setOnClickPendingIntent(R.id.widget_root, open(context, "ferrowl://inbox", 0))
             views.setViewVisibility(R.id.widget_none, if (recent.isEmpty()) View.VISIBLE else View.GONE)
-            ROWS.forEachIndexed { i, (row, from, subject) ->
+            LINES.forEachIndexed { i, l ->
                 val mail = recent.getOrNull(i)
-                views.setViewVisibility(row, if (mail == null) View.GONE else View.VISIBLE)
+                views.setViewVisibility(l.line, if (mail == null) View.GONE else View.VISIBLE)
                 if (mail != null) {
-                    views.setTextViewText(from, mail.from)
-                    views.setTextViewText(subject, mail.subject)
-                    views.setOnClickPendingIntent(row, open(context, mail.link, i + 1))
+                    views.setTextViewText(l.from, mail.from)
+                    views.setTextViewText(l.subject, mail.subject)
+                    views.setOnClickPendingIntent(l.row, open(context, mail.link, i + 1))
+                    views.setOnClickPendingIntent(l.read, act(context, mail.link, archive = false, code = 10 + i))
+                    views.setOnClickPendingIntent(l.archive, act(context, mail.link, archive = true, code = 20 + i))
                 }
             }
             manager.updateAppWidget(ids, views)

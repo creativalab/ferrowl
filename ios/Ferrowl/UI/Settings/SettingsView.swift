@@ -69,6 +69,12 @@ struct SettingsView: View {
                             Text(t("remote_images_desc")).font(.caption).foregroundStyle(.secondary)
                         }
                     }
+                    Toggle(isOn: $prefs.spotlight) {
+                        VStack(alignment: .leading) {
+                            Text(t("spotlight_title"))
+                            Text(t("spotlight_desc")).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                     Toggle(isOn: $prefs.notifications) {
                         VStack(alignment: .leading) {
                             Text(t("notif_bg"))

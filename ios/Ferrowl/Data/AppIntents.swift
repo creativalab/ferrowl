@@ -716,6 +716,39 @@ struct MailDetailsIntent: AppIntent {
     }
 }
 
+// MARK: Focus
+
+/// Settings › Focus › (a Focus) › Filters › Ferrowl: the accounts that
+/// Focus shows. The others leave the sidebar, and their notifications are
+/// held back by iOS (they carry their address as `filterCriteria`).
+struct FerrowlFocusFilter: SetFocusFilterIntent {
+    static var title: LocalizedStringResource = "focus_title"
+    static var description: IntentDescription? = IntentDescription("focus_desc")
+
+    @Parameter(title: "focus_accounts")
+    var accounts: [AccountEntity]?
+
+    var displayRepresentation: DisplayRepresentation {
+        let names = (accounts ?? []).map(\.id).joined(separator: ", ")
+        return DisplayRepresentation(title: "\(names.isEmpty ? t("focus_all") : names)")
+    }
+
+    var appContext: FocusFilterAppContext {
+        let allowed = (accounts ?? []).map { $0.id.lowercased() }
+        return FocusFilterAppContext(
+            notificationFilterPredicate: allowed.isEmpty ? nil : NSPredicate(format: "SELF IN %@", allowed)
+        )
+    }
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        let allowed = (accounts ?? []).map(\.id)
+        FocusAccounts.allowed = allowed
+        AppModel.shared?.mail.focus = FocusAccounts.allowed
+        return .result()
+    }
+}
+
 // MARK: Siri
 
 struct FerrowlShortcuts: AppShortcutsProvider {

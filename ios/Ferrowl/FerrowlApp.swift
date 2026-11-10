@@ -1,3 +1,4 @@
+import CoreSpotlight
 import SwiftUI
 import UserNotifications
 
@@ -47,6 +48,22 @@ final class AppModel {
         }
         banners.arrived = { [weak self] email in self?.mail.arrived(email) }
         Self.shared = self
+        // The widget's "read" and "archive" buttons (they run here).
+        WidgetActions.run = { [weak self] link, archive in
+            guard let self, case .open(let email, let folder, let uid) = parseLink(url: link),
+                  let account = self.mail.accounts.first(where: { $0.email.caseInsensitiveCompare(email) == .orderedSame })
+            else { return }
+            WidgetData.removeMail(link: link)
+            // An engine of its own: the app's may be busy, or on another account.
+            let engine = Engine(dataDir: SharedStorage.mail.path, language: Language.code)
+            _ = try await engine.connect(account: account)
+            if archive {
+                _ = try await engine.archiveMany(folderId: folder, uids: [uid])
+            } else {
+                try await engine.setSeenMany(folderId: folder, uids: [uid], seen: true)
+            }
+            self.mail.touch()
+        }
     }
 
     /// A `ferrowl://` or `mailto:` link opened from another app, or a file
@@ -132,6 +149,12 @@ struct FerrowlApp: App {
         WindowGroup {
             RootView()
                 .onOpenURL { app.open(link: $0) }
+                // A message found in the iPhone's search.
+                .onContinueUserActivity(CSSearchableItemActionType) { activity in
+                    if let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String, let url = URL(string: id) {
+                        app.open(link: url)
+                    }
+                }
                 .onAppear {
                     delegate.push = app.push
                     // WebKit starts now rather than at the first message opened.

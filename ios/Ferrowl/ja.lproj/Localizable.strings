@@ -64,6 +64,12 @@
 "intent_tracking_link" = "追跡リンク";
 "intent_amount" = "金額";
 "intent_due" = "期限";
+"focus_title" = "表示するアカウント";
+"focus_desc" = "この集中モード中、Ferrowl はこれらのアカウントだけを表示し、ほかのアカウントの通知は終了まで待機します。";
+"focus_accounts" = "アカウント";
+"focus_all" = "すべてのアカウント";
+"intent_widget_read" = "既読にする";
+"intent_widget_archive" = "アーカイブ";
 "intent_account" = "アカウント";
 "intent_message" = "メッセージ";
 "intent_to" = "宛先";

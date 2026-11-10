@@ -17,6 +17,15 @@ final class MailRepository {
 
     /// Every account on the phone, in the order they were added.
     private(set) var accounts: [Account] = []
+    /// The accounts the current Focus shows (nil: all of them).
+    var focus: [String]? = FocusAccounts.allowed
+
+    /// The accounts to show: those of the current Focus, or all.
+    var visibleAccounts: [Account] {
+        guard let focus else { return accounts }
+        let shown = accounts.filter { focus.contains($0.email.lowercased()) }
+        return shown.isEmpty ? accounts : shown
+    }
 
     /// The active account's address (nil with no account).
     private(set) var activeEmail: String?
@@ -132,6 +141,7 @@ final class MailRepository {
         }
         store.removeSecrets(of: removed.email)
         Badge.forget(removed.email)
+        SpotlightIndex.remove(account: removed.email)
         Badge.show()
         accounts.removeAll { $0.email == removed.email }
         let wasActive = removed.email == activeEmail

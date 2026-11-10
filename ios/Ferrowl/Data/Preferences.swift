@@ -33,13 +33,22 @@ final class Preferences {
         didSet { defaults.set(notifications, forKey: "notifications") }
     }
 
+    /// The inbox's messages in the iPhone's search (Spotlight).
+    var spotlight: Bool {
+        didSet {
+            defaults.set(spotlight, forKey: "spotlight")
+            if !spotlight { SpotlightIndex.removeAll() }
+        }
+    }
+
     init() {
-        defaults.register(defaults: ["threaded": true, "remoteImages": true, "notifications": true])
+        defaults.register(defaults: ["threaded": true, "remoteImages": true, "notifications": true, "spotlight": true])
         threaded = defaults.bool(forKey: "threaded")
         sort = Self.order(named: defaults.string(forKey: "sort")) ?? .newest
         theme = defaults.string(forKey: "theme") ?? "auto"
         remoteImages = defaults.bool(forKey: "remoteImages")
         notifications = defaults.bool(forKey: "notifications")
+        spotlight = defaults.bool(forKey: "spotlight")
     }
 
     static let orders: [SortOrder] = [.newest, .oldest, .largest, .smallest, .senderAz, .senderZa, .subjectAz]
