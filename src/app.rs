@@ -225,6 +225,7 @@ pub enum Section {
     General,
     Accounts,
     Security,
+    Rules,
     Appearance,
 }
 
@@ -717,6 +718,10 @@ pub struct App {
     pub popup: Option<(Popup, iced::Point)>,
     /// What is being typed in the blocked / allowed senders boxes.
     pub sender_input: (String, String),
+    /// The rule being written in Settings › Rules (`.1`: not saved yet).
+    pub rule_edit: Option<(ferrowl_core::rules::Rule, bool)>,
+    /// Inbox messages the rule being written would pick (sender, subject).
+    pub rule_preview: Vec<(String, String)>,
     /// Page of the message list shown (0 = newest).
     pub page: usize,
     /// The account is Gmail: messages have labels.
@@ -797,6 +802,23 @@ pub enum Message {
     RulesApplied(usize, Res<String>),
     /// Text typed in the blocked (false) or allowed (true) senders box.
     SenderInput(bool, String),
+    /// Settings › Rules: start a new rule, or edit the one with this id.
+    RuleNew,
+    RuleEdit(String),
+    RuleCondition(String),
+    RuleName(String),
+    /// Turn a mark / star / silence action on or off.
+    RuleAction(ferrowl_core::rules::Action, bool),
+    /// Where matching mail goes: `None` stays in the inbox.
+    RuleDestination(Option<ferrowl_core::rules::Action>),
+    RuleEnabled(bool),
+    RuleSave,
+    RuleCancel,
+    RuleDelete(String),
+    /// Turn a saved rule on or off from the list.
+    RuleSwitch(String, bool),
+    /// The rules acted on the inbox's new messages.
+    MailRules(Res<ferrowl_core::rules::Plan>),
     AddSender(bool),
     RemoveSender(String),
     /// Next (+1) or previous (-1) page of the list.
@@ -1114,6 +1136,8 @@ impl App {
             anchor: None,
             popup: None,
             sender_input: (String::new(), String::new()),
+            rule_edit: None,
+            rule_preview: Vec::new(),
             page: 0,
             gmail: false,
             category: ferrowl_core::mail::Category::Primary,
@@ -1139,6 +1163,13 @@ impl App {
             Ok("appearance") => app.screen = Screen::Settings(Section::Appearance),
             Ok("general") => app.screen = Screen::Settings(Section::General),
             Ok("security") => app.screen = Screen::Settings(Section::Security),
+            Ok("rules") => app.screen = Screen::Settings(Section::Rules),
+            // The rule editor, with a condition and its preview.
+            Ok(v) if v.starts_with("rule:") => {
+                app.screen = Screen::Settings(Section::Rules);
+                let _ = app.update(Message::RuleNew);
+                let _ = app.update(Message::RuleCondition(v["rule:".len()..].into()));
+            }
             Ok("popover") => app.appearance_open = true,
             // The cached inbox without a server (layout of the message list).
             Ok("list") => {
@@ -1350,7 +1381,12 @@ impl App {
         else {
             return Task::none();
         };
-        let new: Vec<&Header> = headers.iter().filter(|h| h.uid > previous && !h.seen).collect();
+        let mut new: Vec<&Header> = headers.iter().filter(|h| h.uid > previous && !h.seen).collect();
+        // Rules may keep some of them quiet.
+        if let Some(acc) = self.config.account() {
+            let quiet = Backend::silenced(acc, headers);
+            new.retain(|h| !quiet.contains(&h.uid));
+        }
         if new.is_empty() || !self.config.ui.notifications {
             return Task::none();
         }
@@ -1370,6 +1406,18 @@ impl App {
                 let _ = tokio::task::spawn_blocking(move || crate::push::notify(summary, body)).await;
             },
             |_| Message::Noop,
+        )
+    }
+
+    /// Runs the user's rules on the inbox's new messages (the engine
+    /// remembers which ones they already saw).
+    fn apply_rules(&self, folder: String, headers: &[Header]) -> Task<Message> {
+        let b = self.backend.clone();
+        let headers = headers.to_vec();
+        let folders = self.folders.clone();
+        self.perform(
+            async move { b.apply_rules(folder, headers, folders).await },
+            Message::MailRules,
         )
     }
 
@@ -2473,13 +2521,16 @@ impl App {
                             }
                             _ => Task::none(),
                         };
-                        let notify = if self
+                        let (notify, rules) = if self
                             .folder_by_kind(FolderKind::Inbox)
                             .is_some_and(|f| f.name == folder)
                         {
-                            self.note_new_mail(&headers)
+                            (
+                                self.note_new_mail(&headers),
+                                self.apply_rules(folder.clone(), &headers),
+                            )
                         } else {
-                            Task::none()
+                            (Task::none(), Task::none())
                         };
                         self.headers = headers;
                         self.last_sync = Some(chrono::Local::now());
@@ -2489,7 +2540,7 @@ impl App {
                         } else {
                             Task::none()
                         };
-                        Task::batch([self.refresh_unseen(), index, notify, ruled])
+                        Task::batch([self.refresh_unseen(), index, notify, ruled, rules])
                     }
                     Err(e) => {
                         if !silent {
@@ -2532,7 +2583,11 @@ impl App {
             }
             Message::PushChecked(Ok((headers, _))) => {
                 let notify = self.note_new_mail(&headers);
-                Task::batch([notify, self.refresh_unseen()])
+                let rules = match self.folder_by_kind(FolderKind::Inbox) {
+                    Some(f) => self.apply_rules(f.name.clone(), &headers),
+                    None => Task::none(),
+                };
+                Task::batch([notify, rules, self.refresh_unseen()])
             }
             Message::PushChecked(Err(_)) => Task::none(),
             Message::OtherMail(account, mails) => {
@@ -2895,6 +2950,149 @@ impl App {
                 ]),
                 Err(e) => self.toast(e, true),
             },
+            Message::RuleNew => {
+                let id = format!("{:016x}", rand::random::<u64>());
+                let rule = ferrowl_core::rules::Rule {
+                    id,
+                    name: String::new(),
+                    condition: String::new(),
+                    actions: vec![ferrowl_core::rules::Action::MarkRead],
+                    enabled: true,
+                };
+                self.rule_edit = Some((rule, true));
+                self.rule_preview.clear();
+                Task::none()
+            }
+            Message::RuleEdit(id) => {
+                let Some(acc) = self.config.account() else {
+                    return Task::none();
+                };
+                if let Some(rule) = Backend::rules(acc).into_iter().find(|r| r.id == id) {
+                    self.rule_preview = rule_preview(acc, &rule.condition);
+                    self.rule_edit = Some((rule, false));
+                }
+                Task::none()
+            }
+            Message::RuleCondition(text) => {
+                if let (Some((rule, _)), Some(acc)) = (self.rule_edit.as_mut(), self.config.account()) {
+                    self.rule_preview = rule_preview(acc, &text);
+                    rule.condition = text;
+                }
+                Task::none()
+            }
+            Message::RuleName(text) => {
+                if let Some((rule, _)) = self.rule_edit.as_mut() {
+                    rule.name = text;
+                }
+                Task::none()
+            }
+            Message::RuleAction(action, on) => {
+                if let Some((rule, _)) = self.rule_edit.as_mut() {
+                    rule.actions.retain(|a| a != &action);
+                    if on {
+                        rule.actions.push(action);
+                    }
+                }
+                Task::none()
+            }
+            Message::RuleDestination(target) => {
+                use ferrowl_core::rules::Action;
+                if let Some((rule, _)) = self.rule_edit.as_mut() {
+                    rule.actions
+                        .retain(|a| !matches!(a, Action::Archive | Action::MoveTo(_)));
+                    rule.actions.extend(target);
+                }
+                Task::none()
+            }
+            Message::RuleEnabled(on) => {
+                if let Some((rule, _)) = self.rule_edit.as_mut() {
+                    rule.enabled = on;
+                }
+                Task::none()
+            }
+            Message::RuleCancel => {
+                self.rule_edit = None;
+                self.rule_preview.clear();
+                Task::none()
+            }
+            Message::RuleSave => {
+                let (Some((rule, _)), Some(acc)) = (self.rule_edit.as_ref(), self.config.account()) else {
+                    return Task::none();
+                };
+                let mut rule = rule.clone();
+                rule.condition = rule.condition.trim().to_string();
+                rule.name = rule.name.trim().to_string();
+                if rule.condition.is_empty() || rule.actions.is_empty() {
+                    return Task::none();
+                }
+                match Backend::save_rule(acc, &rule) {
+                    Ok(()) => {
+                        self.rule_edit = None;
+                        self.rule_preview.clear();
+                        self.toast(t("rules_saved").to_string(), false)
+                    }
+                    Err(e) => self.toast(e, true),
+                }
+            }
+            Message::RuleDelete(id) => {
+                let Some(acc) = self.config.account() else {
+                    return Task::none();
+                };
+                if self.rule_edit.as_ref().is_some_and(|(r, _)| r.id == id) {
+                    self.rule_edit = None;
+                }
+                match Backend::delete_rule(acc, &id) {
+                    Ok(()) => Task::none(),
+                    Err(e) => self.toast(e, true),
+                }
+            }
+            Message::RuleSwitch(id, on) => {
+                let Some(acc) = self.config.account() else {
+                    return Task::none();
+                };
+                let Some(mut rule) = Backend::rules(acc).into_iter().find(|r| r.id == id) else {
+                    return Task::none();
+                };
+                rule.enabled = on;
+                match Backend::save_rule(acc, &rule) {
+                    Ok(()) => Task::none(),
+                    Err(e) => self.toast(e, true),
+                }
+            }
+            Message::MailRules(Ok(plan)) => {
+                if plan.is_empty() {
+                    return Task::none();
+                }
+                // Show what the rules did without waiting for the next sync.
+                let inbox = self.folder_by_kind(FolderKind::Inbox).map(|f| f.name.clone());
+                if inbox.is_some() && self.current_folder == inbox {
+                    let gone = plan.removed();
+                    self.headers.retain(|h| !gone.contains(&h.uid));
+                    for h in &mut self.headers {
+                        if plan.mark_read.contains(&h.uid) {
+                            h.seen = true;
+                        }
+                        if plan.star.contains(&h.uid) {
+                            h.flagged = true;
+                        }
+                    }
+                    self.run_search();
+                }
+                let mut n: Vec<u32> = plan
+                    .mark_read
+                    .iter()
+                    .chain(&plan.star)
+                    .chain(&plan.removed())
+                    .copied()
+                    .collect();
+                n.sort_unstable();
+                n.dedup();
+                Task::batch([
+                    self.toast(tf("rules_applied", &[("n", &n.len().to_string())]), false),
+                    self.refresh_unseen(),
+                ])
+            }
+            Message::MailRules(Err(e)) => self.toast(e, true),
             Message::SenderInput(allow, text) => {
                 if allow {
                     self.sender_input.1 = text;
@@ -4721,4 +4919,12 @@ pub fn shift_month(d: chrono::NaiveDate, delta: i32) -> chrono::NaiveDate {
     use chrono::Datelike;
     let total = d.year() * 12 + d.month0() as i32 + delta;
     chrono::NaiveDate::from_ymd_opt(total.div_euclid(12), total.rem_euclid(12) as u32 + 1, 1).unwrap_or(d)
+}
+
+/// Up to five inbox messages on this computer a rule's condition picks.
+fn rule_preview(account: &Account, condition: &str) -> Vec<(String, String)> {
+    Backend::rule_preview(account, condition, 5)
+        .into_iter()
+        .map(|h| (h.from, h.subject))
+        .collect()
 }

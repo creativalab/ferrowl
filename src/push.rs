@@ -137,9 +137,11 @@ fn stream(watch: &Watch) -> impl Stream<Item = Message> + use<> {
                             }
                         }
                         let msg = if watch.other {
+                            // Mail a rule keeps quiet is not notified.
+                            let quiet = crate::backend::Backend::silenced(&watch.account, &new);
                             let fresh: Vec<(String, String)> = new
                                 .iter()
-                                .filter(|h| h.uid > seen_max && !h.seen)
+                                .filter(|h| h.uid > seen_max && !h.seen && !quiet.contains(&h.uid))
                                 .map(|h| (h.from.clone(), h.subject.clone()))
                                 .collect();
                             seen_max = new.iter().map(|h| h.uid).max().unwrap_or(0).max(seen_max);

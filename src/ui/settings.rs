@@ -5,6 +5,7 @@ use crate::app::{App, Conn, Field, Section};
 use crate::config::{Density, Protocol};
 use crate::i18n::{self, LANGS, t, tf};
 use crate::providers::{Login, PROVIDERS, guide_url};
+use ferrowl_core::rules::{Action, Rule};
 use iced::widget::{Column, column, pick_list, row, scrollable, space, toggler};
 use iced::{Alignment, Length::Fill, Padding};
 
@@ -76,6 +77,7 @@ pub fn view(app: &App, section: Section) -> Element<'_, Message> {
             nav_btn(Section::General, t("section_general")),
             nav_btn(Section::Accounts, t("section_accounts")),
             nav_btn(Section::Security, t("section_security")),
+            nav_btn(Section::Rules, t("rules_title")),
             nav_btn(Section::Appearance, t("section_appearance")),
             space::vertical(),
             container(
@@ -102,6 +104,7 @@ pub fn view(app: &App, section: Section) -> Element<'_, Message> {
         Section::General => general(app, p),
         Section::Accounts => accounts(app, p),
         Section::Security => security(app, p),
+        Section::Rules => rules(app, p),
         Section::Appearance => appearance(app, p),
     };
     let main = scrollable(
@@ -1058,28 +1061,253 @@ fn appearance(app: &App, p: Palette) -> Element<'_, Message> {
     .into()
 }
 
+// ---------------------------------------------------------------- Rules
+
+/// Where a rule sends matching mail, for the drop-down.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Destination {
+    action: Option<Action>,
+    label: String,
+}
+
+impl std::fmt::Display for Destination {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
+/// "Mark as read · Archive": what a rule does, for the list.
+fn rule_summary(app: &App, rule: &Rule) -> String {
+    rule.actions
+        .iter()
+        .map(|a| match a {
+            Action::MarkRead => t("rules_mark_read").to_string(),
+            Action::Star => t("rules_star").to_string(),
+            Action::Silence => t("rules_silence").to_string(),
+            Action::Archive => t("archive").to_string(),
+            Action::MoveTo(f) => format!("{} {}", t("rules_destination"), app.folder_label(f)),
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+fn rules(app: &App, p: Palette) -> Element<'_, Message> {
+    let Some(acc) = app.config.account() else {
+        return title(t("rules_title"), t("rules_desc"), p);
+    };
+    let saved = crate::backend::Backend::rules(acc);
+    let mut list: Vec<Element<'_, Message>> = Vec::new();
+    for (i, rule) in saved.iter().enumerate() {
+        let name = if rule.name.is_empty() {
+            rule.condition.clone()
+        } else {
+            rule.name.clone()
+        };
+        let id = rule.id.clone();
+        let on = rule.enabled;
+        let row = dir_row(vec![
+            button(
+                column![
+                    text(name).size(15).font(medium()).color(p.text),
+                    text(rule_summary(app, rule)).size(13).color(p.muted),
+                ]
+                .spacing(2),
+            )
+            .width(Fill)
+            .padding([4, 0])
+            .style(ghost(p, p.text))
+            .on_press(Message::RuleEdit(id.clone()))
+            .into(),
+            toggler(on)
+                .on_toggle({
+                    let id = id.clone();
+                    move |v| Message::RuleSwitch(id.clone(), v)
+                })
+                .size(24)
+                .style(switch_style(p))
+                .into(),
+            button(icon(icons::TRASH, 16.0, p.danger))
+                .padding([6, 8])
+                .style(ghost(p, p.danger))
+                .on_press(Message::RuleDelete(id))
+                .into(),
+        ])
+        .spacing(12)
+        .align_y(Alignment::Center);
+        let row = container(row).padding([12, 0]);
+        list.push(if i + 1 < saved.len() {
+            column![row, hline(p.line_soft)].into()
+        } else {
+            row.into()
+        });
+    }
+    if list.is_empty() {
+        list.push(
+            container(text(t("rules_none")).size(14).color(p.muted))
+                .padding([16, 0])
+                .into(),
+        );
+    }
+    let add = button(text(t("rules_add")).size(14).font(medium()))
+        .padding([10, 16])
+        .style(accent_btn(p))
+        .on_press_maybe(app.rule_edit.is_none().then_some(Message::RuleNew));
+
+    let mut page = column![title(t("rules_title"), t("rules_desc"), p), group(list, p), add,].spacing(20);
+    if let Some((rule, _)) = &app.rule_edit {
+        page = page.push(rule_editor(app, rule, p));
+    }
+    page.into()
+}
+
+fn rule_editor<'a>(app: &'a App, rule: &'a Rule, p: Palette) -> Element<'a, Message> {
+    let heading = |s: &'a str| text(s).size(14).font(semibold()).color(p.text);
+    let mut preview = Column::new().spacing(4);
+    // Nothing typed yet: no preview.
+    let typed = !rule.condition.trim().is_empty();
+    if typed && app.rule_preview.is_empty() {
+        preview = preview.push(text(t("rules_preview_none_desktop")).size(13).color(p.muted));
+    } else {
+        for (from, subject) in &app.rule_preview {
+            preview = preview.push(
+                dir_row(vec![
+                    text(trunc(from, 28))
+                        .size(13)
+                        .font(medium())
+                        .color(p.text)
+                        .width(200)
+                        .into(),
+                    text(trunc(subject, 70))
+                        .size(13)
+                        .color(p.text2)
+                        .width(Fill)
+                        .into(),
+                ])
+                .spacing(12),
+            );
+        }
+    }
+    let check = |label: &'static str, action: Action| {
+        let on = rule.actions.contains(&action);
+        iced::widget::checkbox(on)
+            .label(label)
+            .on_toggle(move |v| Message::RuleAction(action.clone(), v))
+            .size(16)
+            .text_size(14)
+    };
+
+    let mut choices = vec![
+        Destination {
+            action: None,
+            label: t("rules_stay").to_string(),
+        },
+        Destination {
+            action: Some(Action::Archive),
+            label: t("archive").to_string(),
+        },
+    ];
+    choices.extend(
+        app.folders
+            .iter()
+            .filter(|f| f.selectable && f.kind != crate::mail::FolderKind::Inbox)
+            .map(|f| Destination {
+                action: Some(Action::MoveTo(f.name.clone())),
+                label: f.display(),
+            }),
+    );
+    let current = rule
+        .actions
+        .iter()
+        .find(|a| matches!(a, Action::Archive | Action::MoveTo(_)))
+        .cloned();
+    let selected = choices.iter().find(|c| c.action == current).cloned();
+    let destination = pick_list(choices, selected, |c: Destination| {
+        Message::RuleDestination(c.action)
+    })
+    .placeholder(t("rules_pick_folder"))
+    .text_size(14)
+    .padding([10, 12])
+    .width(280)
+    .style(pick_style(p))
+    .menu_style(menu_style(p));
+
+    let can_save = !rule.condition.trim().is_empty() && !rule.actions.is_empty();
+    container(
+        column![
+            heading(t("rules_condition")),
+            text_input(t("rules_condition_hint"), &rule.condition)
+                .on_input(Message::RuleCondition)
+                .size(14)
+                .font(MONO)
+                .padding([10, 12])
+                .style(input(p, 8.0)),
+            text(t("rules_condition_help")).size(13).color(p.muted),
+            heading(t("rules_preview")),
+            preview,
+            heading(t("rules_then")),
+            check(t("rules_mark_read"), Action::MarkRead),
+            check(t("rules_star"), Action::Star),
+            check(t("rules_silence"), Action::Silence),
+            heading(t("rules_destination")),
+            destination,
+            heading(t("rules_name")),
+            text_input("", &rule.name)
+                .on_input(Message::RuleName)
+                .size(14)
+                .padding([10, 12])
+                .style(input(p, 8.0)),
+            iced::widget::checkbox(rule.enabled)
+                .label(t("rules_enabled"))
+                .on_toggle(Message::RuleEnabled)
+                .size(16)
+                .text_size(14),
+            dir_row(vec![
+                space::horizontal().into(),
+                button(text(t("cancel")).size(14).font(medium()))
+                    .padding([10, 16])
+                    .style(outline_btn(p, p.text))
+                    .on_press(Message::RuleCancel)
+                    .into(),
+                button(text(t("rules_save")).size(14).font(medium()))
+                    .padding([10, 16])
+                    .style(accent_btn(p))
+                    .on_press_maybe(can_save.then_some(Message::RuleSave))
+                    .into(),
+            ])
+            .spacing(8),
+        ]
+        .spacing(10),
+    )
+    .padding(20)
+    .width(Fill)
+    .style(card(p, p.line, 14.0))
+    .into()
+}
+
 /// On/off switch in the theme's colors.
 fn switch<'a>(p: Palette, on: bool, msg: fn(bool) -> Message) -> Element<'a, Message> {
-    toggler(on)
-        .on_toggle(msg)
-        .size(24)
-        .style(move |_, st| {
-            let on = matches!(
-                st,
-                iced::widget::toggler::Status::Active { is_toggled: true }
-                    | iced::widget::toggler::Status::Hovered { is_toggled: true }
-            );
-            iced::widget::toggler::Style {
-                background: Background::Color(if on { p.accent } else { p.knob_off }),
-                background_border_width: 0.0,
-                background_border_color: Color::TRANSPARENT,
-                foreground: Background::Color(Color::WHITE),
-                foreground_border_width: 0.0,
-                foreground_border_color: Color::TRANSPARENT,
-                text_color: None,
-                border_radius: None,
-                padding_ratio: 0.12,
-            }
-        })
-        .into()
+    toggler(on).on_toggle(msg).size(24).style(switch_style(p)).into()
+}
+
+fn switch_style(
+    p: Palette,
+) -> impl Fn(&Theme, iced::widget::toggler::Status) -> iced::widget::toggler::Style {
+    move |_, st| {
+        let on = matches!(
+            st,
+            iced::widget::toggler::Status::Active { is_toggled: true }
+                | iced::widget::toggler::Status::Hovered { is_toggled: true }
+        );
+        iced::widget::toggler::Style {
+            background: Background::Color(if on { p.accent } else { p.knob_off }),
+            background_border_width: 0.0,
+            background_border_color: Color::TRANSPARENT,
+            foreground: Background::Color(Color::WHITE),
+            foreground_border_width: 0.0,
+            foreground_border_color: Color::TRANSPARENT,
+            text_color: None,
+            border_radius: None,
+            padding_ratio: 0.12,
+        }
+    }
 }
