@@ -175,6 +175,8 @@ fun MessageScreen(
                     s.message.invitation?.let { inv ->
                         InvitationCard(inv, invite, onRespond = vm::respond, onRemove = vm::removeCancelled)
                     }
+                    val insights by vm.insights.collectAsStateWithLifecycle()
+                    InsightCards(insights, onAddDue = vm::addDue)
                 }
             }
         }

@@ -27,6 +27,7 @@ mail-parser = "1.0.0"
 pgp = "0.21"
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
 rand = "0.8"
+regex = { version = "1", default-features = false, features = ["std", "unicode-perl", "unicode-case"] }
 roxmltree = "0.21"
 rusqlite = { version = "0.41", features = ["bundled"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "logging", "tls12"] }

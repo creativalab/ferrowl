@@ -37,6 +37,8 @@ final class MessageModel {
     /// The HTML loads images from the network (worked out once, off the
     /// main thread: the search is slow on big newsletters).
     private(set) var remoteImagesInside = false
+    /// What the message is about (a shipment, a code, a bill).
+    private(set) var insights: [MailInsight] = []
     var starred: Bool
     /// Our answer to the message's invitation, and whether a cancelled
     /// event is still in the calendar.
@@ -67,6 +69,7 @@ final class MessageModel {
                     MessageBody.hasRemoteImages(html)
                 }.value
             }
+            insights = await Task.detached(priority: .userInitiated) { mailInsights(message: message) }.value
             state = .shown(message)
             refreshInvite()
         } catch {
@@ -379,6 +382,7 @@ struct MessageBody: View {
             if let invitation = message.invitation {
                 InvitationCard(invitation: invitation, model: model)
             }
+            InsightCards(insights: model.insights)
 
             if let html = message.html, !showText {
                 if !prefs.remoteImages && !loadImages && model.remoteImagesInside {

@@ -2293,6 +2293,7 @@ dependencies = [
  "pgp",
  "pulldown-cmark",
  "rand 0.8.8",
+ "regex",
  "roxmltree 0.21.2",
  "rusqlite",
  "rustls",

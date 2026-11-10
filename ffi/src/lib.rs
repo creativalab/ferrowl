@@ -1084,6 +1084,47 @@ pub fn folder_tree(folders: Vec<Folder>, expanded: Vec<String>) -> Vec<FolderNod
         .collect()
 }
 
+// MARK: insights
+
+/// What a message is about (see `ferrowl_core::insights`), for a card
+/// with an action in the message view.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MailInsight {
+    /// A parcel: follow it at `url` (empty when the carrier is unknown).
+    Shipment {
+        carrier: String,
+        number: String,
+        url: String,
+    },
+    /// A one-time code to copy.
+    Code { code: String },
+    /// A bill: number and amount as written (may be empty), due date
+    /// "YYYY-MM-DD" (may be empty).
+    Payment {
+        number: String,
+        amount: String,
+        due: String,
+    },
+}
+
+/// What a message is about: a shipment, a code, a bill.
+#[uniffi::export]
+pub fn mail_insights(message: Message) -> Vec<MailInsight> {
+    use ferrowl_core::insights::{Insight, find};
+    find(&message.subject, &message.from_address, &message.text)
+        .into_iter()
+        .map(|i| match i {
+            Insight::Shipment { carrier, number, url } => MailInsight::Shipment { carrier, number, url },
+            Insight::Code { code } => MailInsight::Code { code },
+            Insight::Payment { number, amount, due } => MailInsight::Payment {
+                number,
+                amount,
+                due: due.map(|d| d.to_string()).unwrap_or_default(),
+            },
+        })
+        .collect()
+}
+
 // MARK: Ferrowl Bridge (other apps, Shortcuts/Siri, intents, links)
 
 /// What a `ferrowl://` or `mailto:` link asks for (see `ferrowl_core::bridge`).
