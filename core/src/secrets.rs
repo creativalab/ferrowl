@@ -76,11 +76,12 @@ impl Store for SystemKeychain {
 }
 
 /// Keychain entries of an account: (entry name, secret).
-fn entries(a: &Account) -> [(String, &String); 2] {
+fn entries(a: &Account) -> [(String, &String); 3] {
     let id = format!("{}@{}", a.username.trim(), a.imap_host.trim());
     [
         (format!("password:{id}"), &a.password),
         (format!("pgp-passphrase:{id}"), &a.pgp_passphrase),
+        (format!("dav-password:{id}"), &a.dav_password),
     ]
 }
 
@@ -98,11 +99,13 @@ pub fn load(store: &dyn Store, accounts: &mut [Account]) {
     let mut known = known();
     let known = known.get_or_insert_with(HashMap::new);
     for a in accounts.iter_mut().filter(|a| a.keyring) {
-        let [(pw_key, _), (pp_key, _)] = entries(a);
+        let [(pw_key, _), (pp_key, _), (dav_key, _)] = entries(a);
         a.password = store.get(&pw_key).unwrap_or_default();
         a.pgp_passphrase = store.get(&pp_key).unwrap_or_default();
+        a.dav_password = store.get(&dav_key).unwrap_or_default();
         known.insert(pw_key, a.password.clone());
         known.insert(pp_key, a.pgp_passphrase.clone());
+        known.insert(dav_key, a.dav_password.clone());
     }
 }
 
@@ -136,6 +139,7 @@ pub fn store(store: &dyn Store, accounts: &[Account]) -> Vec<Account> {
             if stored {
                 file.password.clear();
                 file.pgp_passphrase.clear();
+                file.dav_password.clear();
             }
             file
         })

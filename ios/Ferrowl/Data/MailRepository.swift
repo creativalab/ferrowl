@@ -398,6 +398,18 @@ final class MailRepository {
         return await Task.detached { engine.contacts(query: query) }.value
     }
 
+    /// Saves a contact written in the app (on the contacts server when the
+    /// account has one, otherwise on the phone).
+    func saveContact(_ contact: Contact) async throws {
+        try await ready()
+        _ = try await engine.saveContact(contact: contact)
+    }
+
+    func deleteContact(_ url: String) async throws {
+        try await ready()
+        try await engine.deleteContact(url: url)
+    }
+
     func syncContacts() async throws -> UInt32 {
         try await ready()
         return try await engine.syncContacts()

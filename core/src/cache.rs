@@ -153,6 +153,10 @@ fn path() -> Option<PathBuf> {
 /// without a CardDAV server, or when saving there failed).
 pub const LOCAL_BOOK: &str = "local";
 
+/// The calendar kept on this device, for accounts without a calendar server
+/// (its events' URLs start with `local:`). Server syncs leave it alone.
+pub const LOCAL_CALENDAR: &str = "local:calendar";
+
 pub fn get() -> Option<&'static Cache> {
     static CACHE: OnceLock<Option<Cache>> = OnceLock::new();
     CACHE
@@ -672,13 +676,34 @@ impl Cache {
         Ok(())
     }
 
+    /// A stored contact's address book, ETag and vCard UID (to change it
+    /// on the server keeping its identity).
+    pub fn contact_place(&self, account: &str, url: &str) -> Result<Option<(String, String, String)>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT book, etag, uid FROM contacts WHERE account = ?1 AND url = ?2",
+                params![account, url],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?)
+    }
+
+    pub fn delete_contact(&self, account: &str, url: &str) -> Result<()> {
+        self.lock().execute(
+            "DELETE FROM contacts WHERE account = ?1 AND url = ?2",
+            params![account, url],
+        )?;
+        Ok(())
+    }
+
     /// Contacts whose name, address, organization or phone contains
     /// `query` (all of them when empty), by name.
     pub fn contacts(&self, account: &str, query: &str) -> Result<Vec<crate::vcard::Contact>> {
         let q = format!("%{}%", like_escape(&query.trim().to_lowercase()));
         let conn = self.lock();
         let mut stmt = conn.prepare_cached(
-            "SELECT uid, name, emails, phones, org, note FROM contacts
+            "SELECT uid, name, emails, phones, org, note, url FROM contacts
              WHERE account = ?1
                AND (lower(name) LIKE ?2 ESCAPE '\\' OR lower(emails) LIKE ?2 ESCAPE '\\'
                     OR lower(org) LIKE ?2 ESCAPE '\\' OR phones LIKE ?2 ESCAPE '\\')
@@ -688,6 +713,7 @@ impl Cache {
             |s: String| -> Vec<String> { s.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect() };
         let rows = stmt.query_map(params![account, q], |r| {
             Ok(crate::vcard::Contact {
+                url: r.get(6)?,
                 uid: r.get(0)?,
                 name: r.get(1)?,
                 emails: lines(r.get(2)?),
@@ -702,8 +728,10 @@ impl Cache {
     /// Item URL and ETag of every cached event (to compare with the server).
     pub fn event_etags(&self, account: &str) -> Result<Vec<(String, String)>> {
         let conn = self.lock();
-        let mut stmt = conn.prepare_cached("SELECT url, etag FROM events WHERE account = ?1")?;
-        let rows = stmt.query_map(params![account], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        // Events kept only on this device are not on the server.
+        let mut stmt =
+            conn.prepare_cached("SELECT url, etag FROM events WHERE account = ?1 AND calendar != ?2")?;
+        let rows = stmt.query_map(params![account, LOCAL_CALENDAR], |r| Ok((r.get(0)?, r.get(1)?)))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -739,9 +767,9 @@ impl Cache {
             }
         }
         tx.execute(
-            "DELETE FROM events WHERE account = ?1
+            "DELETE FROM events WHERE account = ?1 AND calendar != ?2
              AND calendar NOT IN (SELECT url FROM calendars WHERE account = ?1)",
-            params![account],
+            params![account, LOCAL_CALENDAR],
         )?;
         tx.commit()?;
         Ok(())
@@ -757,6 +785,28 @@ impl Cache {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?)
+    }
+
+    /// Stores an event of the calendar on this device. False when the data
+    /// holds no event.
+    pub fn put_local_event(&self, account: &str, url: &str, ics: &str) -> Result<bool> {
+        let Some((first, last)) = crate::ical::span(&crate::ical::parse(ics)) else {
+            return Ok(false);
+        };
+        self.lock().execute(
+            "INSERT OR REPLACE INTO events (account, url, calendar, etag, first_ts, last_ts, ics)
+             VALUES (?1, ?2, ?3, '', ?4, ?5, ?6)",
+            params![account, url, LOCAL_CALENDAR, first, last, ics],
+        )?;
+        Ok(true)
+    }
+
+    pub fn delete_event(&self, account: &str, url: &str) -> Result<()> {
+        self.lock().execute(
+            "DELETE FROM events WHERE account = ?1 AND url = ?2",
+            params![account, url],
+        )?;
+        Ok(())
     }
 
     /// URL and ETag of the stored event with this UID, if any.
@@ -1156,6 +1206,23 @@ mod tests {
         assert_eq!(c.headers("a", "Sent", 10).unwrap().len(), 1);
         drop(c);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn local_events_survive_server_syncs() {
+        let c = Cache::in_memory();
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a\r\nDTSTART:20261110T090000Z\r\nDTEND:20261110T100000Z\r\nSUMMARY:Dentista\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        assert!(c.put_local_event("acc", "local:a", ics).unwrap());
+        // A server sync (no calendars there) neither reports it nor removes it.
+        assert!(c.event_etags("acc").unwrap().is_empty());
+        c.apply_events("acc", &crate::dav::Changes::default()).unwrap();
+        assert!(c.event("acc", "local:a").unwrap().is_some());
+        assert_eq!(
+            c.event_by_uid("acc", "a").unwrap().map(|(url, _)| url),
+            Some("local:a".to_string())
+        );
+        c.delete_event("acc", "local:a").unwrap();
+        assert!(c.event("acc", "local:a").unwrap().is_none());
     }
 
     #[test]

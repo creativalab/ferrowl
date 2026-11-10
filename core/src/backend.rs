@@ -158,6 +158,83 @@ impl Backend {
             .unwrap_or_default()
     }
 
+    /// Saves a contact written in the app: a new one (empty `url`) on the
+    /// account's contacts server when it has one, otherwise on this device;
+    /// a stored one where it is. Returns where it is now.
+    pub async fn save_contact(account: Account, mut contact: crate::vcard::Contact) -> Res<String> {
+        tokio::task::spawn_blocking(move || {
+            let cache = cache::get().ok_or_else(generic_error)?;
+            let key = cache::account_key(&account);
+            let stored = if contact.url.is_empty() {
+                None
+            } else {
+                cache.contact_place(&key, &contact.url).map_err(text)?
+            };
+            // A stored contact keeps its vCard UID (its identity on the server).
+            if let Some((_, _, uid)) = &stored
+                && contact.uid.is_empty()
+            {
+                contact.uid = uid.clone();
+            }
+            if contact.uid.is_empty() {
+                contact.uid = format!("{}@ferrowl", crate::events::uuid_like());
+            }
+            if contact.name.trim().is_empty() {
+                contact.name = contact.emails.first().cloned().unwrap_or_default();
+            }
+            let vcard = crate::vcard::write(&contact);
+            let (url, book) = if contact.url.is_empty() {
+                let books = cache.address_books(&key).unwrap_or_default();
+                match books.first() {
+                    Some(book) => {
+                        let id = crate::events::uuid_like();
+                        let url = crate::carddav::create(&account, book, &id, &vcard).map_err(text)?;
+                        (url, book.clone())
+                    }
+                    None => (
+                        format!("local:{}", crate::events::uuid_like()),
+                        cache::LOCAL_BOOK.to_string(),
+                    ),
+                }
+            } else {
+                let (book, etag) = stored
+                    .map(|(book, etag, _)| (book, etag))
+                    .unwrap_or_else(|| (cache::LOCAL_BOOK.to_string(), String::new()));
+                if book != cache::LOCAL_BOOK {
+                    crate::dav::Client::new(&account, crate::dav::Kind::Contacts)
+                        .put(&contact.url, &vcard, "text/vcard; charset=utf-8", Some(&etag))
+                        .map_err(text)?;
+                }
+                (contact.url.clone(), book)
+            };
+            cache
+                .add_contact(&key, &url, &book, &contact, &vcard)
+                .map_err(text)?;
+            Ok(url)
+        })
+        .await
+        .map_err(|e| crate::errors::humanize(&format!("{e:#}")))?
+    }
+
+    /// Deletes a contact, from the contacts server too when it is there.
+    pub async fn delete_contact(account: Account, url: String) -> Res<()> {
+        tokio::task::spawn_blocking(move || {
+            let cache = cache::get().ok_or_else(generic_error)?;
+            let key = cache::account_key(&account);
+            if let Some((book, etag, _)) = cache.contact_place(&key, &url).map_err(text)?
+                && book != cache::LOCAL_BOOK
+            {
+                let etag = Some(etag.as_str()).filter(|e| !e.is_empty());
+                crate::dav::Client::new(&account, crate::dav::Kind::Contacts)
+                    .delete(&url, etag)
+                    .map_err(text)?;
+            }
+            cache.delete_contact(&key, &url).map_err(text)
+        })
+        .await
+        .map_err(|e| crate::errors::humanize(&format!("{e:#}")))?
+    }
+
     /// Brings the cached contacts up to date with the account's CardDAV
     /// server. Returns how many contacts are saved.
     pub async fn sync_contacts(account: Account) -> Res<usize> {
@@ -197,7 +274,12 @@ impl Backend {
             return Vec::new();
         };
         let key = cache::account_key(account);
-        let calendars = cache.calendars(&key).unwrap_or_default();
+        let mut calendars = cache.calendars(&key).unwrap_or_default();
+        calendars.extend(
+            Self::calendars(account)
+                .into_iter()
+                .filter(|c| c.url == cache::LOCAL_CALENDAR),
+        );
         cache
             .occurrences(&key, from, to)
             .unwrap_or_default()
@@ -216,10 +298,20 @@ impl Backend {
     }
 
     /// The account's calendars (from the cache).
+    /// The account's calendars; without a calendar server, the one kept on
+    /// this device.
     pub fn calendars(account: &Account) -> Vec<crate::dav::Collection> {
-        cache::get()
+        let server = cache::get()
             .and_then(|c| c.calendars(&cache::account_key(account)).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if !server.is_empty() {
+            return server;
+        }
+        vec![crate::dav::Collection {
+            url: cache::LOCAL_CALENDAR.to_string(),
+            name: t("calendar_local").to_string(),
+            color: String::new(),
+        }]
     }
 
     /// The form for a stored event (by item URL).
@@ -243,6 +335,28 @@ impl Backend {
         tokio::task::spawn_blocking(move || {
             let cache = cache::get().ok_or_else(generic_error)?;
             let key = cache::account_key(&account);
+            // The calendar on this device: no server involved.
+            let local = match &url {
+                Some(url) => url.starts_with("local:"),
+                None => calendar == cache::LOCAL_CALENDAR || cache.calendars(&key).map_err(text)?.is_empty(),
+            };
+            if local {
+                let (url, data) = match url {
+                    Some(url) => {
+                        let (_, _, ics) = cache
+                            .event(&key, &url)
+                            .map_err(text)?
+                            .ok_or_else(|| t("err_event_changed").to_string())?;
+                        (url, crate::events::update(&ics, &draft))
+                    }
+                    None => {
+                        let (uid, data) = crate::events::create(&draft);
+                        (format!("local:{uid}"), data)
+                    }
+                };
+                cache.put_local_event(&key, &url, &data).map_err(text)?;
+                return Ok(t("event_saved").to_string());
+            }
             let client = crate::dav::Client::new(&account, crate::dav::Kind::Calendar);
             const ICS: &str = "text/calendar; charset=utf-8";
             match url {
@@ -279,6 +393,10 @@ impl Backend {
         tokio::task::spawn_blocking(move || {
             let cache = cache::get().ok_or_else(generic_error)?;
             let key = cache::account_key(&account);
+            if url.starts_with("local:") {
+                cache.delete_event(&key, &url).map_err(text)?;
+                return Ok(t("event_deleted").to_string());
+            }
             let etag = cache.event(&key, &url).map_err(text)?.map(|(_, etag, _)| etag);
             crate::dav::Client::new(&account, crate::dav::Kind::Calendar)
                 .delete(&url, etag.as_deref())
@@ -333,6 +451,23 @@ impl Backend {
             let cache = cache::get().ok_or_else(|| anyhow::anyhow!(generic_error()))?;
             let key = cache::account_key(&account);
             let existing = cache.event_by_uid(&key, &uid)?;
+            // No calendar server: the calendar on this device keeps it.
+            let local = existing
+                .as_ref()
+                .is_some_and(|(url, _)| url.starts_with("local:"))
+                || cache.calendars(&key)?.is_empty();
+            if local {
+                let url = existing
+                    .map(|(url, _)| url)
+                    .unwrap_or_else(|| format!("local:{uid}"));
+                if reply == crate::invite::Reply::Declined {
+                    cache.delete_event(&key, &url)?;
+                } else {
+                    let data = crate::invite::calendar_copy(&ics, &account.email, reply);
+                    cache.put_local_event(&key, &url, &data)?;
+                }
+                return Ok(());
+            }
             crate::invite::save_to_calendar(&account, &ics, reply, existing)?;
             // Refresh the local copy so the calendar shows the change.
             let known = cache.event_etags(&key)?;
@@ -361,6 +496,10 @@ impl Backend {
             let cache = cache::get().ok_or_else(generic_error)?;
             let key = cache::account_key(&account);
             if let Some((url, etag)) = cache.event_by_uid(&key, &uid).map_err(text)? {
+                if url.starts_with("local:") {
+                    cache.delete_event(&key, &url).map_err(text)?;
+                    return Ok(t("invite_removed").to_string());
+                }
                 crate::invite::remove_from_calendar(&account, &url, &etag).map_err(text)?;
                 let changes = crate::dav::Changes {
                     collections: cache.calendars(&key).map_err(text)?,

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ferrowl.app.data.MailRepository
 import com.ferrowl.core.Contact
+import com.ferrowl.core.translate
 import com.ferrowl.core.FerrowlException
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -23,10 +24,15 @@ data class ContactsState(
     val error: String? = null,
     /** The contact shown in the bottom sheet. */
     val open: Contact? = null,
+    /** The contact being written (new: empty url). */
+    val editing: Contact? = null,
 )
 
 @HiltViewModel
-class ContactsViewModel @Inject constructor(private val repo: MailRepository) : ViewModel() {
+class ContactsViewModel @Inject constructor(
+    private val repo: MailRepository,
+    private val notices: com.ferrowl.app.ui.notice.Notices,
+) : ViewModel() {
     private val _state = MutableStateFlow(ContactsState())
     val state: StateFlow<ContactsState> = _state.asStateFlow()
 
@@ -70,4 +76,35 @@ class ContactsViewModel @Inject constructor(private val repo: MailRepository) : 
     }
 
     fun open(c: Contact?) = _state.update { it.copy(open = c) }
+
+    fun edit(c: Contact?) = _state.update { it.copy(editing = c, open = null) }
+
+    fun newContact() = edit(Contact("", "", emptyList(), emptyList(), "", ""))
+
+    /** Saves the contact being written (on the server, or on the phone). */
+    fun save(c: Contact) {
+        viewModelScope.launch {
+            try {
+                repo.saveContact(c)
+                notices.info(translate("contact_saved"))
+                _state.update { it.copy(editing = null) }
+                reload()
+            } catch (e: FerrowlException) {
+                _state.update { it.copy(error = e.message) }
+            }
+        }
+    }
+
+    fun delete(c: Contact) {
+        viewModelScope.launch {
+            try {
+                repo.deleteContact(c.url)
+                notices.info(translate("contact_deleted"))
+                _state.update { it.copy(editing = null) }
+                reload()
+            } catch (e: FerrowlException) {
+                _state.update { it.copy(error = e.message) }
+            }
+        }
+    }
 }

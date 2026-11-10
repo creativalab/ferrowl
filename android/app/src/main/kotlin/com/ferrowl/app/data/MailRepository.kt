@@ -249,6 +249,17 @@ class MailRepository @Inject constructor(
     suspend fun contacts(query: String): List<Contact> =
         withContext(Dispatchers.IO) { engine.contacts(query) }
 
+    /** Saves a contact written in the app (on the contacts server when the account has one, else on the phone). */
+    suspend fun saveContact(contact: Contact) {
+        ready()
+        engine.saveContact(contact)
+    }
+
+    suspend fun deleteContact(url: String) {
+        ready()
+        engine.deleteContact(url)
+    }
+
     /** Updates the contacts from the server; returns how many are saved. */
     suspend fun syncContacts(): Int = engine.syncContacts().toInt()
 

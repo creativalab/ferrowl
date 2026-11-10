@@ -608,3 +608,26 @@ rules_name = "Nome (facoltativo)"
 rules_enabled = "Attiva"
 rules_applied = "Le regole hanno gestito {n} messaggi nuovi"
 rules_delete = "Elimina regola"
+
+# Writing contacts (iOS, Android)
+contact_new = "Nuovo contatto"
+contact_edit = "Modifica"
+contact_name = "Nome"
+contact_org = "Azienda"
+contact_emails = "Indirizzi e-mail"
+contact_phones = "Numeri di telefono"
+contact_note = "Note"
+contact_add_email = "Aggiungi un indirizzo"
+contact_add_phone = "Aggiungi un numero"
+contact_delete = "Elimina contatto"
+contact_saved = "Contatto salvato."
+contact_deleted = "Contatto eliminato."
+
+# Calendar kept on the device
+calendar_local = "Sul telefono"
+
+# Separate login for contacts and calendar
+dav_credentials = "Accesso a contatti e calendario"
+dav_username = "Nome utente"
+dav_password = "Password"
+dav_credentials_hint = "Solo se il server di contatti o calendario non è quello della posta (per esempio iCloud con una password per app, Fastmail, Nextcloud): lascia vuoto per usare l'accesso della posta, e scrivi sopra l'indirizzo del server."

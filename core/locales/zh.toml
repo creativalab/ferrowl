@@ -608,3 +608,26 @@ rules_name = "名称（可选）"
 rules_enabled = "启用"
 rules_applied = "规则处理了 {n} 封新邮件"
 rules_delete = "删除规则"
+
+# Writing contacts (iOS, Android)
+contact_new = "新建联系人"
+contact_edit = "编辑"
+contact_name = "姓名"
+contact_org = "公司"
+contact_emails = "电子邮件地址"
+contact_phones = "电话号码"
+contact_note = "备注"
+contact_add_email = "添加地址"
+contact_add_phone = "添加电话号码"
+contact_delete = "删除联系人"
+contact_saved = "联系人已保存。"
+contact_deleted = "联系人已删除。"
+
+# Calendar kept on the device
+calendar_local = "在此手机上"
+
+# Separate login for contacts and calendar
+dav_credentials = "联系人和日历登录"
+dav_username = "用户名"
+dav_password = "密码"
+dav_credentials_hint = "仅当联系人或日历服务器不是你的邮件服务商时填写（例如使用 App 专用密码的 iCloud、Fastmail、Nextcloud）：留空则使用邮件登录，并在上方填写服务器地址。"

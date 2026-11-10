@@ -224,16 +224,37 @@ struct Sidebar: View {
             }
 
             Section(t("section_folders")) {
-                ForEach(ordered) { folder in
-                    Button {
-                        model.openFolder(folder.id)
-                        column = .content
-                    } label: {
-                        FolderRow(folder: folder, unread: model.unread[folder.id] ?? 0)
+                // A tree that folds, as webmails show long lists: folders
+                // with subfolders start closed.
+                ForEach(folderTree(folders: mail.folders, expanded: Array(expanded)), id: \.folder.id) { node in
+                    let folder = node.folder
+                    HStack(spacing: 0) {
+                        Button {
+                            if folder.selectable {
+                                model.openFolder(folder.id)
+                                column = .content
+                            } else {
+                                toggle(folder.id)
+                            }
+                        } label: {
+                            FolderRow(folder: folder, depth: node.depth, unread: unread(node))
+                        }
+                        .buttonStyle(.plain)
+                        if node.hasChildren {
+                            Button { toggle(folder.id) } label: {
+                                Image(systemName: "chevron.right")
+                                    .font(.footnote.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .rotationEffect(.degrees(node.expanded ? 90 : 0))
+                                    .frame(width: 32, height: 28)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(folder.name)
+                        }
                     }
                     .foregroundStyle(folder.id == model.folderId ? Color.accentColor : .primary)
                     .listRowBackground(folder.id == model.folderId ? Color.accentColor.opacity(0.14) : nil)
-                    .disabled(!folder.selectable)
                 }
             }
 
@@ -249,6 +270,7 @@ struct Sidebar: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { titleBar }
         .refreshable { await model.loadUnread() }
+        .onAppear { expanded = Set(UserDefaults.standard.stringArray(forKey: expandedKey) ?? []) }
     }
 
     /// An account's unread count: the open inbox's for the account in use,
@@ -258,6 +280,25 @@ struct Sidebar: View {
             return Int(n)
         }
         return Badge.count(for: email)
+    }
+
+    /// Open folders of the folder tree, remembered per account.
+    @State private var expanded: Set<String> = []
+
+    private var expandedKey: String { "expandedFolders:\(mail.activeEmail?.lowercased() ?? "")" }
+
+    private func toggle(_ id: String) {
+        withAnimation(.snappy) {
+            if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
+        }
+        UserDefaults.standard.set(Array(expanded), forKey: expandedKey)
+    }
+
+    /// A folder's unread count; a closed one adds its subfolders'.
+    private func unread(_ node: FolderNode) -> UInt32 {
+        let own = model.unread[node.folder.id] ?? 0
+        guard node.hasChildren, !node.expanded else { return own }
+        return node.descendants.reduce(own) { $0 + (model.unread[$1] ?? 0) }
     }
 
     /// "Ferrowl" with its logo at the start of the bar (no empty title row).
@@ -300,37 +341,20 @@ struct Sidebar: View {
         }
     }
 
-    /// Standard folders first (Inbox, Sent, …), then the others by path.
-    private var ordered: [Folder] {
-        let rank: (FolderKind) -> Int = {
-            switch $0 {
-            case .inbox: 0
-            case .drafts: 1
-            case .sent: 2
-            case .archive: 3
-            case .spam: 4
-            case .trash: 5
-            case .other: 6
-            }
-        }
-        return mail.folders.sorted {
-            let a = rank($0.kind), b = rank($1.kind)
-            if a != b { return a < b }
-            return $0.path.joined(separator: "/").localizedStandardCompare($1.path.joined(separator: "/")) == .orderedAscending
-        }
-    }
 }
 
 extension Folder: Identifiable {}
 
 struct FolderRow: View {
     let folder: Folder
+    /// Nesting level in the folder tree (the path's, when not given).
+    var depth: UInt32?
     let unread: UInt32
 
     var body: some View {
         HStack {
             Label(folder.kind == .other ? (folder.path.last ?? folder.name) : folder.name, systemImage: icon)
-                .padding(.leading, folder.kind == .other ? CGFloat(max(0, folder.path.count - 1)) * 14 : 0)
+                .padding(.leading, CGFloat(depth ?? (folder.kind == .other ? UInt32(max(0, folder.path.count - 1)) : 0)) * 14)
             Spacer()
             if unread > 0 {
                 Text("\(unread)")
