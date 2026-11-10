@@ -49,7 +49,7 @@ final class NotificationService: UNNotificationServiceExtension {
             // Only what the notification shows: an extension has about 30
             // seconds and little memory, too little for loading the inbox.
             let peek = try await engine.peekInbox(account: account, after: last, limit: 1)
-            content.badge = NSNumber(value: Badge.set(Int(peek.unread), for: account.email))
+            content.badge = NSNumber(value: Badge.set(Int(peek.unread), for: account.email, fresh: peek.fresh))
             let newest = peek.newest?.uid ?? last
             SharedStorage.defaults.set(Int(max(newest, last)), forKey: key)
             // First time for this account: no memory of what was already

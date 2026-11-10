@@ -1,0 +1,6 @@
+/* Generated from core/locales by ffi/build-ios.sh: edit those files. */
+"widget_title" = "Ungelesene Mails";
+"widget_desc" = "Deine ungelesenen Mails aller Konten auf einen Blick.";
+"widget_unread" = "ungelesen";
+"widget_none" = "Keine ungelesenen Mails";
+"widget_inline" = "{n} ungelesen";

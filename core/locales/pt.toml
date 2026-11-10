@@ -576,3 +576,10 @@ integrations_send_title = "{app} quer enviar um e-mail"
 integrations_send_text = "Para {to}: {subject}"
 integrations_allow = "Enviar"
 integrations_deny = "Não enviar"
+
+# Home Screen widget (iOS, Android)
+widget_title = "E-mails não lidos"
+widget_desc = "Seus e-mails não lidos de todas as contas, num relance."
+widget_unread = "não lidos"
+widget_none = "Nenhum e-mail não lido"
+widget_inline = "{n} não lidos"

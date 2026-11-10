@@ -55,6 +55,7 @@ final class MailRepository {
 
     private func persist() {
         store.save(AccountStore.Snapshot(accounts: accounts, active: activeEmail))
+        WidgetData.keep(accounts.map(\.email))
     }
 
     // MARK: accounts
