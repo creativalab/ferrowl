@@ -55,6 +55,15 @@
 "intent_archive_confirm" = "메시지 {n}개를 보관할까요?";
 "intent_done" = "완료했습니다.";
 "intent_needs_pro_write" = "단축어에서 메일을 변경하려면 Ferrowl Pro가 필요합니다.";
+"intent_details_title" = "메일 세부 정보";
+"intent_details_desc" = "메시지 본문, 첨부 파일, Ferrowl이 인식한 내용(배송, 코드, 청구서). 읽음으로 표시하지 않습니다.";
+"intent_details" = "메일 세부 정보";
+"intent_text" = "본문";
+"intent_tracking" = "운송장 번호";
+"intent_carrier" = "택배사";
+"intent_tracking_link" = "조회 링크";
+"intent_amount" = "금액";
+"intent_due" = "기한";
 "intent_account" = "계정";
 "intent_message" = "메시지";
 "intent_to" = "받는 사람";

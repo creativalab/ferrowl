@@ -55,6 +55,15 @@
 "intent_archive_confirm" = "هل تريد أرشفة {n} رسائل؟";
 "intent_done" = "تم.";
 "intent_needs_pro_write" = "يتطلب تعديل البريد من الاختصارات Ferrowl Pro.";
+"intent_details_title" = "تفاصيل البريد";
+"intent_details_desc" = "نص الرسالة ومرفقاتها وما يتعرّف عليه Ferrowl فيها (شحنة، رمز، فاتورة)، دون تعليمها كمقروءة.";
+"intent_details" = "تفاصيل البريد";
+"intent_text" = "النص";
+"intent_tracking" = "رقم التتبّع";
+"intent_carrier" = "شركة الشحن";
+"intent_tracking_link" = "رابط التتبّع";
+"intent_amount" = "المبلغ";
+"intent_due" = "تاريخ الاستحقاق";
 "intent_account" = "الحساب";
 "intent_message" = "الرسالة";
 "intent_to" = "إلى";

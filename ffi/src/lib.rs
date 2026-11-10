@@ -1663,6 +1663,14 @@ impl Engine {
     }
 
     /// Opens a message (marks it as read).
+    /// A whole message of any account without marking it read (for
+    /// Shortcuts and other apps), on a connection of its own.
+    pub async fn peek_message(&self, account: Account, folder_id: String, uid: u32) -> Result<Message> {
+        Ok(Backend::peek_message(account.into(), folder_id, uid)
+            .await?
+            .into())
+    }
+
     pub async fn message(&self, folder_id: String, uid: u32) -> Result<Message> {
         Ok(self.backend.message(folder_id, uid).await?.into())
     }

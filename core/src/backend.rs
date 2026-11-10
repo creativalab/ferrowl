@@ -652,6 +652,27 @@ impl Backend {
         .map_err(|e| crate::errors::humanize(&format!("{e:#}")))?
     }
 
+    /// A whole message of any account, on a connection of its own and
+    /// without marking it read (other apps reading it). Not for POP3.
+    pub async fn peek_message(account: Account, folder: String, uid: u32) -> Res<FullMessage> {
+        tokio::task::spawn_blocking(move || {
+            if account.is_pop3() {
+                return Err(t("err_no_account").to_string());
+            }
+            let own = crate::crypto::own_key(&account.email).map(|k| (k, account.pgp_passphrase.clone()));
+            let keys = mail::PgpKeys {
+                own,
+                contact: &crate::crypto::contact_key,
+            };
+            let mut s = mail::connect(&account).map_err(text)?;
+            let msg = mail::peek_message(&mut s, &folder, uid, &keys).map_err(text);
+            let _ = s.logout();
+            msg
+        })
+        .await
+        .map_err(|e| crate::errors::humanize(&format!("{e:#}")))?
+    }
+
     /// What a new-mail notification shows (see [`mail::peek_inbox`]), on a
     /// connection of its own, without touching the current session or the
     /// cache. Not for POP3 accounts.

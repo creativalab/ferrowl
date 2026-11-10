@@ -21,23 +21,25 @@ import com.ferrowl.core.FerrowlException
 import com.ferrowl.core.FerrowlLink
 import com.ferrowl.core.Header
 import com.ferrowl.core.InboxPeek
+import com.ferrowl.core.MailInsight
 import com.ferrowl.core.Outgoing
 import com.ferrowl.core.capabilityNeedsConfirmation
 import com.ferrowl.core.capabilityNeedsPro
+import com.ferrowl.core.mailInsights
 import com.ferrowl.core.markdownToHtml
 import com.ferrowl.core.messageLink
 import com.ferrowl.core.parseLink
 import com.ferrowl.core.translate
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.util.Locale
+import java.util.UUID
+import javax.inject.Inject
+import javax.inject.Singleton
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import java.util.Locale
-import java.util.UUID
-import javax.inject.Inject
-import javax.inject.Singleton
 
 /**
  * Ferrowl Bridge on Android: what automation apps (Tasker, MacroDroid,
@@ -49,6 +51,8 @@ import javax.inject.Singleton
  * - [ACTION_SEARCH] (`query`, `account`, `limit`): mail stored on the phone;
  * - [ACTION_AGENDA] (`day` YYYY-MM-DD, `days`, `account`): synced events;
  * - [ACTION_CONTACTS] (`query`, `account`, `limit`): the address book;
+ * - [ACTION_DETAILS] (`link`): a message's text, attachments, shipment,
+ *   code and bill, without marking it read;
  * - [ACTION_ARCHIVE], [ACTION_MARK_READ], [ACTION_MARK_UNREAD] (`link`: the
  *   messages' `ferrowl://open` links from `json`): Ferrowl Pro, confirmed;
  * - [ACTION_SEND] (`to`, `subject`, `body`, `account`): Ferrowl Pro; the
@@ -77,6 +81,7 @@ class Bridge @Inject constructor(
                 ACTION_SEARCH -> requireRead(connection) { search(intent) }
                 ACTION_AGENDA -> requireRead(connection) { agenda(intent) }
                 ACTION_CONTACTS -> requireRead(connection) { contacts(intent) }
+                ACTION_DETAILS -> requireRead(connection) { details(intent) }
                 ACTION_SEND -> send(connection, intent, request)
                 ACTION_ARCHIVE, ACTION_MARK_READ, ACTION_MARK_UNREAD -> change(connection, intent, request)
                 else -> Result(ok = false, error = "unknown action")
@@ -187,6 +192,55 @@ class Bridge @Inject constructor(
             },
         ).toString()
         return Result(ok = true, count = events.size, text = text, json = json)
+    }
+
+    /**
+     * A message's text, attachments and what Ferrowl recognizes in it
+     * (shipment, code, bill), by its `ferrowl://open` link; not marked read.
+     */
+    private suspend fun details(intent: Intent): Result {
+        val open = intent.getStringExtra(EXTRA_LINK)?.lines()?.firstNotNullOfOrNull { parseLink(it.trim()) as? FerrowlLink.Open }
+            ?: throw BridgeError("link?")
+        val account = accounts(open.account).first()
+        val m = repo.peekMessage(account, open.folder, open.uid)
+        val found = mailInsights(m)
+        val json = buildJsonObject {
+            put("account", account.email)
+            put("from", m.from)
+            put("address", m.fromAddress)
+            put("subject", m.subject)
+            put("date", m.timestamp)
+            put("text", m.text.take(MAX_TEXT))
+            put("attachments", JsonArray(m.attachments.map { JsonPrimitive(it.name) }))
+            for (i in found) {
+                when (i) {
+                    is MailInsight.Shipment -> put(
+                        "shipment",
+                        buildJsonObject {
+                            put("carrier", i.carrier)
+                            put("number", i.number)
+                            put("url", i.url)
+                        },
+                    )
+                    is MailInsight.Code -> put("code", i.code)
+                    is MailInsight.Payment -> put(
+                        "payment",
+                        buildJsonObject {
+                            put("number", i.number)
+                            put("amount", i.amount)
+                            put("due", i.due)
+                        },
+                    )
+                }
+            }
+        }.toString()
+        val summary = listOfNotNull(
+            m.subject,
+            found.filterIsInstance<MailInsight.Shipment>().firstOrNull()?.let { "${it.carrier} ${it.number}".trim() },
+            found.filterIsInstance<MailInsight.Code>().firstOrNull()?.code,
+            found.filterIsInstance<MailInsight.Payment>().firstOrNull()?.let { "${it.amount} ${it.due}".trim() },
+        ).filter { it.isNotBlank() }.joinToString("\n")
+        return Result(ok = true, count = 1, text = summary, json = json)
     }
 
     private suspend fun contacts(intent: Intent): Result {
@@ -443,6 +497,7 @@ class Bridge @Inject constructor(
         const val ACTION_SEND = "com.ferrowl.app.action.SEND"
         const val ACTION_AGENDA = "com.ferrowl.app.action.AGENDA"
         const val ACTION_CONTACTS = "com.ferrowl.app.action.CONTACTS"
+        const val ACTION_DETAILS = "com.ferrowl.app.action.DETAILS"
         const val ACTION_ARCHIVE = "com.ferrowl.app.action.ARCHIVE"
         const val ACTION_MARK_READ = "com.ferrowl.app.action.MARK_READ"
         const val ACTION_MARK_UNREAD = "com.ferrowl.app.action.MARK_UNREAD"
@@ -464,5 +519,6 @@ class Bridge @Inject constructor(
         private const val CHANNEL = "bridge"
         private const val DEFAULT_LIMIT = 10
         private const val MAX_LIMIT = 50
+        private const val MAX_TEXT = 20_000
     }
 }

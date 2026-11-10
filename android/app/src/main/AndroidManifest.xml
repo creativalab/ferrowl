@@ -103,6 +103,7 @@
                 <action android:name="com.ferrowl.app.action.SEND" />
                 <action android:name="com.ferrowl.app.action.AGENDA" />
                 <action android:name="com.ferrowl.app.action.CONTACTS" />
+                <action android:name="com.ferrowl.app.action.DETAILS" />
                 <action android:name="com.ferrowl.app.action.ARCHIVE" />
                 <action android:name="com.ferrowl.app.action.MARK_READ" />
                 <action android:name="com.ferrowl.app.action.MARK_UNREAD" />

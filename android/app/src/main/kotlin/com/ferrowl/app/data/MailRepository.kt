@@ -324,6 +324,10 @@ class MailRepository @Inject constructor(
     suspend fun searchAccount(account: Account, query: String, limit: Int): List<Header> =
         withContext(Dispatchers.IO) { engine.searchAccount(account, "INBOX", query, limit.toUInt()) }
 
+    /** A whole message of any account, without marking it read (other apps). */
+    suspend fun peekMessage(account: Account, folderId: String, uid: UInt): Message =
+        engine.peekMessage(account, folderId, uid)
+
     /** The synced agenda of any account, between two Unix times (other apps). */
     suspend fun agendaFor(account: Account, from: Long, to: Long): List<CalendarEvent> =
         withContext(Dispatchers.IO) { engine.agendaFor(account, from, to) }

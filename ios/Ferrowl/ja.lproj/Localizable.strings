@@ -55,6 +55,15 @@
 "intent_archive_confirm" = "{n} 件のメッセージをアーカイブしますか？";
 "intent_done" = "完了しました。";
 "intent_needs_pro_write" = "ショートカットからメールを変更するには Ferrowl Pro が必要です。";
+"intent_details_title" = "メールの詳細";
+"intent_details_desc" = "メッセージの本文、添付ファイル、Ferrowl が認識した内容（配送、コード、請求書）。既読にはしません。";
+"intent_details" = "メールの詳細";
+"intent_text" = "本文";
+"intent_tracking" = "追跡番号";
+"intent_carrier" = "配送業者";
+"intent_tracking_link" = "追跡リンク";
+"intent_amount" = "金額";
+"intent_due" = "期限";
 "intent_account" = "アカウント";
 "intent_message" = "メッセージ";
 "intent_to" = "宛先";

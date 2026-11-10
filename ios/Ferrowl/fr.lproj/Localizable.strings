@@ -55,6 +55,15 @@
 "intent_archive_confirm" = "Archiver {n} messages ?";
 "intent_done" = "C’est fait.";
 "intent_needs_pro_write" = "Modifier les mails depuis Raccourcis nécessite Ferrowl Pro.";
+"intent_details_title" = "Détails du mail";
+"intent_details_desc" = "Le texte d’un message, ses pièces jointes et ce que Ferrowl y reconnaît (envoi, code, facture), sans le marquer comme lu.";
+"intent_details" = "Détails du mail";
+"intent_text" = "Texte";
+"intent_tracking" = "Numéro de suivi";
+"intent_carrier" = "Transporteur";
+"intent_tracking_link" = "Lien de suivi";
+"intent_amount" = "Montant";
+"intent_due" = "Échéance";
 "intent_account" = "Compte";
 "intent_message" = "Message";
 "intent_to" = "À";
