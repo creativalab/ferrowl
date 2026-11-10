@@ -324,7 +324,15 @@ fn link_in(doc: &HtmlDocument, x: f32, y: f32) -> Option<String> {
         }
         node = n.parent.and_then(|p| doc.get_node(p));
     }
-    None
+    // A web address written as plain text ("…all'indirizzo:
+    // https://…"), maybe split across spans: take the paragraph's text.
+    let (node, offset) = doc.find_text_position(x, y)?;
+    let text = doc
+        .get_node(node)
+        .and_then(|n| n.element_data())
+        .and_then(|e| e.inline_layout_data.as_ref())
+        .map(|l| l.text.clone())?;
+    crate::linkify::at(&text, offset.min(text.len()))
 }
 
 /// Fetches resources on background threads; counts what is in flight.
@@ -623,6 +631,34 @@ mod tests {
         assert_eq!(link_at(7, 50.0, 50.0).as_deref(), Some("https://ferrowl.com/x"));
         assert_eq!(link_at(7, 50.0, 2000.0), None);
         assert_eq!(link_at(8, 50.0, 50.0), None, "other message");
+    }
+
+    #[test]
+    fn plain_text_addresses_are_links() {
+        let _turn = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        // As in an Apple Support mail: the address split across spans.
+        let html = r#"<html><body style="margin:0;font:16px sans-serif;width:2000px">
+            <p style="margin:0"><span>Carichi qui: https://developer.apple.com/contact/file-upload/?teamId=</span><span>5C6VYPSHRS</span><span>.</span></p>
+        </body></html>"#;
+        render(Job {
+            uid: 24,
+            html: html.into(),
+            width: 600,
+            scale: 1.0,
+            allow_remote: false,
+            inline: HashMap::new(),
+        })
+        .unwrap();
+        let url = "https://developer.apple.com/contact/file-upload/?teamId=5C6VYPSHRS";
+        let hits: Vec<_> = (0..120)
+            .filter_map(|i| link_at(24, i as f32 * 5.0, 8.0))
+            .collect();
+        assert!(hits.iter().any(|l| l == url), "{hits:?}");
+        assert!(
+            hits.iter().all(|l| l == url),
+            "only the address is a link: {hits:?}"
+        );
+        assert!(hits.len() < 120, "the words before it are not");
     }
 
     #[test]
