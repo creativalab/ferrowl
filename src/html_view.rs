@@ -337,32 +337,36 @@ struct Net {
 }
 
 impl NetProvider for Net {
+    // Every request is answered, with no bytes when it is not loaded:
+    // Blitz does not lay out a document while a stylesheet is pending, so
+    // one left unanswered (blocked, failed, relative) left the mail blank.
     fn fetch(&self, _doc: usize, request: Request, handler: Box<dyn NetHandler>) {
         let url = request.url.to_string();
         if let Some(cid) = url.strip_prefix("cid:") {
             let cid = percent_decode(cid);
-            if let Some(data) = self.inline.get(cid.trim_matches(['<', '>'])) {
-                handler.bytes(url, data.clone());
-            }
+            let data = self.inline.get(cid.trim_matches(['<', '>'])).cloned();
+            handler.bytes(url, data.unwrap_or_default());
             return;
         }
-        let remote = url.starts_with("https://") || url.starts_with("http://");
+        let remote = (url.starts_with("https://") || url.starts_with("http://")) && !url.contains(NO_HOST);
         if !remote {
+            handler.bytes(url, Bytes::new());
             return;
         }
         if !self.allow_remote {
             self.blocked.fetch_add(1, Ordering::SeqCst);
+            handler.bytes(url, Bytes::new());
             return;
         }
         if self.started.fetch_add(1, Ordering::SeqCst) >= MAX_FETCHES {
+            handler.bytes(url, Bytes::new());
             return;
         }
         let pending = self.pending.clone();
         pending.fetch_add(1, Ordering::SeqCst);
         std::thread::spawn(move || {
-            if let Some(data) = fetch(&url) {
-                handler.bytes(url, Bytes::from(data));
-            }
+            let data = fetch(&url).map(Bytes::from).unwrap_or_default();
+            handler.bytes(url, data);
             pending.fetch_sub(1, Ordering::SeqCst);
         });
     }
@@ -381,6 +385,10 @@ fn fetch(url: &str) -> Option<Vec<u8>> {
         .read_to_vec()
         .ok()
 }
+
+/// The base of documents: relative links in mail lead nowhere, and are
+/// never fetched.
+const NO_HOST: &str = "ferrowl.invalid";
 
 /// Text the message does not style gets the app's font (Inter), as other
 /// mail apps give it theirs, instead of the browser default (a serif).
@@ -430,7 +438,7 @@ fn load(job: &Job) -> Loaded {
         net_provider: Some(Arc::new(net)),
         // Blitz's default base is a `data:` URL, which cannot resolve the
         // relative links some mail has (it panics). `.invalid` never resolves.
-        base_url: Some("https://ferrowl.invalid/".into()),
+        base_url: Some(format!("https://{NO_HOST}/")),
         font_ctx: Some(fonts()),
         ua_stylesheets: vec![
             blitz_dom::UserAgentStylesheet::default_sheet(),
@@ -643,6 +651,26 @@ mod tests {
         assert!(first.is_some(), "the odd <base> is dropped, so it renders");
         // Whatever happened to that one, the next message still renders.
         assert!(render(job(22, "<html><body>Next</body></html>")).is_some());
+    }
+
+    #[test]
+    fn unloaded_stylesheets_do_not_blank_the_mail() {
+        let _turn = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        let html = r#"<html><head>
+            <link rel="stylesheet" href="/wss/fonts/?family=Myriad+Set+Pro&v=2">
+            <link rel="stylesheet" href="https://example.invalid/style.css"></head>
+            <body><p style="height:300px">Come inviare i file</p></body></html>"#;
+        let r = render(Job {
+            uid: 23,
+            html: html.into(),
+            width: 600,
+            scale: 1.0,
+            allow_remote: false,
+            inline: HashMap::new(),
+        })
+        .unwrap();
+        let height: f32 = r.tiles.iter().map(|(_, h)| h).sum();
+        assert!(height >= 300.0, "laid out despite the stylesheets: {height}");
     }
 
     #[test]
