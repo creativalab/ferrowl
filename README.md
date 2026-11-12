@@ -1,6 +1,6 @@
 # Ferrowl
 
-A fast desktop email client written in Rust, with a native UI built on [iced](https://iced.rs).
+A fast desktop email client written in Rust, with a native UI built on [iced](https://iced.rs), and native apps for iPhone and Android.
 
 <img src="assets/icons/png/ferrowl-128.png" width="64" alt="Ferrowl icon">
 
@@ -27,7 +27,12 @@ A fast desktop email client written in Rust, with a native UI built on [iced](ht
 
 ## Download
 
-Prebuilt packages are attached to each [release](https://github.com/creativalab/ferrowl/releases):
+On iPhone (iOS 17 or later) and Android (8.0 or later), get Ferrowl from the stores:
+
+<a href="https://apps.apple.com/app/ferrowl/id6831579655"><img src="assets/badges/app-store.svg" height="40" alt="Download on the App Store"></a>
+<a href="https://play.google.com/store/apps/details?id=com.ferrowl.app"><img src="assets/badges/google-play.png" height="40" alt="Get it on Google Play"></a>
+
+For computers, prebuilt packages are attached to each [release](https://github.com/creativalab/ferrowl/releases):
 
 | System | Package |
 |---|---|
