@@ -27,7 +27,7 @@ A fast desktop email client written in Rust, with a native UI built on [iced](ht
 
 ## Download
 
-On iPhone (iOS 17 or later) and Android (8.0 or later), get Ferrowl from the stores:
+On iPhone (iOS 18 or later) and Android (8.0 or later), get Ferrowl from the stores:
 
 <a href="https://apps.apple.com/app/ferrowl/id6831579655"><img src="assets/badges/app-store.svg" height="40" alt="Download on the App Store"></a>
 <a href="https://play.google.com/store/apps/details?id=com.ferrowl.app"><img src="assets/badges/google-play.png" height="40" alt="Get it on Google Play"></a>
