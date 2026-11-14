@@ -8,6 +8,7 @@ import com.ferrowl.core.CalendarEvent
 import com.ferrowl.core.CalendarInfo
 import com.ferrowl.core.Contact
 import com.ferrowl.core.Engine
+import com.ferrowl.core.FerrowlException
 import com.ferrowl.core.EventDraft
 import com.ferrowl.core.Folder
 import com.ferrowl.core.FolderKind
@@ -21,7 +22,12 @@ import com.ferrowl.core.RulesOutcome
 import com.ferrowl.core.markdownToHtml
 import com.ferrowl.core.oauthForget
 import com.ferrowl.core.translate
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,10 +40,21 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
+
+/**
+ * An action asked on one account found the engine on another (the user
+ * switched meanwhile): it is not done, or it would change the other
+ * mailbox's messages with the same numbers. A [CancellationException], so
+ * the coroutine just ends: that screen's account is gone, nothing to show.
+ */
+class AccountChanged : CancellationException("The account changed")
 
 /**
  * The single entry point to mail for the UI: it wraps the Rust [Engine]
@@ -58,6 +75,70 @@ class MailRepository @Inject constructor(
     private val accountUnread: AccountUnread,
 ) {
     private val connectLock = Mutex()
+
+    /** The account the engine is connected to (null: none yet). */
+    @Volatile private var connected: String? = null
+
+    /** Whether [email] is the account the engine is on. */
+    fun isCurrent(email: String?): Boolean = email != null && email.equals(connected, ignoreCase = true)
+
+    /** The account the engine is on, once connected. */
+    fun connectedAccount(): String? = connected
+
+    /** For work that outlives a screen: actions waiting for their Undo. */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    private class Deferred(val run: suspend () -> Unit) {
+        var timer: Job? = null
+    }
+
+    private val deferred = ConcurrentHashMap<Long, Deferred>()
+    private val nextDeferred = AtomicLong()
+
+    /**
+     * Deletes after [delayMs] (the Undo notice), unless [cancelLater] comes
+     * first. Kept here, not by the screen: it still runs if the screen goes
+     * (Back out of the app), and at once before the engine moves to another
+     * account, on its own account. [done] gets whether it failed (the error
+     * is shown here).
+     */
+    fun deleteLater(account: String, folderId: String, uids: List<UInt>, delayMs: Long, done: (failed: Boolean) -> Unit): Long {
+        val id = nextDeferred.incrementAndGet()
+        val job = Deferred {
+            val failed = try {
+                delete(folderId, uids, quiet = true, account = account)
+                false
+            } catch (e: AccountChanged) {
+                false
+            } catch (e: FerrowlException) {
+                noticeBoard.error(e.message.orEmpty())
+                true
+            }
+            done(failed)
+        }
+        deferred[id] = job
+        job.timer = scope.launch {
+            delay(delayMs)
+            deferred.remove(id)?.run?.invoke()
+        }
+        return id
+    }
+
+    /** Undo: false when the delete already ran. */
+    fun cancelLater(id: Long): Boolean {
+        val job = deferred.remove(id) ?: return false
+        job.timer?.cancel()
+        return true
+    }
+
+    /** Before connecting another account: what waits for Undo is done now. */
+    private suspend fun flushDeferred() {
+        for (id in deferred.keys.toList()) {
+            val job = deferred.remove(id) ?: continue
+            job.timer?.cancel()
+            job.run()
+        }
+    }
     private val _folders = MutableStateFlow<List<Folder>>(emptyList())
     private val _changes = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
 
@@ -107,9 +188,10 @@ class MailRepository @Inject constructor(
 
     /** Makes another account the active one and connects it. */
     suspend fun switchTo(email: String) {
+        flushDeferred()
         connectLock.withLock {
             val account = accounts.accounts.first().firstOrNull { it.email.equals(email, ignoreCase = true) } ?: return
-            _folders.value = engine.connect(account)
+            connectHeld(account)
             accounts.setActive(account.email)
         }
         _switched.tryEmit(Unit)
@@ -125,9 +207,11 @@ class MailRepository @Inject constructor(
      * fails the next attempt (any server action) uses the right account.
      */
     suspend fun backToFirst(email: String) {
+        flushDeferred()
         connectLock.withLock {
             accounts.setActive(email)
             _folders.value = emptyList()
+            connected = null
         }
         _switched.tryEmit(Unit)
         runCatching { push.accountChanged() }
@@ -141,7 +225,8 @@ class MailRepository @Inject constructor(
     suspend fun removeAccount(email: String): Boolean {
         val all = accounts.accounts.first()
         val removed = all.firstOrNull { it.email.equals(email, ignoreCase = true) } ?: return true
-        removed.oauth?.let { oauthForget(it, removed.email) }
+        flushDeferred()
+        removed.oauth?.let { withContext(Dispatchers.IO) { oauthForget(it, removed.email) } }
         // Cached mail, search index, contacts and calendars of the account
         // (shared when the same mailbox is added twice: kept then).
         val sharesCache = all.any {
@@ -153,9 +238,10 @@ class MailRepository @Inject constructor(
         runCatching { push.accountChanged() }
         if (next == null) {
             _folders.value = emptyList()
+            connected = null
             return false
         }
-        connectLock.withLock { _folders.value = engine.connect(next) }
+        connectLock.withLock { connectHeld(next) }
         _switched.tryEmit(Unit)
         return true
     }
@@ -167,7 +253,7 @@ class MailRepository @Inject constructor(
     suspend fun updateAccount(account: Account) {
         accounts.update(account)
         if (account.email.equals(savedAccount()?.email, ignoreCase = true)) {
-            connectLock.withLock { _folders.value = engine.connect(account) }
+            connectLock.withLock { connectHeld(account) }
             syncContactsQuietly()
         }
     }
@@ -177,10 +263,13 @@ class MailRepository @Inject constructor(
 
     /** Connects and, if it works, saves the account. */
     suspend fun setUp(account: Account) {
+        flushDeferred()
         connectLock.withLock {
-            _folders.value = engine.connect(account)
+            connectHeld(account)
             accounts.save(account)
         }
+        // The new account is the active one: screens start over with it.
+        _switched.tryEmit(Unit)
         learnFromSent()
         syncContactsQuietly()
         // Notifications: the server gets this account (again, with its new settings).
@@ -195,12 +284,56 @@ class MailRepository @Inject constructor(
         if (_folders.value.isEmpty()) ensureConnected()
     }
 
+    /**
+     * Runs a server action asked on [account] (null: whichever is connected)
+     * only while the engine is on it, and with no switch of account during
+     * it; otherwise [AccountChanged].
+     */
+    private suspend fun <T> onAccount(account: String?, action: suspend (String) -> T): T {
+        ready()
+        return connectLock.withLock {
+            if (account != null && !isCurrent(account)) throw AccountChanged()
+            // The engine checks it too (`…ForAccount`; empty: no check).
+            try {
+                action(account.orEmpty())
+            } catch (e: FerrowlException) {
+                if (e.message == translate("err_other_account")) throw AccountChanged()
+                throw e
+            }
+        }
+    }
+
+    /**
+     * The engine reads the phone's copy of the account it is connected to:
+     * with none yet (just started, e.g. after the process was stopped) those
+     * reads come back empty, so it connects first. Offline they still give
+     * what there is.
+     */
+    private suspend fun readable() {
+        if (_folders.value.isEmpty()) runCatching { ensureConnected() }
+    }
+
+    /**
+     * Connects [account], with [connectLock] held. If it fails no account
+     * counts as connected, and the next action connects the saved one again.
+     */
+    private suspend fun connectHeld(account: Account) {
+        connected = null
+        try {
+            _folders.value = engine.connect(account)
+        } catch (e: Exception) {
+            _folders.value = emptyList()
+            throw e
+        }
+        connected = account.email
+    }
+
     /** Connects the saved account once per process. */
     suspend fun ensureConnected(): Boolean {
         val connected = connectLock.withLock {
             if (_folders.value.isNotEmpty()) return true
             val account = accounts.account.first() ?: return false
-            _folders.value = engine.connect(account)
+            connectHeld(account)
             true
         }
         if (connected) {
@@ -233,18 +366,28 @@ class MailRepository @Inject constructor(
     }
 
     /** Event occurrences between two instants (seconds since the epoch). */
-    suspend fun agenda(from: Long, to: Long): List<CalendarEvent> =
-        withContext(Dispatchers.IO) { engine.agenda(from, to) }
+    suspend fun agenda(from: Long, to: Long): List<CalendarEvent> {
+        readable()
+        return withContext(Dispatchers.IO) { engine.agenda(from, to) }
+    }
 
     /** The account's calendars. */
-    suspend fun calendars(): List<CalendarInfo> = withContext(Dispatchers.IO) { engine.calendars() }
+    suspend fun calendars(): List<CalendarInfo> {
+        readable()
+        return withContext(Dispatchers.IO) { engine.calendars() }
+    }
 
     /** The form for a stored event. */
-    suspend fun eventDraft(url: String): EventDraft? = withContext(Dispatchers.IO) { engine.eventDraft(url) }
+    suspend fun eventDraft(url: String): EventDraft? {
+        readable()
+        return withContext(Dispatchers.IO) { engine.eventDraft(url) }
+    }
 
     /** Saves a new or changed event; returns the text to show. */
-    suspend fun saveEvent(calendarUrl: String, url: String?, draft: EventDraft): String =
-        engine.saveEvent(calendarUrl, url, draft)
+    suspend fun saveEvent(calendarUrl: String, url: String?, draft: EventDraft): String {
+        ready()
+        return engine.saveEvent(calendarUrl, url, draft)
+    }
 
     /** Deletes a stored event; returns the text to show. */
     suspend fun deleteEvent(url: String): String {
@@ -258,8 +401,10 @@ class MailRepository @Inject constructor(
     }
 
     /** Saved contacts matching [query] (all when empty), by name. */
-    suspend fun contacts(query: String): List<Contact> =
-        withContext(Dispatchers.IO) { engine.contacts(query) }
+    suspend fun contacts(query: String): List<Contact> {
+        readable()
+        return withContext(Dispatchers.IO) { engine.contacts(query) }
+    }
 
     /** Saves a contact written in the app (on the contacts server when the account has one, else on the phone). */
     suspend fun saveContact(contact: Contact) {
@@ -296,8 +441,10 @@ class MailRepository @Inject constructor(
     }
 
     /** Recipients matching what is being typed. */
-    suspend fun suggest(query: String): List<AddressSuggestion> =
-        withContext(Dispatchers.IO) { engine.suggestAddresses(query) }
+    suspend fun suggest(query: String): List<AddressSuggestion> {
+        readable()
+        return withContext(Dispatchers.IO) { engine.suggestAddresses(query) }
+    }
 
     fun folder(id: String): Folder? = _folders.value.firstOrNull { it.id == id }
 
@@ -349,8 +496,10 @@ class MailRepository @Inject constructor(
         withContext(Dispatchers.IO) { engine.contactsFor(account, query) }
 
     /** Messages already on the phone (local database, off the main thread). */
-    suspend fun cachedHeaders(folderId: String): List<Header> =
-        withContext(Dispatchers.IO) { engine.cachedHeaders(folderId) }
+    suspend fun cachedHeaders(folderId: String): List<Header> {
+        readable()
+        return withContext(Dispatchers.IO) { engine.cachedHeaders(folderId) }
+    }
 
     /** Newest messages from the server. */
     suspend fun headers(folderId: String): List<Header> {
@@ -358,8 +507,27 @@ class MailRepository @Inject constructor(
         return engine.headers(folderId).headers
     }
 
-    suspend fun search(folderId: String, query: String): List<Header> =
-        withContext(Dispatchers.IO) { engine.search(folderId, query) }
+    /**
+     * Newest messages from the server, with the account they are of;
+     * [AccountChanged] if the engine moved to another one meanwhile.
+     */
+    suspend fun headersOf(folderId: String): Pair<String, List<Header>> {
+        ready()
+        val account = connected ?: throw AccountChanged()
+        val list = try {
+            engine.headersForAccount(account, folderId).headers
+        } catch (e: FerrowlException) {
+            if (e.message == translate("err_other_account")) throw AccountChanged()
+            throw e
+        }
+        if (!isCurrent(account)) throw AccountChanged()
+        return account to list
+    }
+
+    suspend fun search(folderId: String, query: String): List<Header> {
+        readable()
+        return withContext(Dispatchers.IO) { engine.search(folderId, query) }
+    }
 
     /** Unread count of every folder. */
     suspend fun unread(): Map<String, UInt> =
@@ -370,15 +538,13 @@ class MailRepository @Inject constructor(
         return engine.message(folderId, uid)
     }
 
-    suspend fun setSeen(folderId: String, uid: UInt, seen: Boolean) {
-        ready()
-        engine.setSeen(folderId, uid, seen)
+    suspend fun setSeen(folderId: String, uid: UInt, seen: Boolean, account: String? = null) {
+        onAccount(account) { a -> engine.setSeenManyForAccount(a, folderId, listOf(uid), seen) }
         _changes.emit(Unit)
     }
 
-    suspend fun archive(folderId: String, uid: UInt) {
-        ready()
-        engine.archive(folderId, uid)
+    suspend fun archive(folderId: String, uid: UInt, account: String? = null) {
+        onAccount(account) { a -> engine.archiveManyForAccount(a, folderId, listOf(uid)) }
         changed(translate("archived"))
     }
 
@@ -387,15 +553,17 @@ class MailRepository @Inject constructor(
         folder(folderId)?.kind == FolderKind.TRASH || folderOf(FolderKind.TRASH) == null
 
     /** Moves to the Trash, or deletes for good when already there. */
-    suspend fun delete(folderId: String, uid: UInt) {
-        ready()
-        if (deletesForever(folderId)) {
-            engine.deleteForever(folderId, uid)
-            changed(translate("deleted_forever"))
-        } else {
-            engine.moveTo(folderId, uid, folderOf(FolderKind.TRASH)!!.id)
-            changed(translate("moved_to_trash"))
+    suspend fun delete(folderId: String, uid: UInt, account: String? = null) {
+        val forever = onAccount(account) { a ->
+            if (deletesForever(folderId)) {
+                engine.deleteForeverManyForAccount(a, folderId, listOf(uid))
+                true
+            } else {
+                engine.moveManyForAccount(a, folderId, listOf(uid), folderOf(FolderKind.TRASH)!!.id)
+                false
+            }
         }
+        changed(translate(if (forever) "deleted_forever" else "moved_to_trash"))
     }
 
     /** Whether the account is Gmail (messages have labels). */
@@ -408,15 +576,13 @@ class MailRepository @Inject constructor(
     }
 
     /** Adds or removes a Gmail label (a folder id) on messages. */
-    suspend fun setLabel(folderId: String, uids: List<UInt>, label: String, on: Boolean) {
-        ready()
-        engine.setLabelMany(folderId, uids, label, on)
+    suspend fun setLabel(folderId: String, uids: List<UInt>, label: String, on: Boolean, account: String? = null) {
+        onAccount(account) { a -> engine.setLabelManyForAccount(a, folderId, uids, label, on) }
     }
 
     /** Moves messages to Spam, or back to the inbox ([toSpam] false). */
-    suspend fun spam(folderId: String, uids: List<UInt>, toSpam: Boolean) {
-        ready()
-        if (toSpam) engine.reportSpam(folderId, uids) else engine.notSpam(folderId, uids)
+    suspend fun spam(folderId: String, uids: List<UInt>, toSpam: Boolean, account: String? = null) {
+        onAccount(account) { a -> if (toSpam) engine.reportSpamForAccount(a, folderId, uids) else engine.notSpamForAccount(a, folderId, uids) }
         val key = if (toSpam) "spam_moved" else "inbox_moved"
         changed(translate(key).replace("{n}", uids.size.toString()))
     }
@@ -436,30 +602,40 @@ class MailRepository @Inject constructor(
      * Applies the sender lists to a freshly loaded folder; returns the
      * messages moved (to drop from the list).
      */
-    suspend fun applySenderRules(folderId: String, headers: List<Header>): List<UInt> {
-        val moved = engine.applySenderRules(folderId, headers)
+    suspend fun applySenderRules(folderId: String, headers: List<Header>, account: String? = null): List<UInt> {
+        val moved = onAccount(account) { a -> engine.applySenderRulesForAccount(a, folderId, headers) }
         if (moved.isNotEmpty()) noticeBoard.info(translate("rules_moved").replace("{n}", moved.size.toString()))
         return moved
     }
 
     /** The inbox's new messages through the user's rules (each once). */
-    suspend fun applyRules(folderId: String, headers: List<Header>): RulesOutcome? {
+    suspend fun applyRules(folderId: String, headers: List<Header>, account: String? = null): RulesOutcome? {
         if (folderId != inboxId() || headers.isEmpty()) return null
-        val outcome = runCatching { engine.applyRules(folderId, headers) }.getOrNull() ?: return null
+        // Another account's rules must not run on these numbers (nor its
+        // "done up to" mark move to this account's newest message).
+        val outcome = try {
+            onAccount(account) { a -> engine.applyRulesForAccount(a, folderId, headers) }
+        } catch (e: AccountChanged) {
+            null
+        } catch (e: FerrowlException) {
+            null
+        } ?: return null
         val touched = (outcome.removed + outcome.read + outcome.starred).toSet()
         if (touched.isNotEmpty()) noticeBoard.info(translate("rules_applied").replace("{n}", touched.size.toString()))
         return outcome
     }
 
     /** The active account's rules. */
-    suspend fun rules(): List<Rule> = savedAccount()?.let { engine.rules(it) }.orEmpty()
+    suspend fun rules(): List<Rule> = withContext(Dispatchers.IO) { savedAccount()?.let { engine.rules(it) }.orEmpty() }
 
-    suspend fun saveRule(rule: Rule) {
+    suspend fun saveRule(rule: Rule) = withContext(Dispatchers.IO) {
         savedAccount()?.let { engine.saveRule(it, rule) }
+        Unit
     }
 
-    suspend fun deleteRule(id: String) {
+    suspend fun deleteRule(id: String) = withContext(Dispatchers.IO) {
         savedAccount()?.let { engine.deleteRule(it, id) }
+        Unit
     }
 
     /** The inbox messages on the phone a condition picks (a rule's preview). */
@@ -474,29 +650,25 @@ class MailRepository @Inject constructor(
     }
 
     /** Stars or unstars messages (IMAP \\Flagged, shown by every client). */
-    suspend fun setFlagged(folderId: String, uids: List<UInt>, flagged: Boolean) {
-        ready()
-        engine.setFlaggedMany(folderId, uids, flagged)
+    suspend fun setFlagged(folderId: String, uids: List<UInt>, flagged: Boolean, account: String? = null) {
+        onAccount(account) { a -> engine.setFlaggedManyForAccount(a, folderId, uids, flagged) }
     }
 
     /** Marks several messages read or unread at once. */
-    suspend fun setSeen(folderId: String, uids: List<UInt>, seen: Boolean) {
-        ready()
-        engine.setSeenMany(folderId, uids, seen)
+    suspend fun setSeen(folderId: String, uids: List<UInt>, seen: Boolean, account: String? = null) {
+        onAccount(account) { a -> engine.setSeenManyForAccount(a, folderId, uids, seen) }
         _changes.emit(Unit)
     }
 
     /** Archives messages; `quiet` when the screen already confirmed it (swipe). */
-    suspend fun archive(folderId: String, uids: List<UInt>, quiet: Boolean = false) {
-        ready()
-        engine.archiveMany(folderId, uids)
+    suspend fun archive(folderId: String, uids: List<UInt>, quiet: Boolean = false, account: String? = null) {
+        onAccount(account) { a -> engine.archiveManyForAccount(a, folderId, uids) }
         changed(if (quiet) "" else translate("bulk_archived").replace("{n}", uids.size.toString()))
     }
 
     /** Moves several messages to another folder. */
-    suspend fun move(folderId: String, uids: List<UInt>, targetId: String) {
-        ready()
-        engine.moveMany(folderId, uids, targetId)
+    suspend fun move(folderId: String, uids: List<UInt>, targetId: String, account: String? = null) {
+        onAccount(account) { a -> engine.moveManyForAccount(a, folderId, uids, targetId) }
         changed(translate("bulk_moved").replace("{n}", uids.size.toString()))
     }
 
@@ -504,25 +676,28 @@ class MailRepository @Inject constructor(
      * Moves several messages to the Trash, or deletes them for good when
      * already there; `quiet` when the screen already confirmed it (swipe).
      */
-    suspend fun delete(folderId: String, uids: List<UInt>, quiet: Boolean = false) {
-        ready()
+    suspend fun delete(folderId: String, uids: List<UInt>, quiet: Boolean = false, account: String? = null) {
         val n = uids.size.toString()
-        if (deletesForever(folderId)) {
-            engine.deleteForeverMany(folderId, uids)
-            changed(if (quiet) "" else translate("bulk_deleted_forever").replace("{n}", n))
-        } else {
-            engine.moveMany(folderId, uids, folderOf(FolderKind.TRASH)!!.id)
-            changed(if (quiet) "" else translate("bulk_trashed").replace("{n}", n))
+        val forever = onAccount(account) { a ->
+            if (deletesForever(folderId)) {
+                engine.deleteForeverManyForAccount(a, folderId, uids)
+                true
+            } else {
+                engine.moveManyForAccount(a, folderId, uids, folderOf(FolderKind.TRASH)!!.id)
+                false
+            }
         }
+        val key = if (forever) "bulk_deleted_forever" else "bulk_trashed"
+        changed(if (quiet) "" else translate(key).replace("{n}", n))
     }
 
     /**
      * Sends; Markdown formatting typed by the user also goes out as HTML,
      * as on desktop. A warning is shown when the copy in Sent failed.
      */
-    suspend fun send(draft: Outgoing) {
-        ready()
-        val warning = engine.send(draft.copy(html = markdownToHtml(draft.body)))
+    suspend fun send(draft: Outgoing, account: String? = null) {
+        val html = withContext(Dispatchers.Default) { markdownToHtml(draft.body) }
+        val warning = onAccount(account) { engine.send(draft.copy(html = html)) }
         changed(warning?.let { translate("sent_no_copy").replace("{err}", it) } ?: translate("sent_ok"))
     }
 

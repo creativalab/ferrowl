@@ -244,7 +244,7 @@ struct AccountDetail: View {
             changed.caldavUrl = caldav.trimmingCharacters(in: .whitespaces)
             changed.davUsername = davUser.trimmingCharacters(in: .whitespaces)
             changed.davPassword = changed.davUsername.isEmpty ? "" : davPassword
-            if changed != account { mail.update(changed) }
+            if changed != account { Task { await mail.update(changed) } }
         }
     }
 }

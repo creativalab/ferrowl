@@ -31,6 +31,8 @@ data class PushState(
     val accounts: Map<String, String> = emptyMap(),
     /** Per address: highest inbox UID already notified (no repeated notifications). */
     val lastNotified: Map<String, Long> = emptyMap(),
+    /** Server account ids whose removal failed (offline): tried again at every sync. */
+    val removing: Set<String> = emptySet(),
 ) {
     /** The address of an account id the server sent. */
     fun emailOf(accountId: String): String? = accounts.entries.firstOrNull { it.value == accountId }?.key
@@ -56,6 +58,7 @@ class PushStore @Inject constructor(
             key = p[KEY]?.let(::open),
             accounts = p[ACCOUNTS]?.let { runCatching { Json.decodeFromString<Map<String, String>>(it) }.getOrNull() }.orEmpty(),
             lastNotified = p[LAST_UIDS]?.let { runCatching { Json.decodeFromString<Map<String, Long>>(it) }.getOrNull() }.orEmpty(),
+            removing = p[REMOVING]?.let { runCatching { Json.decodeFromString<Set<String>>(it) }.getOrNull() }.orEmpty(),
         )
     }
 
@@ -82,9 +85,17 @@ class PushStore @Inject constructor(
 
     suspend fun clearLegacyAccount() = context.push.edit { it.remove(ACCOUNT) }
 
+    /** Mail up to [uid] was announced or seen in the app; never goes back. */
     suspend fun setLastNotified(email: String, uid: Long) = context.push.edit { p ->
         val now = p[LAST_UIDS]?.let { runCatching { Json.decodeFromString<Map<String, Long>>(it) }.getOrNull() }.orEmpty()
-        p[LAST_UIDS] = Json.encodeToString(now + (email.lowercase() to uid))
+        val key = email.lowercase()
+        if (uid > (now[key] ?: 0)) p[LAST_UIDS] = Json.encodeToString(now + (key to uid))
+    }
+
+    /** An account id to remove from the server later (or done: [add] false). */
+    suspend fun setRemoving(id: String, add: Boolean) = context.push.edit { p ->
+        val now = p[REMOVING]?.let { runCatching { Json.decodeFromString<Set<String>>(it) }.getOrNull() }.orEmpty()
+        p[REMOVING] = Json.encodeToString(if (add) now + id else now - id)
     }
 
     private suspend fun editAccounts(change: (Map<String, String>) -> Map<String, String>) = context.push.edit { p ->
@@ -98,6 +109,7 @@ class PushStore @Inject constructor(
         it.remove(KEY)
         it.remove(ACCOUNT)
         it.remove(ACCOUNTS)
+        it.remove(REMOVING)
     }
 
     /** An unreadable secret (e.g. after a backup restore) counts as missing. */
@@ -112,5 +124,6 @@ class PushStore @Inject constructor(
         val ACCOUNT = stringPreferencesKey("account_id")
         val ACCOUNTS = stringPreferencesKey("accounts")
         val LAST_UIDS = stringPreferencesKey("last_notified_uids")
+        val REMOVING = stringPreferencesKey("removing")
     }
 }

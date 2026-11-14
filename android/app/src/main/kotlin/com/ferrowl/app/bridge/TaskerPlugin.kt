@@ -85,7 +85,10 @@ internal object TaskerPlugin {
 
     /** An app's name as the phone shows it. */
     fun label(context: Context, pkg: String): String = runCatching {
-        context.packageManager.getApplicationLabel(context.packageManager.getApplicationInfo(pkg, 0)).toString()
+        // The name an app gives itself can be anything (even "Tasker"): its
+        // package, which Android vouches for, is shown with it.
+        val name = context.packageManager.getApplicationLabel(context.packageManager.getApplicationInfo(pkg, 0)).toString()
+        if (name == pkg) pkg else "$name ($pkg)"
     }.getOrDefault(pkg)
 
     /** The Bridge action's last word ("UNREAD") and the fields it takes. */

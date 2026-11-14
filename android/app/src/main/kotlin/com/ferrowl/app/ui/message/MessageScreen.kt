@@ -2,7 +2,9 @@ package com.ferrowl.app.ui.message
 
 import android.content.Intent
 import android.util.Patterns
+import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.Arrangement
@@ -253,6 +255,8 @@ internal fun linked(text: String): AnnotatedString = buildAnnotatedString {
 private fun HtmlView(html: String) {
     var loadImages by remember(html) { mutableStateOf(false) }
     val remote = LocalRemoteImages.current || loadImages
+    // Read by the WebView's client, off the main thread.
+    val blockRemote = remember { java.util.concurrent.atomic.AtomicBoolean(true) }
     // Only when the mail has pictures from the network.
     val hasRemote = remember(html) { Regex("""<img[^>]+src\s*=\s*["']?https?:""", RegexOption.IGNORE_CASE).containsMatchIn(html) }
     if (!remote && hasRemote) {
@@ -284,19 +288,38 @@ private fun HtmlView(html: String) {
                 settings.displayZoomControls = false
                 // The app's background shows through plain mail in dark mode.
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                // No cookies: a sender cannot recognise the phone from one mail to the next.
+                CookieManager.getInstance().setAcceptCookie(false)
+                CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                         val url = request.url
-                        if (url.scheme in setOf("http", "https", "mailto")) {
-                            context.startActivity(Intent(Intent.ACTION_VIEW, url.toString().toUri()))
+                        // Only a link the user tapped (as iOS: .linkActivated): a
+                        // meta refresh or a frame must not open the browser by itself.
+                        if (request.isForMainFrame && request.hasGesture() && url.scheme in setOf("http", "https", "mailto", "tel")) {
+                            val action = if (url.scheme == "tel") Intent.ACTION_DIAL else Intent.ACTION_VIEW
+                            runCatching { context.startActivity(Intent(action, url.toString().toUri())) }
                         }
                         return true
+                    }
+
+                    // Remote content off: nothing from the network, not only
+                    // pictures (style sheets, fonts and frames also tell the
+                    // sender the mail was opened).
+                    override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                        val scheme = request.url.scheme?.lowercase()
+                        return if (blockRemote.get() && (scheme == "http" || scheme == "https")) {
+                            WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
+                        } else {
+                            null
+                        }
                     }
                 }
             }
         },
         update = { view ->
             view.settings.blockNetworkImage = !remote
+            blockRemote.set(!remote)
             // Load only when the message changes, not on every recomposition.
             if (view.tag != page) {
                 view.tag = page

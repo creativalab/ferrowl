@@ -81,12 +81,19 @@ class AccountUnread @Inject constructor(@ApplicationContext private val context:
         UnreadWidget.refresh(context)
     }
 
-    /** A message read or archived from the widget: it leaves at once. */
+    /** What an account had before a widget button changed it. */
+    data class Before(val key: String, val unread: Int, val recent: List<WidgetMail>)
+
+    /**
+     * A message read or archived from the widget: it leaves at once. Returns
+     * what the account had, to [restore] if the server refuses.
+     */
     @Synchronized
-    fun removeMail(link: String) {
+    fun removeMail(link: String): Before? {
         val owner = prefs.all.keys.filter { it.startsWith(RECENT_PREFIX) }
             .firstOrNull { k -> recentOf(k.removePrefix(RECENT_PREFIX)).any { it.link == link } }
-            ?.removePrefix(RECENT_PREFIX) ?: return
+            ?.removePrefix(RECENT_PREFIX) ?: return null
+        val before = Before(owner, _counts.value[owner] ?: 0, recentOf(owner))
         val next = recentOf(owner).filterNot { it.link == link }
         val unread = (_counts.value[owner] ?: 0) - 1
         prefs.edit {
@@ -94,6 +101,18 @@ class AccountUnread @Inject constructor(@ApplicationContext private val context:
             putInt(owner, unread.coerceAtLeast(0))
         }
         _counts.value = _counts.value + (owner to unread.coerceAtLeast(0))
+        UnreadWidget.refresh(context)
+        return before
+    }
+
+    /** Puts back what [removeMail] changed (the widget button's action failed). */
+    @Synchronized
+    fun restore(before: Before) {
+        prefs.edit {
+            putInt(before.key, before.unread)
+            putString(RECENT_PREFIX + before.key, json.encodeToString(before.recent))
+        }
+        _counts.value = _counts.value + (before.key to before.unread)
         UnreadWidget.refresh(context)
     }
 

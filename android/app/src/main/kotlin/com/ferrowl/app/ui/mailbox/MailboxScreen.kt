@@ -143,7 +143,8 @@ fun MailboxScreen(
     val s by vm.state.collectAsStateWithLifecycle()
     // A tapped new-mail notification opens its message (after switching account).
     val openRequest by vm.openRequests.collectAsStateWithLifecycle()
-    LaunchedEffect(openRequest, s.active) {
+    // Also once the accounts are read (a cold start from the notification).
+    LaunchedEffect(openRequest, s.active, s.accounts.isEmpty()) {
         if (openRequest == null) return@LaunchedEffect
         val (folder, uid) = vm.takeOpenRequest() ?: return@LaunchedEffect
         if (uid != null) onOpen(folder, uid, false)
@@ -424,8 +425,9 @@ fun MailboxScreen(
                                 }
                             }
                             items(rows, key = { it.latest.uid.toLong() }) { c ->
-                                // Swipe a row: towards the start (left) archives it,
-                                // towards the end (right) replies to it.
+                                // Swipe a row: towards the start (left) moves it to
+                                // the Trash (with Undo), towards the end (right)
+                                // replies to it.
                                 // Half the row: a slanted touch while scrolling the list
                                 // must not delete or reply.
                                 val swipe = rememberSwipeToDismissBoxState(positionalThreshold = { width -> width * 0.5f })

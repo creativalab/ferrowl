@@ -49,7 +49,7 @@ struct RootView: View {
         }
         // Instant notifications: the push server follows the accounts (and
         // gets the key again after it restarted).
-        .task(id: "\(app.pro.pro)|\(mail.accounts.map(\.email).joined(separator: ","))") {
+        .task(id: "\(app.pro.pro)|\(app.pro.known)|\(mail.accounts.map(\.email).joined(separator: ","))") {
             do {
                 try await app.push.sync(app)
             } catch {
@@ -62,10 +62,11 @@ struct RootView: View {
         }
         // Without Ferrowl Pro only the first account may stay active (also
         // when the subscription ends while another one is in use).
-        .task(id: "\(app.pro.pro)|\(mail.activeEmail ?? "")|\(mail.accounts.count)") {
-            guard !app.pro.pro, let active = mail.activeEmail, !app.mayUse(active) else { return }
-            // Give the App Store the time to answer at start-up.
-            try? await Task.sleep(for: .seconds(3))
+        .task(id: "\(app.pro.pro)|\(app.pro.known)|\(mail.activeEmail ?? "")|\(mail.accounts.count)") {
+            // Only once the subscriptions were read (the remembered state
+            // until then), and not while a message is being written.
+            guard app.pro.known, !app.pro.pro, let active = mail.activeEmail, !app.mayUse(active) else { return }
+            await mail.afterCompose()
             guard !Task.isCancelled, !app.pro.pro else { return }
             await mail.backToFirst()
         }

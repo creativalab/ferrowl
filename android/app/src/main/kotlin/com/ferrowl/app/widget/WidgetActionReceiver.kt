@@ -36,19 +36,23 @@ class WidgetActionReceiver : BroadcastReceiver() {
         val link = intent.getStringExtra(EXTRA_LINK) ?: return
         val archive = intent.getBooleanExtra(EXTRA_ARCHIVE, false)
         val open = parseLink(link) as? FerrowlLink.Open ?: return
-        accountUnread.removeMail(link)
+        // It leaves the widget at once (and counts one less); put back if the server says no.
+        val before = accountUnread.removeMail(link)
         val done = goAsync()
         widgetScope.launch {
             try {
                 withTimeoutOrNull(40_000L) {
                     val account = repo.accountList.first().firstOrNull { it.email.equals(open.account, ignoreCase = true) }
                         ?: return@withTimeoutOrNull
-                    // An engine of its own: the app's may be busy, or on another account.
-                    val engine = Engine(context.filesDir.resolve("mail").path, Locale.getDefault().language)
-                    runCatching {
-                        engine.connect(account)
-                        if (archive) engine.archiveMany(open.folder, listOf(open.uid)) else engine.setSeenMany(open.folder, listOf(open.uid), true)
+                    // An engine of its own (the app's may be busy, or on another
+                    // account), closed after use: its connection does not stay open.
+                    val ok = Engine(context.filesDir.resolve("mail").path, Locale.getDefault().language).use { engine ->
+                        runCatching {
+                            engine.connect(account)
+                            if (archive) engine.archiveMany(open.folder, listOf(open.uid)) else engine.setSeenMany(open.folder, listOf(open.uid), true)
+                        }.isSuccess
                     }
+                    if (!ok) before?.let(accountUnread::restore)
                     repo.arrived(account.email)
                 }
             } finally {

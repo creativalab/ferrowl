@@ -64,6 +64,7 @@ import javax.inject.Inject
 class RulesViewModel @Inject constructor(
     private val repo: MailRepository,
     billing: Billing,
+    private val notices: com.ferrowl.app.ui.notice.Notices,
 ) : ViewModel() {
     private val _rules = MutableStateFlow<List<Rule>>(emptyList())
     val rules: StateFlow<List<Rule>> = _rules.asStateFlow()
@@ -80,14 +81,24 @@ class RulesViewModel @Inject constructor(
 
     fun save(rule: Rule) {
         viewModelScope.launch {
-            runCatching { repo.saveRule(rule) }
+            // Said either way, as on iOS (a rule that cannot be saved is not lost silently).
+            try {
+                repo.saveRule(rule)
+                notices.info(com.ferrowl.core.translate("rules_saved"))
+            } catch (e: com.ferrowl.core.FerrowlException) {
+                notices.error(e.message.orEmpty())
+            }
             reload()
         }
     }
 
     fun delete(rule: Rule) {
         viewModelScope.launch {
-            runCatching { repo.deleteRule(rule.id) }
+            try {
+                repo.deleteRule(rule.id)
+            } catch (e: com.ferrowl.core.FerrowlException) {
+                notices.error(e.message.orEmpty())
+            }
             reload()
         }
     }

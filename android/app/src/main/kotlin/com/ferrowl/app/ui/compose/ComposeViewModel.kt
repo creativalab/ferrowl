@@ -3,6 +3,7 @@ package com.ferrowl.app.ui.compose
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ferrowl.app.data.MailRepository
@@ -56,13 +57,58 @@ data class Attachment(val name: String, val size: Long, val path: String)
 class ComposeViewModel @Inject constructor(
     private val repo: MailRepository,
     @ApplicationContext private val context: Context,
+    /** What was written, kept if Android stops the app meanwhile (e.g. while the camera is open). */
+    private val saved: SavedStateHandle,
 ) : ViewModel() {
-    private val _state = MutableStateFlow(ComposeState())
+    private val _state = MutableStateFlow(restore() ?: ComposeState())
     val state: StateFlow<ComposeState> = _state.asStateFlow()
 
     /** The error was shown to the user (as a notice at the top). */
     fun errorShown() = _state.update { it.copy(error = null) }
     private var started = false
+
+    /** The account the message goes out from (the one in use when it was started). */
+    private var account: String? = saved[KEY_ACCOUNT]
+
+    init {
+        // Every change is kept, so a message restored after the app was
+        // stopped is the one on screen (not an empty or quote-only body).
+        viewModelScope.launch { _state.collect(::keep) }
+    }
+
+    private fun keep(s: ComposeState) {
+        saved[KEY_SAVED] = true
+        saved[KEY_TO] = s.to
+        saved[KEY_CC] = s.cc
+        saved[KEY_BCC] = s.bcc
+        saved[KEY_SUBJECT] = s.subject
+        saved[KEY_BODY] = s.body
+        saved[KEY_EDITED] = s.edited
+        saved[KEY_FILE_NAMES] = ArrayList(s.attachments.map { it.name })
+        saved[KEY_FILE_SIZES] = s.attachments.map { it.size }.toLongArray()
+        saved[KEY_FILE_PATHS] = ArrayList(s.attachments.map { it.path })
+    }
+
+    /** The message kept before the app was stopped, if any. */
+    private fun restore(): ComposeState? {
+        if (saved.get<Boolean>(KEY_SAVED) != true) return null
+        val names = saved.get<ArrayList<String>>(KEY_FILE_NAMES).orEmpty()
+        val sizes = saved.get<LongArray>(KEY_FILE_SIZES) ?: LongArray(0)
+        val paths = saved.get<ArrayList<String>>(KEY_FILE_PATHS).orEmpty()
+        val files = paths.indices.mapNotNull { i ->
+            // The private copies stay in the cache (unless Android cleared it).
+            Attachment(names.getOrElse(i) { "file" }, sizes.getOrElse(i) { 0 }, paths[i]).takeIf { File(it.path).exists() }
+        }
+        return ComposeState(
+            to = saved[KEY_TO] ?: "",
+            cc = saved[KEY_CC] ?: "",
+            bcc = saved[KEY_BCC] ?: "",
+            subject = saved[KEY_SUBJECT] ?: "",
+            body = saved[KEY_BODY] ?: "",
+            edited = saved[KEY_EDITED] ?: false,
+            attachments = files,
+        )
+    }
 
     /**
      * Prepares a reply or forward from the original message, or a new
@@ -80,14 +126,21 @@ class ComposeViewModel @Inject constructor(
     ) {
         if (started) return
         started = true
+        // Brought back after the app was stopped: the fields are the user's.
+        val restored = saved.get<Boolean>(KEY_STARTED) == true
+        saved[KEY_STARTED] = true
         viewModelScope.launch {
             repo.savedAccount()?.let { a ->
+                if (account == null) {
+                    account = a.email
+                    saved[KEY_ACCOUNT] = a.email
+                }
                 val from = if (a.displayName.isBlank()) a.email else "${a.displayName} <${a.email}>"
                 _state.update { it.copy(from = from) }
             }
         }
         if (kind == null) {
-            _state.update { it.copy(to = to, cc = cc, subject = subject, body = body) }
+            if (!restored) _state.update { it.copy(to = to, cc = cc, subject = subject, body = body) }
             return
         }
         _state.update { it.copy(loading = true) }
@@ -101,7 +154,12 @@ class ComposeViewModel @Inject constructor(
                     ReplyKind.FORWARD -> forwardDraft(original)
                 }
                 _state.update {
-                    it.copy(to = draft.to, cc = draft.cc, subject = draft.subject, body = draft.body, base = draft, loading = false)
+                    if (restored) {
+                        // Only the threading headers: the text is what was written.
+                        it.copy(base = draft, loading = false)
+                    } else {
+                        it.copy(to = draft.to, cc = draft.cc, subject = draft.subject, body = draft.body, base = draft, loading = false)
+                    }
                 }
             } catch (e: FerrowlException) {
                 _state.update { it.copy(loading = false, error = e.message) }
@@ -160,9 +218,11 @@ class ComposeViewModel @Inject constructor(
 
     /** Files shared from another app: attached once (not again after a rotation). */
     fun addShared(uris: List<Uri>) {
-        if (sharedAdded) return
+        if (sharedAdded || saved.get<Boolean>(KEY_SHARED) == true) return
         sharedAdded = true
-        addFiles(uris)
+        saved[KEY_SHARED] = true
+        // Only what another app hands over, never Ferrowl's own files.
+        addFiles(uris.filter { it.scheme == "content" && it.authority != "${context.packageName}.files" })
     }
 
     fun addFiles(uris: List<Uri>) {
@@ -222,12 +282,31 @@ class ComposeViewModel @Inject constructor(
         _state.update { it.copy(sending = true, error = null) }
         viewModelScope.launch {
             try {
-                repo.send(draft)
+                repo.send(draft, account)
                 dropCopies()
                 _state.update { it.copy(sending = false, sent = true) }
+            } catch (e: com.ferrowl.app.data.AccountChanged) {
+                // Not sent from an account other than the one it was written in.
+                _state.update { it.copy(sending = false) }
             } catch (e: FerrowlException) {
                 _state.update { it.copy(sending = false, error = e.message) }
             }
         }
+    }
+
+    private companion object {
+        const val KEY_SAVED = "compose.saved"
+        const val KEY_STARTED = "compose.started"
+        const val KEY_SHARED = "compose.shared"
+        const val KEY_ACCOUNT = "compose.account"
+        const val KEY_TO = "compose.to"
+        const val KEY_CC = "compose.cc"
+        const val KEY_BCC = "compose.bcc"
+        const val KEY_SUBJECT = "compose.subject"
+        const val KEY_BODY = "compose.body"
+        const val KEY_EDITED = "compose.edited"
+        const val KEY_FILE_NAMES = "compose.fileNames"
+        const val KEY_FILE_SIZES = "compose.fileSizes"
+        const val KEY_FILE_PATHS = "compose.filePaths"
     }
 }

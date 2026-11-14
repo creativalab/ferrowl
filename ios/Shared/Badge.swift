@@ -21,6 +21,12 @@ enum Badge {
 
     private static func key(_ email: String) -> String { "unread:\(email.lowercased())" }
 
+    /// Posted (on any thread) after an account's count changed in this
+    /// process: the shared settings are not observed, so screens showing
+    /// the counts redraw on it (and when the app comes back, for counts the
+    /// notification extension wrote).
+    static let changed = Notification.Name("ferrowl.badge.changed")
+
     /// The total, after saving one account's count. The widget gets it too,
     /// with the newest unread messages when `recent` (inbox headers) is
     /// given, or just the `fresh` ones a notification announced.
@@ -43,6 +49,7 @@ enum Badge {
         #if DEBUG
         print("badge: \(email) = \(unread)")
         #endif
+        NotificationCenter.default.post(name: changed, object: nil)
         return total()
     }
 

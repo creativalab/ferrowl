@@ -61,10 +61,20 @@ final class MailboxModel {
         return list.filter { !gone.contains($0.uid) }
     }
 
+    /// The account this mailbox shows (the screen starts over for another).
+    let account: String?
+    /// Cleared when the screen goes: work still running (a refresh) stops
+    /// there instead of touching the account that replaced it.
+    var alive = true
+
+    /// Still the mailbox on screen, for the account the engine is on.
+    private var current: Bool { alive && mail.isCurrent(account) }
+
     init(mail: MailRepository, prefs: Preferences, notices: Notices) {
         self.mail = mail
         self.prefs = prefs
         self.notices = notices
+        account = mail.activeEmail
     }
 
     var folder: Folder? { mail.folder(folderId) }
@@ -115,12 +125,14 @@ final class MailboxModel {
         started = true
         refreshing = true
         let early = await mail.cachedInbox()
+        guard current else { return }
         if !early.isEmpty, folderId.isEmpty {
             folderId = "INBOX"
             messages = visible(early, in: "INBOX")
         }
         do {
             try await mail.ensureConnected()
+            guard current else { return }
             if folderId.isEmpty || mail.folder(folderId) == nil { folderId = mail.inboxId }
             await refresh()
         } catch {
@@ -191,29 +203,35 @@ final class MailboxModel {
     }
 
     private func fetch(_ id: String, quiet: Bool) async {
+        // After every wait: still this account (a switch meanwhile leaves
+        // this screen behind, and the engine on the other account).
+        guard current, let account else { return }
         let cached = await mail.cachedHeaders(id)
+        guard current else { return }
         if !cached.isEmpty, folderId == id { messages = visible(cached, in: id) }
         do {
-            var fresh = try await mail.headers(id)
+            var fresh = try await mail.headers(id, on: account)
+            guard current else { return }
             // Sender lists: blocked mail leaves the inbox, allowed mail leaves Spam.
-            if let moved = try? await mail.applySenderRules(id, fresh), !moved.isEmpty {
+            if let moved = try? await mail.applySenderRules(id, fresh, on: account), !moved.isEmpty {
                 fresh.removeAll { moved.contains($0.uid) }
             }
+            guard current else { return }
             // The user's rules on the inbox's new messages.
-            if let done = await mail.applyRules(id, fresh) {
+            if let done = await mail.applyRules(id, fresh, on: account) {
                 fresh.removeAll { done.removed.contains($0.uid) }
                 for i in fresh.indices {
                     if done.read.contains(fresh[i].uid) { fresh[i].seen = true }
                     if done.starred.contains(fresh[i].uid) { fresh[i].flagged = true }
                 }
             }
-            guard folderId == id else { return }
+            guard current, folderId == id else { return }
             messages = visible(fresh, in: id)
-            if id == mail.inboxId, let email = mail.activeEmail {
+            if id == mail.inboxId {
                 // What the background check compares with.
-                BackgroundRefresh.notifyNew(fresh, account: email, announce: false)
+                BackgroundRefresh.notifyNew(fresh, account: account, announce: false)
                 // The inbox in the iPhone's search.
-                if prefs.spotlight { SpotlightIndex.index(fresh, account: email) }
+                if prefs.spotlight { SpotlightIndex.index(fresh, account: account) }
             }
             await loadUnread()
         } catch {
@@ -225,13 +243,16 @@ final class MailboxModel {
     func reloadLocal() async {
         let id = folderId
         guard !id.isEmpty else { return }
+        guard current else { return }
         let cached = await mail.cachedHeaders(id)
+        guard current else { return }
         if folderId == id { messages = visible(cached, in: id) }
         await loadUnread()
     }
 
     func loadUnread() async {
-        if let counts = try? await mail.unread() {
+        guard current else { return }
+        if let counts = try? await mail.unread(), current {
             unread = counts
             // The number on the app icon (Gmail: from the inbox's messages,
             // so only when the inbox is the open folder).
@@ -308,13 +329,18 @@ final class MailboxModel {
     /// The selection, or the given row's messages.
     private func target(_ row: Row?) -> [UInt32] { row?.uids ?? Array(selected) }
 
-    private func run(_ uids: [UInt32], _ action: @escaping (String, [UInt32]) async throws -> Void) {
+    /// Runs a server action on this mailbox's account (refused by the
+    /// repository if the app moved to another account by then).
+    private func run(_ uids: [UInt32], _ action: @escaping (String, [UInt32], String?) async throws -> Void) {
         guard !uids.isEmpty else { return }
         let folder = folderId
+        let account = account
         endSelection()
         Task {
             do {
-                try await action(folder, uids)
+                try await action(folder, uids, account)
+            } catch is AccountChanged {
+                // That account is not on screen any more: nothing to show.
             } catch {
                 notices.error(describe(error))
                 await refresh()
@@ -325,15 +351,15 @@ final class MailboxModel {
     func markRead(_ seen: Bool, _ row: Row? = nil) {
         let uids = target(row)
         update(uids) { $0.seen = seen }
-        run(uids) { [mail] f, u in try await mail.setSeen(f, u, seen) }
+        run(uids) { [mail] f, u, a in try await mail.setSeen(f, u, seen, on: a) }
     }
 
     func star(_ on: Bool, _ row: Row? = nil) {
         let uids = target(row)
         update(uids) { $0.flagged = on }
-        run(uids) { [weak self, mail] f, u in
+        run(uids) { [weak self, mail] f, u, a in
             do {
-                try await mail.setFlagged(f, u, on)
+                try await mail.setFlagged(f, u, on, on: a)
             } catch {
                 self?.update(u) { $0.flagged = !on }
                 throw error
@@ -342,7 +368,7 @@ final class MailboxModel {
     }
 
     func archive(_ row: Row? = nil) {
-        run(target(row)) { [mail] f, u in try await mail.archive(f, u) }
+        run(target(row)) { [mail] f, u, a in try await mail.archive(f, u, on: a) }
     }
 
     /// Swipe, the row's menu or the trash button of an open message: the row
@@ -356,22 +382,27 @@ final class MailboxModel {
         results.removeAll { uids.contains($0.uid) }
         if open?.id == row.id { open = nil }
         pendingDeletes[folder, default: []].formUnion(uids)
-        let job = Task {
-            try? await Task.sleep(for: Notices.duration)
-            guard !Task.isCancelled else { return }
+        guard let account else { return }
+        // Kept by the repository, on this account: it runs when the notice
+        // is gone, or at once before the app connects another account (and
+        // never on the other account's messages with the same numbers).
+        let job = mail.later(on: account, after: Notices.duration) { [weak self, mail, notices] in
             do {
-                try await mail.delete(folder, Array(uids), quiet: true)
-                pendingDeletes[folder]?.subtract(uids)
+                try await mail.delete(folder, Array(uids), quiet: true, on: account)
+                self?.pendingDeletes[folder]?.subtract(uids)
+            } catch is AccountChanged {
+                self?.pendingDeletes[folder]?.subtract(uids)
             } catch {
-                pendingDeletes[folder]?.subtract(uids)
+                self?.pendingDeletes[folder]?.subtract(uids)
                 notices.error(describe(error))
-                await refresh()
+                await self?.refresh()
             }
         }
-        notices.withAction(t("moved_to_trash"), t("undo")) { [weak self] in
-            job.cancel()
+        notices.withAction(t("moved_to_trash"), t("undo")) { [weak self, mail] in
+            // Already done (the app connected another account meanwhile).
+            guard mail.cancelLater(job) else { return }
             self?.pendingDeletes[folder]?.subtract(uids)
-            guard let self, self.folderId == folder else { return }
+            guard let self, self.current, self.folderId == folder else { return }
             self.messages = (self.messages + removed).sorted { $0.timestamp > $1.timestamp }
         }
     }
@@ -381,11 +412,11 @@ final class MailboxModel {
     func delete(_ row: Row? = nil) {
         let uids = target(row)
         if let open, uids.contains(open.id) { self.open = nil }
-        run(uids) { [mail] f, u in try await mail.delete(f, u) }
+        run(uids) { [mail] f, u, a in try await mail.delete(f, u, on: a) }
     }
 
     func move(to target: String, _ row: Row? = nil) {
-        run(self.target(row)) { [mail] f, u in try await mail.move(f, u, to: target) }
+        run(self.target(row)) { [mail] f, u, a in try await mail.move(f, u, to: target, on: a) }
     }
 
     var inSpam: Bool { mail.isSpam(folderId) }
@@ -399,7 +430,7 @@ final class MailboxModel {
             let senders = Set(shown.filter { set.contains($0.uid) && !$0.fromAddress.isEmpty }.map(\.fromAddress))
             for s in senders { try? mail.setSenderRule(s, allow: true) }
         }
-        run(uids) { [mail] f, u in try await mail.spam(f, u, toSpam: toSpam) }
+        run(uids) { [mail] f, u, a in try await mail.spam(f, u, toSpam: toSpam, on: a) }
     }
 
     /// Adds or removes a Gmail label on the checked messages (the selection stays).
@@ -414,9 +445,11 @@ final class MailboxModel {
         }
         apply(on)
         let folder = folderId
+        let account = account
         Task {
             do {
-                try await mail.setLabel(folder, uids, label, on)
+                try await mail.setLabel(folder, uids, label, on, on: account)
+            } catch is AccountChanged {
             } catch {
                 apply(!on)
                 notices.error(describe(error))

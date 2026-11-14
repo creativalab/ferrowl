@@ -136,10 +136,23 @@ fun SettingsScreen(
                     modifier = Modifier.clickable { detail = account },
                 )
             }
+            // After the first account Ferrowl Pro is needed (as in the drawer):
+            // without it, the subscription is offered instead.
+            val hasPro by LocalBilling.current.pro.collectAsStateWithLifecycle()
+            val buyBilling = LocalBilling.current
+            val noPro = stringResource(R.string.pro_unavailable)
+            val addNotices = com.ferrowl.app.ui.notice.LocalNotices.current
             ListItem(
                 headlineContent = { Text(stringResource(R.string.add_account)) },
                 leadingContent = { Icon(Icons.Filled.Add, contentDescription = null) },
-                modifier = Modifier.clickable(onClick = onAddAccount),
+                modifier = Modifier.clickable {
+                    if (hasPro || accounts.isEmpty()) {
+                        onAddAccount()
+                    } else {
+                        val activity = context as? android.app.Activity
+                        if (activity == null || !buyBilling.buy(activity)) addNotices.error(noPro)
+                    }
+                },
             )
             HorizontalDivider(Modifier.padding(vertical = 16.dp))
             // Ferrowl Pro: subscribe, or manage the subscription.

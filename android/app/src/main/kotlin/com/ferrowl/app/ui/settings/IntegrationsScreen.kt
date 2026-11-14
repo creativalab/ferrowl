@@ -92,7 +92,10 @@ fun IntegrationsScreen(onBack: () -> Unit, vm: IntegrationsViewModel = hiltViewM
     val copied = stringResource(R.string.integrations_copied)
     fun copy(c: Connection) {
         val clipboard = context.getSystemService(ClipboardManager::class.java)
-        clipboard.setPrimaryClip(ClipData.newPlainText("Ferrowl", c.token))
+        // A key: not shown in the clipboard preview, nor offered by keyboards.
+        val clip = ClipData.newPlainText("Ferrowl", c.token)
+        clip.description.extras = android.os.PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
+        clipboard.setPrimaryClip(clip)
         notices.info(copied)
     }
     Scaffold(

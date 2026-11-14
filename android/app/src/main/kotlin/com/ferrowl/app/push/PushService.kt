@@ -4,11 +4,6 @@ import com.ferrowl.app.data.MailRepository
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
@@ -34,10 +29,13 @@ class PushService : FirebaseMessagingService() {
 
     @Inject lateinit var accountUnread: com.ferrowl.app.data.AccountUnread
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Inject lateinit var mailCheck: MailCheck
 
+    // Called on a background thread: the call to the server finishes here
+    // (a coroutine of the service would be cut off when it is destroyed,
+    // leaving the server with the old token).
     override fun onNewToken(token: String) {
-        scope.launch { registrar.tokenChanged(token) }
+        runBlocking { withTimeoutOrNull(TIMEOUT_MS) { registrar.tokenChanged(token) } }
     }
 
     // Called on a background thread; Android gives it about 20 seconds.
@@ -53,64 +51,33 @@ class PushService : FirebaseMessagingService() {
                 email?.let { withTimeoutOrNull(TIMEOUT_MS) { takeBackRead(it) } }
                 return@runBlocking
             }
+            // An id this phone no longer knows (an account removed while
+            // offline): not the account in use, whose mail it is not.
+            if (email == null) {
+                notifier.showGeneric(null)
+                return@runBlocking
+            }
             val shown = withTimeoutOrNull(TIMEOUT_MS) { notifyNewMessages(email) } ?: false
             if (!shown) notifier.showGeneric(email)
         }
     }
 
-    /**
-     * Mail of [email] was read (or removed) elsewhere: its notification goes
-     * once none of its messages is unread, or is updated quietly to the
-     * ones still unread.
-     */
+    /** Mail read elsewhere: notifications taken back (shared with the periodic check). */
     private suspend fun takeBackRead(email: String) = runCatching {
-        val shown = notifier.shownUids(email)
-        if (shown == null) {
-            // No notification on screen: only the counts and the widget.
-            val peek = repo.peekInbox(email, 0, 0) ?: return@runCatching
-            accountUnread.set(email, peek.unread.toInt())
-            accountUnread.dropRead(email, peek.unreadUids.map { it.toLong() }.toSet(), 0)
-            return@runCatching
-        }
-        if (shown.isEmpty()) {
-            // A plain "New mail": it goes once nothing is unread.
-            val peek = repo.peekInbox(email, UInt.MAX_VALUE.toLong(), 0) ?: return@runCatching
-            accountUnread.set(email, peek.unread.toInt())
-            if (peek.unread == 0u) notifier.cancel(email)
-            return@runCatching
-        }
-        val peek = repo.peekInbox(email, shown.min() - 1, MailNotifier.MAX_LINES) ?: return@runCatching
-        accountUnread.set(email, peek.unread.toInt())
-        val unread = peek.unreadUids.map { it.toLong() }.toSet()
-        accountUnread.dropRead(email, unread, shown.min())
-        val still = shown.filter { it in unread }
-        val listed = peek.fresh.filter { it.uid.toLong() in still }
-        when {
-            still.isEmpty() -> notifier.cancel(email)
-            still.size < shown.size && listed.isNotEmpty() ->
-                notifier.show(listed, still.size, email, still, quietly = true)
-        }
+        mailCheck.takeBackRead(email) { after, limit -> repo.peekInbox(email, after, limit) }
     }
 
     /** True if it decided what to show (possibly nothing: already read). */
-    private suspend fun notifyNewMessages(email: String?): Boolean = runCatching {
-        val address = email ?: repo.savedAccount()?.email ?: return@runCatching false
+    private suspend fun notifyNewMessages(address: String): Boolean = runCatching {
         val last = store.current().lastNotified[address.lowercase()] ?: 0
         // Only what the notification shows: loading the inbox may not fit
         // in the time Android gives.
         val peek = repo.peekInbox(address, last, MailNotifier.MAX_LINES) ?: return@runCatching false
         accountUnread.set(address, peek.unread.toInt(), fresh = peek.fresh)
+        // The user's rules may keep messages quiet: then no sound.
+        val quiet = if (peek.fresh.isEmpty()) emptySet() else runCatching { repo.silenced(address, peek.fresh) }.getOrDefault(emptySet())
+        notifier.announce(address, peek, last, quiet, fromPush = true)
         if (peek.fresh.isNotEmpty()) {
-            // The user's rules may keep messages quiet: then no sound.
-            val quiet = runCatching { repo.silenced(address, peek.fresh) }.getOrDefault(emptySet())
-            val loud = peek.fresh.filter { it.uid !in quiet }
-            notifier.show(
-                loud.ifEmpty { peek.fresh },
-                peek.freshCount.toInt(),
-                address,
-                peek.unreadUids.map { it.toLong() },
-                quietly = loud.isEmpty(),
-            )
             // Connected automation apps (Tasker…) hear about it too.
             runCatching { bridge.newMail(address, peek) }
             store.setLastNotified(address, peek.fresh.first().uid.toLong())
@@ -118,12 +85,8 @@ class PushService : FirebaseMessagingService() {
         true
     }.getOrDefault(false)
 
-    override fun onDestroy() {
-        scope.cancel()
-        super.onDestroy()
-    }
-
     private companion object {
-        const val TIMEOUT_MS = 15_000L
+        /** Well inside the time Android gives (cold start included). */
+        const val TIMEOUT_MS = 10_000L
     }
 }

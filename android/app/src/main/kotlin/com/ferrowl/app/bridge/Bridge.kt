@@ -340,14 +340,16 @@ class Bridge @Inject constructor(
         val opens = pending.links.mapNotNull { parseLink(it) as? FerrowlLink.Open }
         for ((email, mine) in opens.groupBy { it.account.lowercase() }) {
             val account = accounts(email).first()
-            val engine = Engine(context.filesDir.resolve("mail").path, Locale.getDefault().language)
-            engine.connect(account)
-            for ((folder, inFolder) in mine.groupBy { it.folder }) {
-                val uids = inFolder.map { it.uid }
-                when (pending.kind) {
-                    "ARCHIVE" -> engine.archiveMany(folder, uids)
-                    "MARK_READ" -> engine.setSeenMany(folder, uids, true)
-                    "MARK_UNREAD" -> engine.setSeenMany(folder, uids, false)
+            // Closed after use: the connection does not stay open until collected.
+            Engine(context.filesDir.resolve("mail").path, Locale.getDefault().language).use { engine ->
+                engine.connect(account)
+                for ((folder, inFolder) in mine.groupBy { it.folder }) {
+                    val uids = inFolder.map { it.uid }
+                    when (pending.kind) {
+                        "ARCHIVE" -> engine.archiveMany(folder, uids)
+                        "MARK_READ" -> engine.setSeenMany(folder, uids, true)
+                        "MARK_UNREAD" -> engine.setSeenMany(folder, uids, false)
+                    }
                 }
             }
             repo.arrived(account.email)
@@ -383,15 +385,16 @@ class Bridge @Inject constructor(
     /** Sends on an engine of its own: the app's may be busy, or on another account. */
     private suspend fun deliver(pending: PendingSend) {
         val account = accounts(pending.account).first()
-        val engine = Engine(context.filesDir.resolve("mail").path, Locale.getDefault().language)
-        engine.connect(account)
-        engine.send(
-            Outgoing(
-                to = pending.to, cc = "", bcc = "", subject = pending.subject, body = pending.body,
-                html = markdownToHtml(pending.body), inReplyTo = null, references = emptyList(),
-                attachments = emptyList(), sign = false, encrypt = false,
-            ),
-        )
+        Engine(context.filesDir.resolve("mail").path, Locale.getDefault().language).use { engine ->
+            engine.connect(account)
+            engine.send(
+                Outgoing(
+                    to = pending.to, cc = "", bcc = "", subject = pending.subject, body = pending.body,
+                    html = markdownToHtml(pending.body), inReplyTo = null, references = emptyList(),
+                    attachments = emptyList(), sign = false, encrypt = false,
+                ),
+            )
+        }
     }
 
     /** New mail arrived for [email] (from a push): tells the connected apps. */
