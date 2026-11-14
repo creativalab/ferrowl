@@ -21,6 +21,7 @@ mod addr;
 mod api;
 mod apns;
 mod fcm;
+mod limit;
 mod seal;
 mod store;
 mod watch;
@@ -65,10 +66,14 @@ async fn main() -> anyhow::Result<()> {
         notifier,
         keys: Arc::default(),
         check_login: api::real_login_check,
+        limits: limit::Limits::default(),
+        registrations: Arc::default(),
     };
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     eprintln!("ferrowl-push listening on {bind}");
-    axum::serve(listener, api::router(state))
+    // The peer address, for the limits (see `limit`).
+    let app = api::router(state).into_make_service_with_connect_info::<std::net::SocketAddr>();
+    axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })

@@ -33,6 +33,9 @@ impl std::io::Write for TlsStream {
 /// Read/write timeout of IMAP commands: a dead connection fails instead of
 /// hanging the caller forever.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+/// Opening the connection: an unreachable server (a network that drops
+/// packets) would otherwise keep the engine busy for minutes.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
 impl imap::extensions::idle::SetReadTimeout for TlsStream {
     fn set_read_timeout(&mut self, timeout: Option<Duration>) -> imap::Result<()> {
@@ -243,6 +246,9 @@ pub struct FullMessage {
     /// Bare addresses of To and Cc (for "Reply all").
     pub to_addrs: Vec<String>,
     pub cc_addrs: Vec<String>,
+    /// Bare addresses of Reply-To, where replies go instead of From
+    /// (mailing lists, shop and support mail). Empty when absent.
+    pub reply_to: Vec<String>,
     pub subject: String,
     pub timestamp: i64,
     pub message_id: Option<String>,
@@ -264,12 +270,18 @@ pub struct FullMessage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SigState {
-    /// Signed with the key we hold for the sender.
+    /// Signed with the key imported for the sender.
     Valid,
     /// Signature does not match the content or the sender's key.
     Invalid,
     /// Signed, but we have no key for the sender.
     UnknownKey,
+    /// Signed with a key only known from Autocrypt headers: anyone could
+    /// have sent it with this From address.
+    Unverified,
+    /// Signed with a key other than the one we hold for the sender (the
+    /// one offered in the message's Autocrypt header).
+    KeyChanged,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -280,17 +292,46 @@ pub struct PgpStatus {
     pub error: Option<String>,
 }
 
-/// Keys used to open a message: our secret key (+ passphrase) and a lookup
+type KeyLookup<'a> = &'a dyn Fn(&str) -> Option<pgp::composed::SignedPublicKey>;
+
+/// Keys used to open a message: our secret key (+ passphrase) and lookups
 /// of correspondents' public keys.
 pub struct PgpKeys<'a> {
     pub own: Option<(pgp::composed::SignedSecretKey, String)>,
-    pub contact: &'a dyn Fn(&str) -> Option<pgp::composed::SignedPublicKey>,
+    /// Keys imported by hand (trusted).
+    pub contact: KeyLookup<'a>,
+    /// Keys learned from Autocrypt headers.
+    pub autocrypt: KeyLookup<'a>,
+    /// Stores a key offered in an Autocrypt header.
+    pub learn: &'a dyn Fn(&str, &pgp::composed::SignedPublicKey),
+}
+
+impl PgpKeys<'static> {
+    /// The keys stored on this device.
+    pub fn stored(own: Option<(pgp::composed::SignedSecretKey, String)>) -> Self {
+        PgpKeys {
+            own,
+            contact: &crate::crypto::contact_key,
+            autocrypt: &crate::crypto::autocrypt_key,
+            learn: &learn_stored,
+        }
+    }
+}
+
+fn learn_stored(from: &str, key: &pgp::composed::SignedPublicKey) {
+    crate::crypto::learn_autocrypt(from, key);
 }
 
 /// Unwraps PGP/MIME (RFC 3156). Returns the entity to display instead of
 /// the raw message (decrypted content, or the signed part without the
-/// signature) and the status; `(None, None)` for ordinary mail.
-pub fn unwrap_pgp(raw: &[u8], from: &str, keys: &PgpKeys) -> (Option<Vec<u8>>, Option<PgpStatus>) {
+/// signature) and the status; `(None, None)` for ordinary mail. `offered`
+/// is the key in the message's Autocrypt header, if any.
+pub fn unwrap_pgp(
+    raw: &[u8],
+    from: &str,
+    keys: &PgpKeys,
+    offered: Option<&pgp::composed::SignedPublicKey>,
+) -> (Option<Vec<u8>>, Option<PgpStatus>) {
     let Some(msg) = MessageParser::default().parse(raw) else {
         return (None, None);
     };
@@ -325,7 +366,7 @@ pub fn unwrap_pgp(raw: &[u8], from: &str, keys: &PgpKeys) -> (Option<Vec<u8>>, O
             match crate::crypto::decrypt(&data, key, pass) {
                 Ok(plain) => {
                     // Signed then encrypted: check the inner signature.
-                    let (inner, inner_status) = unwrap_pgp(&plain, from, keys);
+                    let (inner, inner_status) = unwrap_pgp(&plain, from, keys, offered);
                     status.signature = inner_status.and_then(|s| s.signature);
                     (Some(inner.unwrap_or(plain)), Some(status))
                 }
@@ -352,10 +393,19 @@ pub fn unwrap_pgp(raw: &[u8], from: &str, keys: &PgpKeys) -> (Option<Vec<u8>>, O
                 return (None, None);
             };
             let canonical = crlf(&signed);
-            let state = match (keys.contact)(&from.to_lowercase()) {
-                Some(key) if crate::crypto::verify(&canonical, &signature, &key) => SigState::Valid,
-                Some(_) => SigState::Invalid,
-                None => SigState::UnknownKey,
+            let from = from.to_lowercase();
+            let signed_by =
+                |key: &pgp::composed::SignedPublicKey| crate::crypto::verify(&canonical, &signature, key);
+            let state = match ((keys.contact)(&from), (keys.autocrypt)(&from)) {
+                (Some(key), _) if signed_by(&key) => SigState::Valid,
+                (None, Some(key)) if signed_by(&key) => SigState::Unverified,
+                // First message from this sender: its own header's key
+                // is as good as any Autocrypt key, no better.
+                (None, None) if offered.is_some_and(signed_by) => SigState::Unverified,
+                (None, None) => SigState::UnknownKey,
+                (Some(_), Some(key)) if signed_by(&key) => SigState::KeyChanged,
+                _ if offered.is_some_and(signed_by) => SigState::KeyChanged,
+                _ => SigState::Invalid,
             };
             (
                 Some(signed),
@@ -453,7 +503,18 @@ pub fn connect_error(account: &Account) -> String {
 /// Like `connect`, to addresses already resolved (the push server checks
 /// them first). The host name is still the one TLS checks.
 pub fn connect_to(account: &Account, addrs: &[SocketAddr]) -> Result<ImapSession> {
-    let tcp = TcpStream::connect(addrs).with_context(|| connect_error(account))?;
+    let mut last = None;
+    let tcp = addrs
+        .iter()
+        .find_map(|a| {
+            TcpStream::connect_timeout(a, CONNECT_TIMEOUT)
+                .map_err(|e| last = Some(e))
+                .ok()
+        })
+        .ok_or_else(|| {
+            last.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no address"))
+        })
+        .with_context(|| connect_error(account))?;
     tcp.set_read_timeout(Some(COMMAND_TIMEOUT))?;
     tcp.set_write_timeout(Some(COMMAND_TIMEOUT))?;
 
@@ -656,6 +717,43 @@ fn bare_list(addr: Option<AddressList>) -> Vec<String> {
     .unwrap_or_default()
 }
 
+/// Who a reply goes to, as (To, Cc): the Reply-To addresses if the
+/// message has them, otherwise the sender; with `all`, also everyone else
+/// in To and Cc. Our own address (`own`) is left out of the others, and
+/// no address appears twice (case ignored).
+pub fn reply_recipients(
+    from: &str,
+    reply_to: &[String],
+    to: &[String],
+    cc: &[String],
+    all: bool,
+    own: &str,
+) -> (Vec<String>, Vec<String>) {
+    let own = own.trim().to_lowercase();
+    let mut seen = std::collections::HashSet::new();
+    let primary: Vec<String> = if reply_to.iter().any(|a| !a.trim().is_empty()) {
+        reply_to.to_vec()
+    } else {
+        vec![from.to_string()]
+    };
+    let mut keep = |list: &[String], skip_own: bool| -> Vec<String> {
+        list.iter()
+            .map(|a| a.trim())
+            .filter(|a| !a.is_empty())
+            .filter(|a| !(skip_own && a.to_lowercase() == own))
+            .filter(|a| seen.insert(a.to_lowercase()))
+            .map(str::to_string)
+            .collect()
+    };
+    let mut out_to = keep(&primary, false);
+    let mut out_cc = Vec::new();
+    if all {
+        out_to.extend(keep(to, true));
+        out_cc = keep(cc, true);
+    }
+    (out_to, out_cc)
+}
+
 fn one_line(s: &str, max: usize) -> String {
     let mut out = String::new();
     for word in s.split_whitespace() {
@@ -759,6 +857,13 @@ pub fn fetch_delta(
         }
     }
     Ok(Some(delta))
+}
+
+/// Every UID of a folder (UIDs only: a few bytes per message), to find
+/// cached messages deleted by other clients below the refreshed window.
+pub fn all_uids(session: &mut ImapSession, folder: &str) -> Result<Vec<u32>> {
+    session.select(folder)?;
+    Ok(session.uid_search("ALL")?.into_iter().collect())
 }
 
 /// What a new-mail notification needs from the inbox. See [`peek_inbox`].
@@ -1072,11 +1177,16 @@ pub fn parse_full(uid: u32, raw: &[u8], keys: &PgpKeys) -> Result<FullMessage> {
     let outer = MessageParser::default().parse(raw).context(t("err_unreadable"))?;
     let (from, from_address) = first_addr(outer.from());
 
-    // Autocrypt: remember the sender's key (before checking signatures).
-    for value in raw_header_values(raw, "autocrypt") {
-        crate::crypto::learn_autocrypt(&from_address, &value);
+    // Autocrypt: the key the sender offers. Signatures are checked against
+    // the keys held before this message; the offered key is stored only
+    // afterwards, and only if we hold none for the sender.
+    let offered = raw_header_values(raw, "autocrypt")
+        .iter()
+        .find_map(|value| crate::crypto::autocrypt_offer(&from_address, value));
+    let (inner, mut pgp) = unwrap_pgp(raw, &from_address, keys, offered.as_ref());
+    if let Some(key) = &offered {
+        (keys.learn)(&from_address, key);
     }
-    let (inner, mut pgp) = unwrap_pgp(raw, &from_address, keys);
     let inner_msg = inner
         .as_deref()
         .and_then(|bytes| MessageParser::default().parse(bytes));
@@ -1165,6 +1275,7 @@ pub fn parse_full(uid: u32, raw: &[u8], keys: &PgpKeys) -> Result<FullMessage> {
         cc: addr_list(outer.cc()),
         to_addrs: bare_list(outer.to()),
         cc_addrs: bare_list(outer.cc()),
+        reply_to: bare_list(outer.reply_to()),
         subject: outer.subject().unwrap_or(t("no_subject")).to_string(),
         timestamp: outer.date().map(|d| d.to_timestamp()).unwrap_or(0),
         message_id: outer.message_id().map(str::to_string),
@@ -1230,6 +1341,19 @@ pub fn move_message(session: &mut ImapSession, from: &str, uids: &[u32], to: &st
     } else {
         session.uid_copy(&set, to)?;
         session.uid_store(&set, "+FLAGS (\\Deleted)")?;
+        expunge_uids(session, &set)?;
+    }
+    Ok(())
+}
+
+/// Removes the given messages (already flagged \Deleted). With UIDPLUS only
+/// those; without it EXPUNGE is the only way, and it also removes messages
+/// other clients flagged \Deleted in the folder.
+fn expunge_uids(session: &mut ImapSession, set: &str) -> Result<()> {
+    let uidplus = session.capabilities().is_ok_and(|c| c.has_str("UIDPLUS"));
+    if uidplus {
+        session.uid_expunge(set)?;
+    } else {
         session.expunge()?;
     }
     Ok(())
@@ -1241,8 +1365,9 @@ pub fn delete_permanently(session: &mut ImapSession, folder: &str, uids: &[u32])
         return Ok(());
     }
     session.select(folder)?;
-    session.uid_store(uid_set(uids), "+FLAGS (\\Deleted)")?;
-    session.expunge()?;
+    let set = uid_set(uids);
+    session.uid_store(&set, "+FLAGS (\\Deleted)")?;
+    expunge_uids(session, &set)?;
     Ok(())
 }
 
@@ -1273,6 +1398,11 @@ pub fn set_keywords(session: &mut ImapSession, folder: &str, uids: &[u32], add: 
     if !remove.is_empty() {
         let _ = session.uid_store(uid_set(uids), format!("-FLAGS ({})", remove.join(" ")));
     }
+}
+
+/// Whether the server moves messages itself (RFC 6851).
+pub fn has_move(session: &mut ImapSession) -> bool {
+    session.capabilities().is_ok_and(|c| c.has_str("MOVE"))
 }
 
 /// Whether the server is Gmail (labels through the X-GM-EXT-1 extension).
@@ -1708,7 +1838,7 @@ fn protect(account: &Account, mail: &Outgoing, content: Part) -> Result<Part> {
         content,
         &own,
         &account.pgp_passphrase,
-        &crate::crypto::contact_key,
+        &crate::crypto::encryption_key,
     )
 }
 
@@ -1806,6 +1936,45 @@ mod status_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replies_go_to_reply_to() {
+        let raw = b"From: Shop <noreply@shop.example>\r\nReply-To: Help <help@shop.example>, sales@shop.example\r\n\
+To: me@example.org, Bob <bob@example.org>\r\nCc: carl@example.org\r\nSubject: Order\r\n\r\nThanks\r\n";
+        let nobody = |_: &str| None;
+        let keys = PgpKeys {
+            own: None,
+            contact: &nobody,
+            autocrypt: &nobody,
+            learn: &|_, _| {},
+        };
+        let m = parse_full(1, raw, &keys).unwrap();
+        assert_eq!(m.reply_to, ["help@shop.example", "sales@shop.example"]);
+        let reply = |all| {
+            reply_recipients(
+                &m.from_address,
+                &m.reply_to,
+                &m.to_addrs,
+                &m.cc_addrs,
+                all,
+                "ME@example.org",
+            )
+        };
+        assert_eq!(reply(false), (m.reply_to.clone(), vec![]));
+        let (to, cc) = reply(true);
+        assert_eq!(to, ["help@shop.example", "sales@shop.example", "bob@example.org"]);
+        assert_eq!(cc, ["carl@example.org"]);
+        // Without Reply-To: the sender, and no address twice.
+        let (to, _) = reply_recipients(
+            "ada@example.org",
+            &[],
+            &["Ada@example.org".into(), "me@example.org".into()],
+            &[],
+            true,
+            "me@example.org",
+        );
+        assert_eq!(to, ["ada@example.org"]);
+    }
 
     #[test]
     fn outlook_mailbox_without_imap_is_recognised() {
@@ -2252,9 +2421,12 @@ mod tests {
         };
         let knows_alice = |a: &str| (a == "alice@example.com").then(|| alice_pub.clone());
         let knows_nobody = |_: &str| None;
+        let learns_nothing = |_: &str, _: &pgp::composed::SignedPublicKey| {};
         let bob_keys = PgpKeys {
             own: Some((bob.clone(), String::new())),
             contact: &knows_alice,
+            autocrypt: &knows_nobody,
+            learn: &learns_nothing,
         };
 
         // Signed only.
@@ -2268,6 +2440,8 @@ mod tests {
         let unknown = PgpKeys {
             own: None,
             contact: &knows_nobody,
+            autocrypt: &knows_nobody,
+            learn: &learns_nothing,
         };
         assert_eq!(
             parse_full(1, &raw, &unknown).unwrap().pgp.unwrap().signature,
@@ -2304,11 +2478,82 @@ mod tests {
         let eve_keys = PgpKeys {
             own: Some((eve, String::new())),
             contact: &knows_nobody,
+            autocrypt: &knows_nobody,
+            learn: &learns_nothing,
         };
         let m = parse_full(1, &raw, &eve_keys).unwrap();
         assert!(m.pgp.unwrap().error.is_some());
         assert!(!m.body.contains("prova"));
+        // Alice's key only known from Autocrypt: signed, but unverified.
+        out.encrypt = false;
+        out.to = "Bob <bob@example.com>".into();
+        let raw = build(&out);
+        let autocrypt_alice = PgpKeys {
+            own: None,
+            contact: &knows_nobody,
+            autocrypt: &knows_alice,
+            learn: &learns_nothing,
+        };
+        assert_eq!(
+            parse_full(1, &raw, &autocrypt_alice)
+                .unwrap()
+                .pgp
+                .unwrap()
+                .signature,
+            Some(SigState::Unverified)
+        );
+        // Eve writes as Alice, signs with her own key and offers it in an
+        // Autocrypt header: never valid, never learned over Alice's key.
+        let content = build_content(&out).unwrap();
+        let contact = |a: &str| (a == "bob@example.com").then(|| bob_pub.clone());
+        // Her key names Alice's address, so the header passes as Alice's.
+        let fake = crypto::generate("Alice", "alice@example.com", "").unwrap();
+        let content = protect_with(&out, content, &fake, "", &contact).unwrap();
+        let eve_pub = fake.to_public_key();
+        let mut keydata = Vec::new();
+        pgp::ser::Serialize::to_writer(&eve_pub, &mut keydata).unwrap();
+        use base64::Engine;
+        let header = format!(
+            "addr=alice@example.com; keydata={}",
+            base64::engine::general_purpose::STANDARD.encode(keydata)
+        );
+        let b = lettre::Message::builder()
+            .from("Alice <alice@example.com>".parse().unwrap())
+            .to("Bob <bob@example.com>".parse().unwrap())
+            .header(Autocrypt(header))
+            .subject("s");
+        let spoofed = match content {
+            Part::Single(p) => b.singlepart(p).unwrap(),
+            Part::Multi(m) => b.multipart(m).unwrap(),
+        }
+        .formatted();
+        let learned = std::cell::RefCell::new(Vec::new());
+        let remember = |a: &str, k: &pgp::composed::SignedPublicKey| {
+            learned
+                .borrow_mut()
+                .push((a.to_string(), crate::crypto::fingerprint(k)))
+        };
+        let watching = PgpKeys {
+            own: None,
+            contact: &knows_alice,
+            autocrypt: &knows_nobody,
+            learn: &remember,
+        };
+        let m = parse_full(1, &spoofed, &watching).unwrap();
+        assert_eq!(m.pgp.unwrap().signature, Some(SigState::KeyChanged));
+        let first_contact = PgpKeys {
+            own: None,
+            contact: &knows_nobody,
+            autocrypt: &knows_nobody,
+            learn: &remember,
+        };
+        let m = parse_full(1, &spoofed, &first_contact).unwrap();
+        assert_eq!(m.pgp.unwrap().signature, Some(SigState::Unverified));
+        // parse_full offers the key; crypto::learn_autocrypt keeps keys it
+        // already holds (see crypto tests).
+        assert_eq!(learned.borrow().len(), 2);
         // Encrypting to someone without a key fails before sending.
+        out.encrypt = true;
         out.to = "carol@example.com".into();
         let content = build_content(&out).unwrap();
         let contact = |_: &str| None;

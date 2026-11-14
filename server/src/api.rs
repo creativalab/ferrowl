@@ -11,12 +11,15 @@
 //! | GET    | /healthz              |                         | `ok` |
 //!
 //! Every call except registration needs `Authorization: Bearer <device_token>`.
+//! Registrations are limited per client address, and the server takes a
+//! limited number of phones and accounts in all (see `limit`).
 //!
 //! Push token: `{fcm_token}` (Android), or `{apns_token, apns_sandbox}`
 //! (iPhone: the device token in hex; `apns_sandbox` true for development
 //! builds).
 
 use crate::fcm::{Notifier, Platform, Target};
+use crate::limit::{ClientIp, Limits, RateLimiter};
 use crate::seal::{DeviceKey, random_token};
 use crate::store::{Device, SealedAccount, Store};
 use crate::watch::Watchers;
@@ -42,6 +45,8 @@ pub struct AppState {
     pub keys: Arc<Mutex<HashMap<String, DeviceKey>>>,
     /// Checks an account's login before storing it (replaced in tests).
     pub check_login: fn(&Account) -> Result<(), String>,
+    pub limits: Limits,
+    pub registrations: Arc<RateLimiter>,
 }
 
 pub fn real_login_check(account: &Account) -> Result<(), String> {
@@ -171,12 +176,28 @@ struct Registered {
 
 async fn register(
     State(state): State<AppState>,
+    ip: ClientIp,
     Json(body): Json<PushTokenBody>,
 ) -> ApiResult<Json<Registered>> {
     let target = target_of(&body)?;
+    if !state
+        .registrations
+        .allow(ip, state.limits.registrations, state.limits.window)
+    {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many registrations, try again later",
+        ));
+    }
     let device_id = random_token();
     let device_token = random_token();
-    state.store.add_device(&device_id, &device_token, &target)?;
+    let added =
+        state
+            .store
+            .add_device_within(&device_id, &device_token, &target, state.limits.max_devices)?;
+    if !added {
+        return Err(server_full());
+    }
     Ok(Json(Registered {
         device_id,
         device_token,
@@ -233,6 +254,10 @@ async fn add_account(
     if existing.len() >= MAX_ACCOUNTS {
         return Err(too_many());
     }
+    // Each watched account holds an IMAP connection open: a cap in all.
+    if state.store.account_count()? >= state.limits.max_accounts {
+        return Err(server_full());
+    }
     // All accounts of a device share its key.
     if let Some(first) = existing.first()
         && key.open(&first.nonce, &first.sealed, &first.id).is_err()
@@ -278,6 +303,10 @@ async fn add_account(
 
 fn too_many() -> ApiError {
     ApiError::new(StatusCode::CONFLICT, "too many accounts for this device")
+}
+
+fn server_full() -> ApiError {
+    ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "the server is full")
 }
 
 async fn delete_account(
@@ -358,7 +387,66 @@ mod tests {
             keys: Arc::default(),
             // Refuses every login: no network in tests, and no watcher starts.
             check_login: |_| Err("login refused".into()),
+            limits: Limits::default(),
+            registrations: Arc::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn registrations_are_limited() {
+        let mut st = state();
+        st.limits.registrations = 2;
+        st.limits.max_devices = 3;
+        let app = router(st.clone());
+        let register = |from: &'static str| {
+            let app = app.clone();
+            async move {
+                let req = Request::builder()
+                    .method("POST")
+                    .uri("/v1/devices")
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-for", from)
+                    .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                        [127, 0, 0, 1],
+                        40000,
+                    ))))
+                    .body(Body::from(r#"{"fcm_token":"t"}"#))
+                    .unwrap();
+                app.oneshot(req).await.unwrap().status()
+            }
+        };
+        assert_eq!(register("198.51.100.1").await, StatusCode::OK);
+        assert_eq!(register("198.51.100.1").await, StatusCode::OK);
+        assert_eq!(register("198.51.100.1").await, StatusCode::TOO_MANY_REQUESTS);
+        // Another address may still register, until the server is full.
+        assert_eq!(register("198.51.100.2").await, StatusCode::OK);
+        assert_eq!(register("198.51.100.2").await, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn watched_accounts_are_capped() {
+        let mut st = state();
+        st.limits.max_accounts = 0;
+        let app = router(st.clone());
+        let (_, reg) = call(
+            &app,
+            "POST",
+            "/v1/devices",
+            None,
+            serde_json::json!({"fcm_token": "fcm-1"}),
+        )
+        .await;
+        let token = reg["device_token"].as_str().unwrap().to_owned();
+        let key = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
+        let (code, _) = call(
+            &app,
+            "POST",
+            "/v1/accounts",
+            Some(&token),
+            serde_json::json!({"key": key, "account": account_json()}),
+        )
+        .await;
+        assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
     }
 
     async fn call(

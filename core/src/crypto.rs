@@ -3,8 +3,12 @@
 //!
 //! Key storage, in the user's data directory (owner-only permissions):
 //! - `keys/own/<address>.asc`: the account's secret key (armored);
-//! - `keys/contacts/<address>.asc`: public keys of correspondents, imported
-//!   by hand or collected from Autocrypt headers.
+//! - `keys/contacts/<address>.asc`: public keys of correspondents imported
+//!   by hand (trusted: a signature by one of them is "valid");
+//! - `keys/autocrypt/<address>.asc`: keys collected from Autocrypt headers.
+//!   Anyone can put any key in a header with any From address, so these
+//!   are only used to encrypt and a signature by one is "unverified"; a
+//!   key already held is never replaced by one from a header.
 
 use anyhow::{Context, Result, anyhow, bail};
 use pgp::composed::{
@@ -171,6 +175,20 @@ fn save_contact_key(address: &str, key: &SignedPublicKey) -> Result<()> {
     write_private(&keys_dir("contacts")?.join(file_for(address)), armored.as_bytes())
 }
 
+/// A key learned from Autocrypt headers (see the module comment).
+pub fn autocrypt_key(address: &str) -> Option<SignedPublicKey> {
+    let path = keys_dir("autocrypt").ok()?.join(file_for(address));
+    let data = std::fs::read(path).ok()?;
+    SignedPublicKey::from_reader_single(&data[..])
+        .ok()
+        .map(|(k, _)| k)
+}
+
+/// The key to encrypt to: imported by hand, else learned from Autocrypt.
+pub fn encryption_key(address: &str) -> Option<SignedPublicKey> {
+    contact_key(address).or_else(|| autocrypt_key(address))
+}
+
 /// Imports public keys from a file; returns the addresses they cover.
 pub fn import_contact_keys(path: &std::path::Path) -> Result<Vec<String>> {
     let data = std::fs::read(path)?;
@@ -191,18 +209,25 @@ pub fn import_contact_keys(path: &std::path::Path) -> Result<Vec<String>> {
     Ok(imported)
 }
 
+/// Correspondents we have a key for (imported or from Autocrypt).
 pub fn contact_count() -> usize {
-    keys_dir("contacts")
-        .ok()
-        .and_then(|d| std::fs::read_dir(d).ok())
-        .map(|it| {
-            it.filter(|e| {
-                e.as_ref()
-                    .is_ok_and(|e| e.path().extension().is_some_and(|x| x == "asc"))
+    let names = |kind: &str| -> Vec<std::ffi::OsString> {
+        keys_dir(kind)
+            .ok()
+            .and_then(|d| std::fs::read_dir(d).ok())
+            .map(|it| {
+                it.flatten()
+                    .filter(|e| e.path().extension().is_some_and(|x| x == "asc"))
+                    .map(|e| e.file_name())
+                    .collect()
             })
-            .count()
-        })
-        .unwrap_or(0)
+            .unwrap_or_default()
+    };
+    let mut all = names("contacts");
+    all.extend(names("autocrypt"));
+    all.sort();
+    all.dedup();
+    all.len()
 }
 
 // ---------------------------------------------------------------- Autocrypt
@@ -217,9 +242,10 @@ pub fn autocrypt_header(address: &str) -> Option<String> {
     Some(format!("addr={address}; keydata={data}"))
 }
 
-/// Stores the key from an incoming `Autocrypt:` header if it belongs to the
-/// sender. Returns true when a new or different key was saved.
-pub fn learn_autocrypt(from: &str, header: &str) -> bool {
+/// The key in an incoming `Autocrypt:` header, if it is well formed and
+/// names the sender. Nothing proves the sender sent it: see the module
+/// comment.
+pub fn autocrypt_offer(from: &str, header: &str) -> Option<SignedPublicKey> {
     let mut addr = None;
     let mut keydata = None;
     for attr in header.split(';') {
@@ -230,26 +256,37 @@ pub fn learn_autocrypt(from: &str, header: &str) -> bool {
             _ => {}
         }
     }
-    let (Some(addr), Some(keydata)) = (addr, keydata) else {
-        return false;
-    };
+    let (addr, keydata) = (addr?, keydata?);
     if addr != from.trim().to_lowercase() {
-        return false;
+        return None;
     }
     use base64::Engine;
-    let Ok(bin) = base64::engine::general_purpose::STANDARD.decode(keydata) else {
-        return false;
-    };
-    let Ok((key, _)) = SignedPublicKey::from_reader_single(&bin[..]) else {
-        return false;
-    };
-    if key.verify_bindings().is_err() || !addresses(&key).contains(&addr) {
+    let bin = base64::engine::general_purpose::STANDARD.decode(keydata).ok()?;
+    let (key, _) = SignedPublicKey::from_reader_single(&bin[..]).ok()?;
+    (key.verify_bindings().is_ok() && addresses(&key).contains(&addr)).then_some(key)
+}
+
+/// Whether an offered Autocrypt key may be stored: only for senders we
+/// hold no key for. A different key for a known sender is never taken
+/// (it could come from anyone writing with that From address); the
+/// message view reports it when such a key signed the message.
+fn should_learn(imported: Option<&SignedPublicKey>, learned: Option<&SignedPublicKey>) -> bool {
+    imported.is_none() && learned.is_none()
+}
+
+/// Stores the key offered in an Autocrypt header (see `autocrypt_offer`)
+/// if we hold none for the sender. Returns true when it was saved.
+pub fn learn_autocrypt(from: &str, key: &SignedPublicKey) -> bool {
+    let addr = from.trim().to_lowercase();
+    if !should_learn(contact_key(&addr).as_ref(), autocrypt_key(&addr).as_ref()) {
         return false;
     }
-    if contact_key(&addr).is_some_and(|old| old.fingerprint() == key.fingerprint()) {
+    let Ok(armored) = key.to_armored_string(ArmorOptions::default()) else {
         return false;
-    }
-    save_contact_key(&addr, &key).is_ok()
+    };
+    keys_dir("autocrypt")
+        .and_then(|d| write_private(&d.join(file_for(&addr)), armored.as_bytes()))
+        .is_ok()
 }
 
 // ---------------------------------------------------------------- operations
@@ -363,6 +400,30 @@ mod tests {
         let armored = encrypt(data, std::slice::from_ref(&alice_pub)).unwrap();
         assert!(armored.starts_with("-----BEGIN PGP MESSAGE-----"));
         assert_eq!(decrypt(armored.as_bytes(), &alice, "pw").unwrap(), data);
+    }
+
+    #[test]
+    fn autocrypt_offers_never_replace_keys() {
+        use base64::Engine;
+        let alice = generate("Alice", "alice@example.com", "")
+            .unwrap()
+            .to_public_key();
+        let mut bin = Vec::new();
+        alice.to_writer(&mut bin).unwrap();
+        let header = format!(
+            "addr=alice@example.com; keydata={}",
+            base64::engine::general_purpose::STANDARD.encode(bin)
+        );
+        let offered = autocrypt_offer("Alice@Example.com", &header).unwrap();
+        assert_eq!(offered.fingerprint(), alice.fingerprint());
+        // Only for the address in From.
+        assert!(autocrypt_offer("mallory@example.com", &header).is_none());
+        let other = generate("Mallory", "alice@example.com", "")
+            .unwrap()
+            .to_public_key();
+        assert!(should_learn(None, None));
+        assert!(!should_learn(Some(&other), None));
+        assert!(!should_learn(None, Some(&other)));
     }
 
     #[test]

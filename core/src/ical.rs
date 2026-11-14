@@ -10,7 +10,7 @@
 //! 9:00 meeting stays at 9:00 across daylight-saving changes.
 
 use chrono::{
-    DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc, Weekday,
+    DateTime, Datelike, Days, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc, Weekday,
 };
 use chrono_tz::Tz;
 
@@ -47,7 +47,10 @@ impl When {
         fn resolve<T: TimeZone>(tz: &T, t: NaiveDateTime) -> i64 {
             tz.from_local_datetime(&t)
                 .earliest()
-                .or_else(|| tz.from_local_datetime(&(t + Duration::hours(1))).earliest())
+                .or_else(|| {
+                    let later = t.checked_add_signed(TimeDelta::hours(1))?;
+                    tz.from_local_datetime(&later).earliest()
+                })
                 .map(|d| d.timestamp())
                 .unwrap_or_else(|| t.and_utc().timestamp())
         }
@@ -148,6 +151,17 @@ pub struct Rule {
 /// the work for rules that never end.
 const MAX_OCCURRENCES: usize = 5000;
 const MAX_PERIODS: u32 = 20000;
+/// Larger INTERVALs make a rule invalid (see `parse_rule`).
+const MAX_INTERVAL: u32 = 10000;
+/// Longer DURATIONs are ignored (see `parse_duration`).
+const MAX_DURATION_DAYS: i64 = 366 * 100;
+
+/// Runs `f`, turning a panic into `None`. Calendar data comes from other
+/// people's mail and servers; a bug in expanding it must never crash the
+/// apps (on iOS a panic crossing a synchronous export aborts the app).
+pub(crate) fn no_panic<T>(f: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
+}
 
 // ---------------------------------------------------------------- reading
 
@@ -316,9 +330,15 @@ fn event_from(lines: &[Line]) -> Option<Event> {
     ev.start = start?;
     ev.end = match (end, duration) {
         (Some(e), _) if e.timestamp() >= ev.start.timestamp() => e,
-        (_, Some(d)) => ev.start.with_local(ev.start.local + d),
+        (_, Some(d)) if ev.start.local.checked_add_signed(d).is_some() => {
+            ev.start.with_local(ev.start.local + d)
+        }
         // No end: all-day events last the day, others are instants.
-        _ if ev.start.date_only => ev.start.with_local(ev.start.local + Duration::days(1)),
+        _ if ev.start.date_only => ev
+            .start
+            .local
+            .checked_add_days(Days::new(1))
+            .map_or(ev.start, |l| ev.start.with_local(l)),
         _ => ev.start,
     };
     if ev.uid.is_empty() {
@@ -413,15 +433,17 @@ fn zone_named(tzid: &str) -> Zone {
         .map_or(Zone::Floating, Zone::Named)
 }
 
-/// "P1D", "PT1H30M", "P2W", "-PT15M" (negative durations are ignored).
-fn parse_duration(v: &str) -> Option<Duration> {
+/// "P1D", "PT1H30M", "P2W", "-PT15M" (negative durations are ignored,
+/// and so are absurd ones: they come from other people's mail and would
+/// overflow date arithmetic).
+fn parse_duration(v: &str) -> Option<TimeDelta> {
     let v = v.trim();
     let v = v.strip_prefix('+').unwrap_or(v);
     if v.starts_with('-') {
         return None;
     }
     let v = v.strip_prefix('P')?;
-    let mut total = Duration::zero();
+    let mut total = TimeDelta::zero();
     let mut num = String::new();
     let mut time = false;
     for ch in v.chars() {
@@ -431,18 +453,19 @@ fn parse_duration(v: &str) -> Option<Duration> {
             _ => {
                 let n: i64 = num.parse().ok()?;
                 num.clear();
-                total += match (ch, time) {
-                    ('W', _) => Duration::weeks(n),
-                    ('D', _) => Duration::days(n),
-                    ('H', true) => Duration::hours(n),
-                    ('M', true) => Duration::minutes(n),
-                    ('S', true) => Duration::seconds(n),
-                    _ => return None,
-                };
+                let part = match (ch, time) {
+                    ('W', _) => TimeDelta::try_weeks(n),
+                    ('D', _) => TimeDelta::try_days(n),
+                    ('H', true) => TimeDelta::try_hours(n),
+                    ('M', true) => TimeDelta::try_minutes(n),
+                    ('S', true) => TimeDelta::try_seconds(n),
+                    _ => None,
+                }?;
+                total = total.checked_add(&part)?;
             }
         }
     }
-    Some(total)
+    (total <= TimeDelta::days(MAX_DURATION_DAYS)).then_some(total)
 }
 
 fn weekday(s: &str) -> Option<Weekday> {
@@ -487,7 +510,11 @@ fn parse_rule(v: &str) -> Option<Rule> {
                     _ => Freq::Other,
                 }
             }
-            "INTERVAL" => r.interval = val.parse().unwrap_or(1).max(1),
+            "INTERVAL" => {
+                r.interval = val
+                    .parse::<u64>()
+                    .map_or(1, |n| n.clamp(1, u64::from(MAX_INTERVAL) + 1) as u32)
+            }
             "COUNT" => r.count = val.parse().ok(),
             "UNTIL" => {
                 let l = Line {
@@ -496,12 +523,9 @@ fn parse_rule(v: &str) -> Option<Rule> {
                     value: val.clone(),
                 };
                 // A date-only UNTIL includes that whole day.
-                r.until = parse_when(&l).map(|w| {
-                    if w.date_only {
-                        w.with_local(w.local + Duration::days(1)).timestamp() - 1
-                    } else {
-                        w.timestamp()
-                    }
+                r.until = parse_when(&l).map(|w| match w.local.checked_add_days(Days::new(1)) {
+                    Some(next) if w.date_only => w.with_local(next).timestamp() - 1,
+                    _ => w.timestamp(),
                 });
             }
             "BYDAY" => {
@@ -527,7 +551,9 @@ fn parse_rule(v: &str) -> Option<Rule> {
             _ => {}
         }
     }
-    has_freq.then_some(r)
+    // A huge INTERVAL (from someone else's invitation) only overflows the
+    // date arithmetic; no real series repeats that rarely.
+    (has_freq && r.interval <= MAX_INTERVAL).then_some(r)
 }
 
 // ---------------------------------------------------------------- expanding
@@ -584,19 +610,23 @@ fn month_days(year: i32, month: u32, by_month_day: &[i32]) -> Vec<NaiveDate> {
         .collect()
 }
 
-fn add_months(year: i32, month: u32, n: u32) -> (i32, u32) {
-    let total = year * 12 + (month as i32 - 1) + n as i32;
-    (total.div_euclid(12), (total.rem_euclid(12) + 1) as u32)
+fn add_months(year: i32, month: u32, n: u32) -> Option<(i32, u32)> {
+    let total = i64::from(year) * 12 + (i64::from(month) - 1) + i64::from(n);
+    Some((
+        i32::try_from(total.div_euclid(12)).ok()?,
+        (total.rem_euclid(12) + 1) as u32,
+    ))
 }
 
 /// The dates of the series in period `k` (k-th interval after the start),
-/// sorted, before COUNT/UNTIL.
+/// sorted, before COUNT/UNTIL. Empty when the period falls outside the
+/// dates chrono can represent.
 fn period_dates(rule: &Rule, first: NaiveDate, k: u32) -> Vec<NaiveDate> {
     let step = k.saturating_mul(rule.interval);
     let in_month = |d: &NaiveDate| rule.by_month.is_empty() || rule.by_month.contains(&d.month());
     let mut dates: Vec<NaiveDate> = match rule.freq {
         Freq::Daily => first
-            .checked_add_days(chrono::Days::new(step as u64))
+            .checked_add_days(Days::new(step as u64))
             .into_iter()
             .filter(|d| rule.by_day.is_empty() || rule.by_day.iter().any(|(_, w)| *w == d.weekday()))
             .filter(|d| {
@@ -605,20 +635,26 @@ fn period_dates(rule: &Rule, first: NaiveDate, k: u32) -> Vec<NaiveDate> {
             })
             .collect(),
         Freq::Weekly => {
-            let monday = first - Duration::days(first.weekday().num_days_from_monday() as i64)
-                + Duration::weeks(step as i64);
+            let Some(monday) = first
+                .checked_sub_days(Days::new(first.weekday().num_days_from_monday() as u64))
+                .and_then(|m| m.checked_add_days(Days::new(step as u64 * 7)))
+            else {
+                return Vec::new();
+            };
             let wanted: Vec<Weekday> = if rule.by_day.is_empty() {
                 vec![first.weekday()]
             } else {
                 rule.by_day.iter().map(|(_, w)| *w).collect()
             };
             (0..7)
-                .map(|i| monday + Duration::days(i))
+                .filter_map(|i| monday.checked_add_days(Days::new(i)))
                 .filter(|d| wanted.contains(&d.weekday()))
                 .collect()
         }
         Freq::Monthly => {
-            let (y, m) = add_months(first.year(), first.month(), step);
+            let Some((y, m)) = add_months(first.year(), first.month(), step) else {
+                return Vec::new();
+            };
             if !rule.by_month_day.is_empty() {
                 let mut v = month_days(y, m, &rule.by_month_day);
                 if !rule.by_day.is_empty() {
@@ -632,7 +668,9 @@ fn period_dates(rule: &Rule, first: NaiveDate, k: u32) -> Vec<NaiveDate> {
             }
         }
         Freq::Yearly => {
-            let y = first.year() + step as i32;
+            let Some(y) = i32::try_from(step).ok().and_then(|s| first.year().checked_add(s)) else {
+                return Vec::new();
+            };
             let months: Vec<u32> = if rule.by_month.is_empty() {
                 vec![first.month()]
             } else {
@@ -770,14 +808,17 @@ pub fn occurrences(cal: &Calendar, from: i64, to: i64) -> Vec<Occurrence> {
 
 fn push_if_overlaps(out: &mut Vec<Occurrence>, ev: &Event, start: When, recurring: bool, from: i64, to: i64) {
     let length = ev.end.local - ev.start.local;
-    let end = start.with_local(start.local + length);
+    let end = start.with_local(start.local.checked_add_signed(length).unwrap_or(start.local));
     let (s, e) = (start.timestamp(), end.timestamp().max(start.timestamp()));
     // Instants (no length) count when they fall inside the range.
     if s >= to || (e <= from && !(s == e && s >= from)) {
         return;
     }
     let (first_day, last_day) = if ev.all_day() {
-        let last = (end.local - Duration::days(1)).date().max(start.local.date());
+        let last = end
+            .local
+            .checked_sub_days(Days::new(1))
+            .map_or(start.local.date(), |l| l.date().max(start.local.date()));
         (Some(start.local.date()), Some(last))
     } else {
         (None, None)
@@ -1013,6 +1054,33 @@ mod tests {
     }
 
     #[test]
+    fn absurd_values_do_not_panic() {
+        // A duration past the end of chrono's calendar is ignored.
+        let c = cal(
+            "BEGIN:VEVENT\r\nUID:d\r\nDTSTART:20261110T100000Z\r\nDURATION:P100000000D\r\nEND:VEVENT\r\n",
+        );
+        assert_eq!(c.events[0].end, c.events[0].start);
+        assert!(parse_duration("P9999999999999999W").is_none());
+        // A series repeating every 4 billion weeks is not a series.
+        let c = cal(
+            "BEGIN:VEVENT\r\nUID:w\r\nDTSTART:20261110T100000Z\r\nRRULE:FREQ=WEEKLY;INTERVAL=4000000000\r\nEND:VEVENT\r\n",
+        );
+        assert!(c.events[0].rule.is_none());
+        assert_eq!(occurrences(&c, ts("2026-01-01T00:00:00Z"), i64::MAX / 4).len(), 1);
+        // The largest accepted interval runs off the calendar without panicking.
+        for freq in ["DAILY", "WEEKLY", "MONTHLY", "YEARLY"] {
+            let c = cal(&format!(
+                "BEGIN:VEVENT\r\nUID:m\r\nDTSTART:20261110T100000Z\r\nRRULE:FREQ={freq};INTERVAL=10000\r\nEND:VEVENT\r\n"
+            ));
+            assert!(!occurrences(&c, ts("2026-01-01T00:00:00Z"), i64::MAX / 4).is_empty());
+            let _ = span(&c);
+            let rule = c.events[0].rule.clone().unwrap();
+            assert!(period_dates(&rule, NaiveDate::MAX, 3).is_empty());
+            let _ = period_dates(&rule, NaiveDate::MIN, u32::MAX);
+        }
+    }
+
+    #[test]
     fn invitation_method() {
         let c = parse(
             "BEGIN:VCALENDAR\nMETHOD:REQUEST\nBEGIN:VEVENT\nUID:i\nDTSTART:20261110T100000Z\nEND:VEVENT\nEND:VCALENDAR\n",
@@ -1020,7 +1088,7 @@ mod tests {
         assert_eq!(c.method, "REQUEST");
         assert_eq!(
             parse_duration("P1W2DT3H"),
-            Some(Duration::days(9) + Duration::hours(3))
+            Some(TimeDelta::days(9) + TimeDelta::hours(3))
         );
     }
 }

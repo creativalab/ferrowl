@@ -83,7 +83,11 @@ impl Draft {
         };
         let (start, end) = if ev.all_day() {
             // DTEND is exclusive: the form shows the last day.
-            let last = (ev.end.local - Duration::days(1)).max(ev.start.local);
+            let last = ev
+                .end
+                .local
+                .checked_sub_days(chrono::Days::new(1))
+                .map_or(ev.start.local, |l| l.max(ev.start.local));
             (ev.start.local, last)
         } else {
             (local(ev.start.timestamp()), local(ev.end.timestamp()))
@@ -141,7 +145,8 @@ fn local_zone() -> Option<Tz> {
 fn time_lines(d: &Draft, tz: Option<Tz>) -> (String, String) {
     if d.all_day {
         let first = d.start.date();
-        let after = d.end.date().max(first) + Duration::days(1);
+        let last = d.end.date().max(first);
+        let after = last.checked_add_days(chrono::Days::new(1)).unwrap_or(last);
         return (
             format!("DTSTART;VALUE=DATE:{}", first.format("%Y%m%d")),
             format!("DTEND;VALUE=DATE:{}", after.format("%Y%m%d")),
@@ -335,6 +340,9 @@ pub fn update(ics: &str, d: &Draft) -> String {
             "END" if what == "VEVENT" && depth.len() == 2 => {
                 depth.pop();
                 if master {
+                    // The series' own copies go, even of fields the form
+                    // left empty (a cleared location must not come back).
+                    event = without_fields(event, REPLACED);
                     // The form's fields, right after BEGIN:VEVENT's own
                     // identifying lines.
                     let mut fields = vec![
@@ -397,6 +405,28 @@ pub fn update(ics: &str, d: &Draft) -> String {
         lines.splice(at..at, vtimezone(tz, d.start.year()));
     }
     finish(&lines)
+}
+
+/// One VEVENT's lines (from its BEGIN) without the named properties of the
+/// event itself; those of its alarms and other parts stay.
+fn without_fields(event: Vec<String>, names: &[&str]) -> Vec<String> {
+    let mut depth = 0usize;
+    event
+        .into_iter()
+        .filter(|l| {
+            let upper = l.to_ascii_uppercase();
+            if upper.starts_with("BEGIN:") {
+                depth += 1;
+                return true;
+            }
+            if upper.starts_with("END:") {
+                depth = depth.saturating_sub(1);
+                return true;
+            }
+            let name = upper.split([':', ';']).next().unwrap_or_default();
+            depth != 1 || !names.contains(&name)
+        })
+        .collect()
 }
 
 /// In each VEVENT that has the new fields twice, keeps the first copy.
@@ -526,6 +556,18 @@ DTSTART:20261125T090000Z\r\nDTEND:20261125T100000Z\r\nEND:VEVENT\r\nEND:VCALENDA
         assert_eq!(cal.events[1].summary, "Moved", "changed occurrence untouched");
         assert_eq!(out.matches("SUMMARY:").count(), 2);
         assert_eq!(out.matches("\r\nSEQUENCE:").count(), 1);
+
+        // Clearing a field removes it.
+        let mut placed = Draft::from_ics(&out).unwrap();
+        placed.location = "Sala 3".into();
+        placed.description = "Agenda".into();
+        let with = update(&out, &placed);
+        assert_eq!(ical::parse(&with).events[0].location, "Sala 3");
+        placed.location.clear();
+        placed.description = "  ".into();
+        let cleared = ical::parse(&update(&with, &placed));
+        assert_eq!(cleared.events[0].location, "");
+        assert_eq!(cleared.events[0].description, "");
 
         // Choosing "never" drops the rule.
         d.repeat = Repeat::Never;

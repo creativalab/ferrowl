@@ -1,6 +1,7 @@
 //! Bridge between the UI (async, iced) and IMAP/SMTP (blocking).
 //! A single shared IMAP session, guarded by a mutex; if the connection
-//! drops, the session is recreated and the operation retried once.
+//! drops, the session is recreated and the operation retried once (not
+//! for commands that must not run twice, see `with_session_once`).
 
 use crate::cache;
 use crate::config::Account;
@@ -19,6 +20,9 @@ struct Inner {
     gmail: bool,
     /// Gmail: the user's labels (raw names of the label folders).
     gmail_labels: Vec<String>,
+    /// The server moves messages itself (MOVE); without it a move is
+    /// COPY + delete, which must not be repeated.
+    has_move: bool,
 }
 
 #[derive(Clone, Default)]
@@ -30,6 +34,13 @@ pub struct Backend {
     gmail: Arc<AtomicBool>,
     /// Held while the rules run (see [Backend::apply_rules]).
     rules_running: Arc<tokio::sync::Mutex<()>>,
+    /// The same as `Inner::account`, readable without waiting for a server
+    /// command in progress (async code must not block on the main lock).
+    current: Arc<Mutex<Option<Account>>>,
+    /// Set by [Backend::for_account]: the address the caller meant; every
+    /// command checks it under the lock, so it never runs on an account
+    /// connected in the meantime.
+    expected: Option<Arc<str>>,
 }
 
 /// Reloads the calendars from the server after a change (errors only
@@ -132,9 +143,104 @@ fn guarded<T>(
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| op(session))).ok()
 }
 
+/// Runs `op` on the shared session, or on a new one if there is none or
+/// the connection was lost (only for `repeatable` commands once it was
+/// sent: see `Backend::with_session_once`).
+fn run_on_session<T>(
+    g: &mut Inner,
+    account: &Account,
+    repeatable: bool,
+    op: &impl Fn(&mut ImapSession) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    if !repeatable
+        && let Some(s) = g.session.as_mut()
+        && s.noop().is_err()
+    {
+        g.session = None;
+    }
+    if let Some(s) = g.session.as_mut() {
+        match guarded(s, op) {
+            Some(Ok(v)) => return Ok(v),
+            Some(Err(e)) if !is_connection_error(&e) => {
+                // Out of step with the server: the next command
+                // starts on a new connection.
+                if !session_still_usable(&e) {
+                    // Development builds: which answer it was.
+                    if cfg!(debug_assertions) {
+                        eprintln!("imap: new connection after: {e:#}");
+                    }
+                    g.session = None;
+                }
+                return Err(e);
+            }
+            // Lost on the way: the server may have run it already.
+            Some(Err(e)) if !repeatable => {
+                g.session = None;
+                return Err(e);
+            }
+            None if !repeatable => {
+                g.session = None;
+                return Err(anyhow::anyhow!(generic_error()));
+            }
+            // Connection lost, or the library panicked: once more
+            // on a new connection.
+            _ => g.session = None,
+        }
+    }
+    let mut session = mail::connect(account)?;
+    match guarded(&mut session, op) {
+        Some(Ok(v)) => {
+            g.session = Some(session);
+            Ok(v)
+        }
+        Some(Err(e)) => {
+            if session_still_usable(&e) {
+                g.session = Some(session);
+            }
+            Err(e)
+        }
+        None => Err(anyhow::anyhow!(generic_error())),
+    }
+}
+
 impl Backend {
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The same engine, but its commands only run while `email` is the
+    /// connected account: the phones capture the account when the user
+    /// acts, and a deferred action (an undo window, a refresh finishing
+    /// late) must not land on the account switched to since. They fail
+    /// with an error instead.
+    pub fn for_account(&self, email: &str) -> Backend {
+        Backend {
+            expected: Some(email.trim().to_lowercase().into()),
+            ..self.clone()
+        }
+    }
+
+    /// Whether `account` is the one the caller meant (see `for_account`).
+    fn is_expected(&self, account: &Account) -> bool {
+        self.expected
+            .as_deref()
+            .is_none_or(|e| account.email.trim().eq_ignore_ascii_case(e))
+    }
+
+    /// The connected account if it is the one meant; never waits for a
+    /// server command in progress.
+    fn account_now(&self) -> Res<Option<Account>> {
+        let account = self.current.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        match account {
+            Some(a) if !self.is_expected(&a) => Err(t("err_other_account").to_string()),
+            None if self.expected.is_some() => Err(t("err_other_account").to_string()),
+            a => Ok(a),
+        }
+    }
+
+    fn set_account(&self, g: &mut Inner, account: Account) {
+        *self.current.lock().unwrap_or_else(|p| p.into_inner()) = Some(account.clone());
+        g.account = Some(account);
     }
 
     /// The connected account's address (empty if none).
@@ -333,7 +439,7 @@ impl Backend {
     /// The form for a stored event (by item URL).
     pub fn event_draft(account: &Account, url: &str) -> Option<crate::events::Draft> {
         let (_, _, ics) = cache::get()?.event(&cache::account_key(account), url).ok()??;
-        crate::events::Draft::from_ics(&ics)
+        crate::ical::no_panic(|| crate::events::Draft::from_ics(&ics)).flatten()
     }
 
     /// Saves an event: changes the stored one at `url`, or creates a new
@@ -455,9 +561,7 @@ impl Backend {
         sent_folder: Option<String>,
     ) -> Res<String> {
         let account = self
-            .lock()
-            .account
-            .clone()
+            .account_now()?
             .ok_or_else(|| t("err_no_account").to_string())?;
         let mail = crate::invite::reply_mail(&account, &ics, reply).map_err(text)?;
         let warning = self.send(mail, sent_folder).await?;
@@ -531,8 +635,13 @@ impl Backend {
     }
 
     /// The connected account, if it reads mail with POP3.
+    /// (None when it is not the account meant: the IMAP path then fails
+    /// with the right error.)
     fn pop3_account(&self) -> Option<Account> {
-        self.lock().account.clone().filter(Account::is_pop3)
+        self.lock()
+            .account
+            .clone()
+            .filter(|a| a.is_pop3() && self.is_expected(a))
     }
 
     async fn blocking<T, F>(&self, f: F) -> Res<T>
@@ -548,49 +657,47 @@ impl Backend {
     }
 
     fn with_session_sync<T>(&self, op: impl Fn(&mut ImapSession) -> anyhow::Result<T>) -> Res<T> {
-        let mut g = self.lock();
-        let account = g.account.clone().ok_or_else(|| t("err_no_account").to_string())?;
+        self.session_op(true, op)
+    }
+
+    /// For commands that must not run twice (APPEND, COPY): a connection
+    /// lost while one was on its way may have run it already, so it is not
+    /// repeated on a new one. A connection that went stale while idle is
+    /// noticed first, with a NOOP, and replaced before the command.
+    fn with_session_once<T>(&self, op: impl Fn(&mut ImapSession) -> anyhow::Result<T>) -> Res<T> {
+        self.session_op(false, op)
+    }
+
+    /// Moves: repeatable with MOVE, not as COPY + delete.
+    fn with_session_moving<T>(&self, op: impl Fn(&mut ImapSession) -> anyhow::Result<T>) -> Res<T> {
+        let repeatable = self.lock().has_move;
+        self.session_op(repeatable, op)
+    }
+
+    fn session_op<T>(&self, repeatable: bool, op: impl Fn(&mut ImapSession) -> anyhow::Result<T>) -> Res<T> {
         let mut attempt = 0u32;
+        let mut first: Option<String> = None;
         loop {
-            let result: anyhow::Result<T> = (|| {
-                if let Some(s) = g.session.as_mut() {
-                    match guarded(s, &op) {
-                        Some(Ok(v)) => return Ok(v),
-                        Some(Err(e)) if !is_connection_error(&e) => {
-                            // Out of step with the server: the next command
-                            // starts on a new connection.
-                            if !session_still_usable(&e) {
-                                // Development builds: which answer it was.
-                                if cfg!(debug_assertions) {
-                                    eprintln!("imap: new connection after: {e:#}");
-                                }
-                                g.session = None;
-                            }
-                            return Err(e);
-                        }
-                        // Connection lost, or the library panicked: once more
-                        // on a new connection.
-                        _ => g.session = None,
-                    }
+            let result = {
+                let mut g = self.lock();
+                let account = g.account.clone().ok_or_else(|| t("err_no_account").to_string())?;
+                // Checked under the lock that `connect` takes too: the
+                // command runs on the account meant or not at all.
+                if !self.is_expected(&account) {
+                    return Err(t("err_other_account").to_string());
                 }
-                let mut session = mail::connect(&account)?;
-                match guarded(&mut session, &op) {
-                    Some(Ok(v)) => {
-                        g.session = Some(session);
-                        Ok(v)
-                    }
-                    Some(Err(e)) => {
-                        if session_still_usable(&e) {
-                            g.session = Some(session);
-                        }
-                        Err(e)
-                    }
-                    None => Err(anyhow::anyhow!("{}", t("err_generic"))),
+                // Nor does a retry after waiting (without the lock) run on
+                // an account connected meanwhile.
+                let email = account.email.trim().to_lowercase();
+                if *first.get_or_insert_with(|| email.clone()) != email {
+                    return Err(t("err_other_account").to_string());
                 }
-            })();
+                run_on_session(&mut g, &account, repeatable, &op)
+            };
             match result {
                 Ok(v) => return Ok(v),
-                // The server asked to slow down: wait and try again a few times.
+                // The server asked to slow down: wait (without holding the
+                // lock, other commands go on) and try again a few times.
                 Err(e) => match throttle_delay(&e) {
                     Some(delay) if attempt < MAX_THROTTLE_RETRIES => {
                         attempt += 1;
@@ -615,14 +722,17 @@ impl Backend {
                     let _ = old.logout();
                 }
                 g.gmail = false;
+                g.has_move = false;
                 b.gmail.store(false, Ordering::Relaxed);
-                g.account = Some(account);
+                b.set_account(&mut g, account);
                 return Ok(local::folders());
             }
             let mut session = mail::connect(&account).map_err(text)?;
             let folders = mail::list_folders(&mut session).map_err(text)?;
             let gmail = mail::has_gmail_labels(&mut session);
+            let has_move = mail::has_move(&mut session);
             let mut g = b.lock();
+            g.has_move = has_move;
             g.gmail = gmail;
             b.gmail.store(gmail, Ordering::Relaxed);
             g.gmail_labels = if gmail {
@@ -642,7 +752,7 @@ impl Backend {
             if let Some(mut old) = g.session.take() {
                 let _ = old.logout();
             }
-            g.account = Some(account);
+            b.set_account(&mut g, account);
             g.session = Some(session);
             Ok(folders)
         })
@@ -676,10 +786,7 @@ impl Backend {
                 return Err(t("err_no_account").to_string());
             }
             let own = crate::crypto::own_key(&account.email).map(|k| (k, account.pgp_passphrase.clone()));
-            let keys = mail::PgpKeys {
-                own,
-                contact: &crate::crypto::contact_key,
-            };
+            let keys = mail::PgpKeys::stored(own);
             let mut s = mail::connect(&account).map_err(text)?;
             let msg = mail::peek_message(&mut s, &folder, uid, &keys).map_err(text);
             let _ = s.logout();
@@ -706,9 +813,14 @@ impl Backend {
         .map_err(|e| crate::errors::humanize(&format!("{e:#}")))?
     }
 
-    /// Cache key of the connected account.
+    /// Cache key of the connected account (none if it is not the one
+    /// meant: its cache is left alone).
     fn key(&self) -> Option<String> {
-        self.lock().account.as_ref().map(cache::account_key)
+        self.lock()
+            .account
+            .as_ref()
+            .filter(|a| self.is_expected(a))
+            .map(cache::account_key)
     }
 
     /// Runs a cache update; failures only disable that update (the cache is
@@ -823,7 +935,22 @@ impl Backend {
         present.extend(delta.new.iter().map(|h| h.uid));
         c.store_headers(&key, folder, &delta.new, &own).map_err(text)?;
         c.set_flags_many(&key, folder, &delta.flags).map_err(text)?;
-        c.prune(&key, folder, window_min, &present).map_err(text)?;
+        // The window only covers the newest messages; older ones deleted
+        // elsewhere would stay in the cache (and in scrolling and search)
+        // forever. An empty folder is simply emptied; when the cache holds
+        // more than the server, the server's UIDs say which ones to drop.
+        let reconcile = if delta.exists == 0 {
+            Some(Vec::new())
+        } else if c.folder_stats(&key, folder).is_ok_and(|(n, _)| n > delta.exists) {
+            self.with_session_sync(|s| mail::all_uids(s, folder)).ok()
+        } else {
+            None
+        };
+        match reconcile {
+            Some(all) => c.prune(&key, folder, 0, &all),
+            None => c.prune(&key, folder, window_min, &present),
+        }
+        .map_err(text)?;
         let headers = c.headers(&key, folder, mail::PAGE_SIZE).map_err(text)?;
         let shown = headers.len() as u32;
         let first_seq = delta.exists.saturating_sub(shown.saturating_sub(1)).max(1);
@@ -932,10 +1059,7 @@ impl Backend {
             let own = account
                 .as_ref()
                 .and_then(|a| crate::crypto::own_key(&a.email).map(|k| (k, a.pgp_passphrase.clone())));
-            let keys = mail::PgpKeys {
-                own,
-                contact: &crate::crypto::contact_key,
-            };
+            let keys = mail::PgpKeys::stored(own);
             if let Some(account) = b.pop3_account() {
                 let raw = local_op(&account, |s, key| s.raw(key, uid))?
                     .ok_or_else(|| t("err_not_found").to_string())?;
@@ -1019,7 +1143,7 @@ impl Backend {
                     uids.iter().try_for_each(|&u| s.move_to(key, u, &target))
                 });
             }
-            b.with_session_sync(|s| mail::move_message(s, &folder, &uids, &target))?;
+            b.with_session_moving(|s| mail::move_message(s, &folder, &uids, &target))?;
             b.cache(|c, key| uids.iter().try_for_each(|&u| c.remove(key, &folder, u)));
             Ok(())
         })
@@ -1040,7 +1164,7 @@ impl Backend {
                 })
                 .map(|_| local::ARCHIVE.to_string());
             }
-            b.with_session_sync(|s| {
+            b.with_session_moving(|s| {
                 let target = match folders.iter().find(|f| f.kind == FolderKind::Archive) {
                     Some(f) => f.name.clone(),
                     None => mail::create_folder(s, &folders, "Archive")?,
@@ -1073,7 +1197,7 @@ impl Backend {
                 })
                 .map(|_| to.to_string());
             }
-            b.with_session_sync(|s| {
+            b.with_session_moving(|s| {
                 let target = if spam {
                     match folders.iter().find(|f| f.kind == FolderKind::Spam) {
                         Some(f) => f.name.clone(),
@@ -1204,7 +1328,7 @@ impl Backend {
         let inbox = folders
             .iter()
             .any(|f| f.name == folder && f.kind == FolderKind::Inbox);
-        let Some(account) = self.lock().account.clone() else {
+        let Some(account) = self.account_now()? else {
             return Ok(Default::default());
         };
         let (Some(newest), true) = (headers.iter().map(|h| h.uid).max(), inbox) else {
@@ -1283,7 +1407,7 @@ impl Backend {
             FolderKind::Spam => false,
             _ => return Ok(Vec::new()),
         };
-        let Some(account) = self.lock().account.clone() else {
+        let Some(account) = self.account_now()? else {
             return Ok(Vec::new());
         };
         let uids = Self::ruled(&account, &headers, to_spam);
@@ -1318,6 +1442,9 @@ impl Backend {
                 .account
                 .clone()
                 .ok_or_else(|| t("err_no_account").to_string())?;
+            if !b.is_expected(&account) {
+                return Err(t("err_other_account").to_string());
+            }
             let raw = mail::send(&account, &mail).map_err(text)?;
             let to: Vec<(String, String)> = [&mail.to, &mail.cc, &mail.bcc]
                 .iter()
@@ -1335,7 +1462,7 @@ impl Backend {
             let Some(folder) = sent_folder else {
                 return Ok(None);
             };
-            match b.with_session_sync(|s| mail::append_sent(s, &folder, &raw)) {
+            match b.with_session_once(|s| mail::append_sent(s, &folder, &raw)) {
                 Ok(()) => Ok(None),
                 Err(e) => Ok(Some(e)),
             }
@@ -1457,8 +1584,30 @@ fn pop3_sync(account: &Account, max: usize) -> anyhow::Result<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::throttle_delay;
+    use super::{Account, Backend, throttle_delay};
     use std::time::Duration;
+
+    #[test]
+    fn commands_for_another_account_fail() {
+        let b = Backend::default();
+        let account = |email: &str| Account {
+            email: email.into(),
+            ..Default::default()
+        };
+        // Nothing connected yet: a command meant for an account fails.
+        assert!(b.for_account("a@x.it").account_now().is_err());
+        b.set_account(&mut b.lock(), account("b@x.it"));
+        let other = b.for_account("a@x.it");
+        assert!(other.account_now().is_err());
+        assert!(other.key().is_none(), "its cache is left alone");
+        assert!(other.with_session_sync(|_| Ok(())).is_err());
+        assert!(other.pop3_account().is_none());
+        let same = b.for_account(" B@X.it");
+        assert_eq!(same.account_now().unwrap().unwrap().email, "b@x.it");
+        assert!(same.key().is_some());
+        // Without an expected account, whatever is connected.
+        assert!(b.account_now().unwrap().is_some());
+    }
 
     #[test]
     fn recognizes_throttling() {

@@ -2640,7 +2640,9 @@ impl App {
     fn reply_draft(&self, msg: &FullMessage) -> Compose {
         let mut c = Compose::new(ComposeMode::Reply);
         c.rich = self.config.ui.rich_compose;
-        c.to = msg.from_address.clone();
+        // Reply-To when the message has one (mailing lists, support mail).
+        let (to, _) = crate::mail::reply_recipients(&msg.from_address, &msg.reply_to, &[], &[], false, "");
+        c.to = to.join(", ");
         c.subject = if msg.subject.to_lowercase().starts_with("re:") {
             msg.subject.clone()
         } else {
@@ -4122,24 +4124,18 @@ impl App {
             Message::ReplyAll => {
                 if let Some(m) = &self.message {
                     let mut c = self.reply_draft(m);
-                    // Everyone else on the thread, without ourselves or duplicates.
-                    let me = self
-                        .config
-                        .account()
-                        .map(|a| a.email.to_lowercase())
-                        .unwrap_or_default();
-                    let mut seen: HashSet<String> = [me, m.from_address.to_lowercase()].into_iter().collect();
-                    let mut keep = |list: &[String]| -> Vec<String> {
-                        list.iter()
-                            .filter(|a| seen.insert(a.to_lowercase()))
-                            .cloned()
-                            .collect()
-                    };
-                    let to = keep(&m.to_addrs);
-                    let cc = keep(&m.cc_addrs);
-                    if !to.is_empty() {
-                        c.to = format!("{}, {}", c.to, to.join(", "));
-                    }
+                    // Reply-To (or the sender) and everyone else on the
+                    // thread, without ourselves or duplicates.
+                    let me = self.config.account().map(|a| a.email.clone()).unwrap_or_default();
+                    let (to, cc) = crate::mail::reply_recipients(
+                        &m.from_address,
+                        &m.reply_to,
+                        &m.to_addrs,
+                        &m.cc_addrs,
+                        true,
+                        &me,
+                    );
+                    c.to = to.join(", ");
                     if !cc.is_empty() {
                         c.cc = cc.join(", ");
                         c.show_cc = true;
@@ -5315,6 +5311,7 @@ impl App {
                         cc: String::new(),
                         to_addrs: Vec::new(),
                         cc_addrs: Vec::new(),
+                        reply_to: Vec::new(),
                         subject: h.subject.clone(),
                         timestamp: h.timestamp,
                         message_id: None,

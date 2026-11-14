@@ -368,6 +368,10 @@ pub enum Signature {
     Valid,
     Invalid,
     UnknownKey,
+    /// Signed with a key only known from Autocrypt headers.
+    Unverified,
+    /// Signed with a different key than the one held for the sender.
+    KeyChanged,
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
@@ -388,6 +392,9 @@ pub struct Message {
     pub cc: String,
     pub to_addresses: Vec<String>,
     pub cc_addresses: Vec<String>,
+    /// Reply-To addresses (replies go there instead of `from_address`;
+    /// `reply_draft` already does it). Empty when the message has none.
+    pub reply_to_addresses: Vec<String>,
     pub subject: String,
     pub timestamp: i64,
     pub message_id: Option<String>,
@@ -503,6 +510,7 @@ impl From<mail::FullMessage> for Message {
             cc: m.cc,
             to_addresses: m.to_addrs,
             cc_addresses: m.cc_addrs,
+            reply_to_addresses: m.reply_to,
             subject: m.subject,
             timestamp: m.timestamp,
             message_id: m.message_id,
@@ -527,6 +535,8 @@ impl From<mail::FullMessage> for Message {
                     mail::SigState::Valid => Signature::Valid,
                     mail::SigState::Invalid => Signature::Invalid,
                     mail::SigState::UnknownKey => Signature::UnknownKey,
+                    mail::SigState::Unverified => Signature::Unverified,
+                    mail::SigState::KeyChanged => Signature::KeyChanged,
                 }),
                 error: p.error,
             }),
@@ -1261,18 +1271,18 @@ fn blank_draft() -> Outgoing {
 
 /// A reply, as the desktop writes it: "Re:" subject, quoted text with a
 /// translated "On <date>, <name> wrote:" line, threading headers.
-/// `reply_all` adds the other recipients (never `own_address`).
+/// To the Reply-To addresses when the message has them, otherwise the
+/// sender; `reply_all` adds the other recipients (never `own_address`).
 #[uniffi::export]
 pub fn reply_draft(message: Message, reply_all: bool, own_address: String) -> Outgoing {
-    let own = own_address.trim().to_lowercase();
-    let not_me = |a: &&String| a.trim().to_lowercase() != own;
-    let mut to = vec![message.from_address.clone()];
-    let mut cc = Vec::new();
-    if reply_all {
-        to.extend(message.to_addresses.iter().filter(not_me).cloned());
-        cc.extend(message.cc_addresses.iter().filter(not_me).cloned());
-    }
-    to.dedup();
+    let (to, cc) = mail::reply_recipients(
+        &message.from_address,
+        &message.reply_to_addresses,
+        &message.to_addresses,
+        &message.cc_addresses,
+        reply_all,
+        &own_address,
+    );
     let subject = if message.subject.to_lowercase().starts_with("re:") {
         message.subject.clone()
     } else {
@@ -1395,7 +1405,17 @@ impl Engine {
 
     /// Newest messages from the server (POP3: downloads new mail first).
     pub async fn headers(&self, folder_id: String) -> Result<HeaderPage> {
-        let (headers, first_seq) = self.backend.headers(folder_id).await?;
+        self.headers_for_account(String::new(), folder_id).await
+    }
+
+    /// `headers`, only if `account` (an address) is still the connected
+    /// account; otherwise an error and nothing is stored. The same holds
+    /// for every `…_for_account` method: the apps pass the account the
+    /// user acted on, so a deferred action (an undo window, a refresh
+    /// finishing after an account switch) never lands on another one.
+    /// An empty `account` checks nothing (like the plain method).
+    pub async fn headers_for_account(&self, account: String, folder_id: String) -> Result<HeaderPage> {
+        let (headers, first_seq) = self.backend_for(&account).headers(folder_id).await?;
         Ok(HeaderPage {
             headers: headers.into_iter().map(Header::from).collect(),
             more: (first_seq > 1).then_some(first_seq),
@@ -1696,21 +1716,76 @@ impl Engine {
     /// Marks several messages read or unread with one server command.
     /// Stars or unstars messages (IMAP \\Flagged).
     pub async fn set_flagged_many(&self, folder_id: String, uids: Vec<u32>, flagged: bool) -> Result<()> {
-        Ok(self.backend.set_flagged_many(folder_id, uids, flagged).await?)
+        self.set_flagged_many_for_account(String::new(), folder_id, uids, flagged)
+            .await
+    }
+
+    pub async fn set_flagged_many_for_account(
+        &self,
+        account: String,
+        folder_id: String,
+        uids: Vec<u32>,
+        flagged: bool,
+    ) -> Result<()> {
+        Ok(self
+            .backend_for(&account)
+            .set_flagged_many(folder_id, uids, flagged)
+            .await?)
     }
 
     pub async fn set_seen_many(&self, folder_id: String, uids: Vec<u32>, seen: bool) -> Result<()> {
-        Ok(self.backend.set_seen_many(folder_id, uids, seen).await?)
+        self.set_seen_many_for_account(String::new(), folder_id, uids, seen)
+            .await
+    }
+
+    pub async fn set_seen_many_for_account(
+        &self,
+        account: String,
+        folder_id: String,
+        uids: Vec<u32>,
+        seen: bool,
+    ) -> Result<()> {
+        Ok(self
+            .backend_for(&account)
+            .set_seen_many(folder_id, uids, seen)
+            .await?)
     }
 
     pub async fn move_many(&self, folder_id: String, uids: Vec<u32>, target_id: String) -> Result<()> {
-        Ok(self.backend.move_many(folder_id, uids, target_id).await?)
+        self.move_many_for_account(String::new(), folder_id, uids, target_id)
+            .await
+    }
+
+    pub async fn move_many_for_account(
+        &self,
+        account: String,
+        folder_id: String,
+        uids: Vec<u32>,
+        target_id: String,
+    ) -> Result<()> {
+        Ok(self
+            .backend_for(&account)
+            .move_many(folder_id, uids, target_id)
+            .await?)
     }
 
     /// Moves several messages to the Archive (created if missing).
     pub async fn archive_many(&self, folder_id: String, uids: Vec<u32>) -> Result<String> {
-        let folders = lock(&self.folders).clone();
-        Ok(self.backend.archive_many(folder_id, uids, folders).await?)
+        self.archive_many_for_account(String::new(), folder_id, uids)
+            .await
+    }
+
+    pub async fn archive_many_for_account(
+        &self,
+        account: String,
+        folder_id: String,
+        uids: Vec<u32>,
+    ) -> Result<String> {
+        let folders = self.folders_for(&account)?;
+        Ok(self
+            .backend_for(&account)
+            .archive_many(folder_id, uids, folders)
+            .await?)
     }
 
     /// Whether the account is Gmail (messages have labels).
@@ -1726,19 +1801,58 @@ impl Engine {
         label: String,
         on: bool,
     ) -> Result<()> {
-        Ok(self.backend.set_label_many(folder_id, uids, label, on).await?)
+        self.set_label_many_for_account(String::new(), folder_id, uids, label, on)
+            .await
+    }
+
+    pub async fn set_label_many_for_account(
+        &self,
+        account: String,
+        folder_id: String,
+        uids: Vec<u32>,
+        label: String,
+        on: bool,
+    ) -> Result<()> {
+        Ok(self
+            .backend_for(&account)
+            .set_label_many(folder_id, uids, label, on)
+            .await?)
     }
 
     /// Moves messages to Spam (marked $Junk for the server's filter).
     pub async fn report_spam(&self, folder_id: String, uids: Vec<u32>) -> Result<String> {
-        let folders = lock(&self.folders).clone();
-        Ok(self.backend.report_spam(folder_id, uids, folders).await?)
+        self.report_spam_for_account(String::new(), folder_id, uids).await
+    }
+
+    pub async fn report_spam_for_account(
+        &self,
+        account: String,
+        folder_id: String,
+        uids: Vec<u32>,
+    ) -> Result<String> {
+        let folders = self.folders_for(&account)?;
+        Ok(self
+            .backend_for(&account)
+            .report_spam(folder_id, uids, folders)
+            .await?)
     }
 
     /// Moves messages from Spam back to the inbox (marked $NotJunk).
     pub async fn not_spam(&self, folder_id: String, uids: Vec<u32>) -> Result<String> {
-        let folders = lock(&self.folders).clone();
-        Ok(self.backend.not_spam(folder_id, uids, folders).await?)
+        self.not_spam_for_account(String::new(), folder_id, uids).await
+    }
+
+    pub async fn not_spam_for_account(
+        &self,
+        account: String,
+        folder_id: String,
+        uids: Vec<u32>,
+    ) -> Result<String> {
+        let folders = self.folders_for(&account)?;
+        Ok(self
+            .backend_for(&account)
+            .not_spam(folder_id, uids, folders)
+            .await?)
     }
 
     /// Blocks (`allow` false) or allows a sender: an address or "@domain".
@@ -1798,9 +1912,22 @@ impl Engine {
 
     /// Applies the rules to the inbox's new messages (each once).
     pub async fn apply_rules(&self, folder_id: String, headers: Vec<Header>) -> Result<RulesOutcome> {
-        let folders = lock(&self.folders).clone();
+        self.apply_rules_for_account(String::new(), folder_id, headers)
+            .await
+    }
+
+    pub async fn apply_rules_for_account(
+        &self,
+        account: String,
+        folder_id: String,
+        headers: Vec<Header>,
+    ) -> Result<RulesOutcome> {
+        let folders = self.folders_for(&account)?;
         let core: Vec<mail::Header> = headers.iter().map(mail::Header::from).collect();
-        let plan = self.backend.apply_rules(folder_id, core, folders).await?;
+        let plan = self
+            .backend_for(&account)
+            .apply_rules(folder_id, core, folders)
+            .await?;
         // A failed action is left out of the outcome; what worked still
         // reaches the list on screen.
         if let Some(e) = &plan.error {
@@ -1814,13 +1941,39 @@ impl Engine {
     }
 
     pub async fn apply_sender_rules(&self, folder_id: String, headers: Vec<Header>) -> Result<Vec<u32>> {
-        let folders = lock(&self.folders).clone();
+        self.apply_sender_rules_for_account(String::new(), folder_id, headers)
+            .await
+    }
+
+    pub async fn apply_sender_rules_for_account(
+        &self,
+        account: String,
+        folder_id: String,
+        headers: Vec<Header>,
+    ) -> Result<Vec<u32>> {
+        let folders = self.folders_for(&account)?;
         let core: Vec<mail::Header> = headers.iter().map(mail::Header::from).collect();
-        Ok(self.backend.apply_sender_rules(folder_id, core, folders).await?)
+        Ok(self
+            .backend_for(&account)
+            .apply_sender_rules(folder_id, core, folders)
+            .await?)
     }
 
     pub async fn delete_forever_many(&self, folder_id: String, uids: Vec<u32>) -> Result<()> {
-        Ok(self.backend.delete_forever_many(folder_id, uids).await?)
+        self.delete_forever_many_for_account(String::new(), folder_id, uids)
+            .await
+    }
+
+    pub async fn delete_forever_many_for_account(
+        &self,
+        account: String,
+        folder_id: String,
+        uids: Vec<u32>,
+    ) -> Result<()> {
+        Ok(self
+            .backend_for(&account)
+            .delete_forever_many(folder_id, uids)
+            .await?)
     }
 
     /// Sends and stores a copy in Sent. Returns a warning if the message
@@ -1871,6 +2024,31 @@ impl Engine {
 }
 
 /// Poisoned locks only mean another call panicked; the data is still usable.
+impl Engine {
+    /// The backend, checking every command against `account` (an address;
+    /// empty = no check). See `headers_for_account`.
+    fn backend_for(&self, account: &str) -> Backend {
+        if account.trim().is_empty() {
+            self.backend.clone()
+        } else {
+            self.backend.for_account(account)
+        }
+    }
+
+    /// The connected account's folders, if it is `account` (empty = any):
+    /// another account's folder list would pick the wrong Archive or Spam.
+    fn folders_for(&self, account: &str) -> Result<Vec<mail::Folder>> {
+        let same = account.trim().is_empty()
+            || lock(&self.account)
+                .as_ref()
+                .is_some_and(|a| a.email.trim().eq_ignore_ascii_case(account.trim()));
+        if !same {
+            return Err(i18n::t("err_other_account").to_string().into());
+        }
+        Ok(lock(&self.folders).clone())
+    }
+}
+
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -1896,6 +2074,7 @@ mod tests {
             cc: String::new(),
             to_addresses: vec!["me@example.org".into(), "bob@example.org".into()],
             cc_addresses: vec!["carl@example.org".into()],
+            reply_to_addresses: Vec::new(),
             subject: "Engines".into(),
             timestamp: 1_790_000_000,
             message_id: Some("<1@x>".into()),
@@ -1947,6 +2126,19 @@ mod tests {
 
         let all = reply_draft(sample(), true, "ME@example.org".into());
         assert_eq!(all.to, "ada@example.org, bob@example.org");
+        assert_eq!(all.cc, "carl@example.org");
+
+        // Reply-To wins over From, in both kinds of reply.
+        let list = Message {
+            reply_to_addresses: vec!["list@example.org".into()],
+            ..sample()
+        };
+        assert_eq!(
+            reply_draft(list.clone(), false, "me@example.org".into()).to,
+            "list@example.org"
+        );
+        let all = reply_draft(list, true, "me@example.org".into());
+        assert_eq!(all.to, "list@example.org, bob@example.org");
         assert_eq!(all.cc, "carl@example.org");
 
         let f = forward_draft(sample());
