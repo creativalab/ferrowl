@@ -368,6 +368,10 @@ pub enum Signature {
     Valid,
     Invalid,
     UnknownKey,
+    /// Signed with a key only known from Autocrypt headers.
+    Unverified,
+    /// Signed with a different key than the one held for the sender.
+    KeyChanged,
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
@@ -527,6 +531,8 @@ impl From<mail::FullMessage> for Message {
                     mail::SigState::Valid => Signature::Valid,
                     mail::SigState::Invalid => Signature::Invalid,
                     mail::SigState::UnknownKey => Signature::UnknownKey,
+                    mail::SigState::Unverified => Signature::Unverified,
+                    mail::SigState::KeyChanged => Signature::KeyChanged,
                 }),
                 error: p.error,
             }),

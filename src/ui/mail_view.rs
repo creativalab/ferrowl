@@ -1410,6 +1410,12 @@ fn reader<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
             Some(crate::mail::SigState::UnknownKey) => {
                 tools.push(chip(t("badge_sig_unknown"), p.chip, p.text2))
             }
+            Some(crate::mail::SigState::Unverified) => {
+                tools.push(chip(t("badge_sig_unverified"), p.chip, p.text2))
+            }
+            Some(crate::mail::SigState::KeyChanged) => {
+                tools.push(chip(t("badge_sig_key_changed"), warn_bg, p.danger))
+            }
             None => {}
         }
     }

@@ -264,12 +264,18 @@ pub struct FullMessage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SigState {
-    /// Signed with the key we hold for the sender.
+    /// Signed with the key imported for the sender.
     Valid,
     /// Signature does not match the content or the sender's key.
     Invalid,
     /// Signed, but we have no key for the sender.
     UnknownKey,
+    /// Signed with a key only known from Autocrypt headers: anyone could
+    /// have sent it with this From address.
+    Unverified,
+    /// Signed with a key other than the one we hold for the sender (the
+    /// one offered in the message's Autocrypt header).
+    KeyChanged,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -280,17 +286,46 @@ pub struct PgpStatus {
     pub error: Option<String>,
 }
 
-/// Keys used to open a message: our secret key (+ passphrase) and a lookup
+type KeyLookup<'a> = &'a dyn Fn(&str) -> Option<pgp::composed::SignedPublicKey>;
+
+/// Keys used to open a message: our secret key (+ passphrase) and lookups
 /// of correspondents' public keys.
 pub struct PgpKeys<'a> {
     pub own: Option<(pgp::composed::SignedSecretKey, String)>,
-    pub contact: &'a dyn Fn(&str) -> Option<pgp::composed::SignedPublicKey>,
+    /// Keys imported by hand (trusted).
+    pub contact: KeyLookup<'a>,
+    /// Keys learned from Autocrypt headers.
+    pub autocrypt: KeyLookup<'a>,
+    /// Stores a key offered in an Autocrypt header.
+    pub learn: &'a dyn Fn(&str, &pgp::composed::SignedPublicKey),
+}
+
+impl PgpKeys<'static> {
+    /// The keys stored on this device.
+    pub fn stored(own: Option<(pgp::composed::SignedSecretKey, String)>) -> Self {
+        PgpKeys {
+            own,
+            contact: &crate::crypto::contact_key,
+            autocrypt: &crate::crypto::autocrypt_key,
+            learn: &learn_stored,
+        }
+    }
+}
+
+fn learn_stored(from: &str, key: &pgp::composed::SignedPublicKey) {
+    crate::crypto::learn_autocrypt(from, key);
 }
 
 /// Unwraps PGP/MIME (RFC 3156). Returns the entity to display instead of
 /// the raw message (decrypted content, or the signed part without the
-/// signature) and the status; `(None, None)` for ordinary mail.
-pub fn unwrap_pgp(raw: &[u8], from: &str, keys: &PgpKeys) -> (Option<Vec<u8>>, Option<PgpStatus>) {
+/// signature) and the status; `(None, None)` for ordinary mail. `offered`
+/// is the key in the message's Autocrypt header, if any.
+pub fn unwrap_pgp(
+    raw: &[u8],
+    from: &str,
+    keys: &PgpKeys,
+    offered: Option<&pgp::composed::SignedPublicKey>,
+) -> (Option<Vec<u8>>, Option<PgpStatus>) {
     let Some(msg) = MessageParser::default().parse(raw) else {
         return (None, None);
     };
@@ -325,7 +360,7 @@ pub fn unwrap_pgp(raw: &[u8], from: &str, keys: &PgpKeys) -> (Option<Vec<u8>>, O
             match crate::crypto::decrypt(&data, key, pass) {
                 Ok(plain) => {
                     // Signed then encrypted: check the inner signature.
-                    let (inner, inner_status) = unwrap_pgp(&plain, from, keys);
+                    let (inner, inner_status) = unwrap_pgp(&plain, from, keys, offered);
                     status.signature = inner_status.and_then(|s| s.signature);
                     (Some(inner.unwrap_or(plain)), Some(status))
                 }
@@ -352,10 +387,20 @@ pub fn unwrap_pgp(raw: &[u8], from: &str, keys: &PgpKeys) -> (Option<Vec<u8>>, O
                 return (None, None);
             };
             let canonical = crlf(&signed);
-            let state = match (keys.contact)(&from.to_lowercase()) {
-                Some(key) if crate::crypto::verify(&canonical, &signature, &key) => SigState::Valid,
-                Some(_) => SigState::Invalid,
-                None => SigState::UnknownKey,
+            let from = from.to_lowercase();
+            let signed_by = |key: &pgp::composed::SignedPublicKey| {
+                crate::crypto::verify(&canonical, &signature, key)
+            };
+            let state = match ((keys.contact)(&from), (keys.autocrypt)(&from)) {
+                (Some(key), _) if signed_by(&key) => SigState::Valid,
+                (None, Some(key)) if signed_by(&key) => SigState::Unverified,
+                // First message from this sender: its own header's key
+                // is as good as any Autocrypt key, no better.
+                (None, None) if offered.is_some_and(signed_by) => SigState::Unverified,
+                (None, None) => SigState::UnknownKey,
+                (Some(_), Some(key)) if signed_by(&key) => SigState::KeyChanged,
+                _ if offered.is_some_and(signed_by) => SigState::KeyChanged,
+                _ => SigState::Invalid,
             };
             (
                 Some(signed),
@@ -1072,11 +1117,16 @@ pub fn parse_full(uid: u32, raw: &[u8], keys: &PgpKeys) -> Result<FullMessage> {
     let outer = MessageParser::default().parse(raw).context(t("err_unreadable"))?;
     let (from, from_address) = first_addr(outer.from());
 
-    // Autocrypt: remember the sender's key (before checking signatures).
-    for value in raw_header_values(raw, "autocrypt") {
-        crate::crypto::learn_autocrypt(&from_address, &value);
+    // Autocrypt: the key the sender offers. Signatures are checked against
+    // the keys held before this message; the offered key is stored only
+    // afterwards, and only if we hold none for the sender.
+    let offered = raw_header_values(raw, "autocrypt")
+        .iter()
+        .find_map(|value| crate::crypto::autocrypt_offer(&from_address, value));
+    let (inner, mut pgp) = unwrap_pgp(raw, &from_address, keys, offered.as_ref());
+    if let Some(key) = &offered {
+        (keys.learn)(&from_address, key);
     }
-    let (inner, mut pgp) = unwrap_pgp(raw, &from_address, keys);
     let inner_msg = inner
         .as_deref()
         .and_then(|bytes| MessageParser::default().parse(bytes));
@@ -1708,7 +1758,7 @@ fn protect(account: &Account, mail: &Outgoing, content: Part) -> Result<Part> {
         content,
         &own,
         &account.pgp_passphrase,
-        &crate::crypto::contact_key,
+        &crate::crypto::encryption_key,
     )
 }
 
@@ -2252,9 +2302,12 @@ mod tests {
         };
         let knows_alice = |a: &str| (a == "alice@example.com").then(|| alice_pub.clone());
         let knows_nobody = |_: &str| None;
+        let learns_nothing = |_: &str, _: &pgp::composed::SignedPublicKey| {};
         let bob_keys = PgpKeys {
             own: Some((bob.clone(), String::new())),
             contact: &knows_alice,
+            autocrypt: &knows_nobody,
+            learn: &learns_nothing,
         };
 
         // Signed only.
@@ -2268,6 +2321,8 @@ mod tests {
         let unknown = PgpKeys {
             own: None,
             contact: &knows_nobody,
+            autocrypt: &knows_nobody,
+            learn: &learns_nothing,
         };
         assert_eq!(
             parse_full(1, &raw, &unknown).unwrap().pgp.unwrap().signature,
@@ -2304,11 +2359,76 @@ mod tests {
         let eve_keys = PgpKeys {
             own: Some((eve, String::new())),
             contact: &knows_nobody,
+            autocrypt: &knows_nobody,
+            learn: &learns_nothing,
         };
         let m = parse_full(1, &raw, &eve_keys).unwrap();
         assert!(m.pgp.unwrap().error.is_some());
         assert!(!m.body.contains("prova"));
+        // Alice's key only known from Autocrypt: signed, but unverified.
+        out.encrypt = false;
+        out.to = "Bob <bob@example.com>".into();
+        let raw = build(&out);
+        let autocrypt_alice = PgpKeys {
+            own: None,
+            contact: &knows_nobody,
+            autocrypt: &knows_alice,
+            learn: &learns_nothing,
+        };
+        assert_eq!(
+            parse_full(1, &raw, &autocrypt_alice).unwrap().pgp.unwrap().signature,
+            Some(SigState::Unverified)
+        );
+        // Eve writes as Alice, signs with her own key and offers it in an
+        // Autocrypt header: never valid, never learned over Alice's key.
+        let content = build_content(&out).unwrap();
+        let contact = |a: &str| (a == "bob@example.com").then(|| bob_pub.clone());
+        // Her key names Alice's address, so the header passes as Alice's.
+        let fake = crypto::generate("Alice", "alice@example.com", "").unwrap();
+        let content = protect_with(&out, content, &fake, "", &contact).unwrap();
+        let eve_pub = fake.to_public_key();
+        let mut keydata = Vec::new();
+        pgp::ser::Serialize::to_writer(&eve_pub, &mut keydata).unwrap();
+        use base64::Engine;
+        let header = format!(
+            "addr=alice@example.com; keydata={}",
+            base64::engine::general_purpose::STANDARD.encode(keydata)
+        );
+        let b = lettre::Message::builder()
+            .from("Alice <alice@example.com>".parse().unwrap())
+            .to("Bob <bob@example.com>".parse().unwrap())
+            .header(Autocrypt(header))
+            .subject("s");
+        let spoofed = match content {
+            Part::Single(p) => b.singlepart(p).unwrap(),
+            Part::Multi(m) => b.multipart(m).unwrap(),
+        }
+        .formatted();
+        let learned = std::cell::RefCell::new(Vec::new());
+        let remember = |a: &str, k: &pgp::composed::SignedPublicKey| {
+            learned.borrow_mut().push((a.to_string(), crate::crypto::fingerprint(k)))
+        };
+        let watching = PgpKeys {
+            own: None,
+            contact: &knows_alice,
+            autocrypt: &knows_nobody,
+            learn: &remember,
+        };
+        let m = parse_full(1, &spoofed, &watching).unwrap();
+        assert_eq!(m.pgp.unwrap().signature, Some(SigState::KeyChanged));
+        let first_contact = PgpKeys {
+            own: None,
+            contact: &knows_nobody,
+            autocrypt: &knows_nobody,
+            learn: &remember,
+        };
+        let m = parse_full(1, &spoofed, &first_contact).unwrap();
+        assert_eq!(m.pgp.unwrap().signature, Some(SigState::Unverified));
+        // parse_full offers the key; crypto::learn_autocrypt keeps keys it
+        // already holds (see crypto tests).
+        assert_eq!(learned.borrow().len(), 2);
         // Encrypting to someone without a key fails before sending.
+        out.encrypt = true;
         out.to = "carol@example.com".into();
         let content = build_content(&out).unwrap();
         let contact = |_: &str| None;

@@ -676,10 +676,7 @@ impl Backend {
                 return Err(t("err_no_account").to_string());
             }
             let own = crate::crypto::own_key(&account.email).map(|k| (k, account.pgp_passphrase.clone()));
-            let keys = mail::PgpKeys {
-                own,
-                contact: &crate::crypto::contact_key,
-            };
+            let keys = mail::PgpKeys::stored(own);
             let mut s = mail::connect(&account).map_err(text)?;
             let msg = mail::peek_message(&mut s, &folder, uid, &keys).map_err(text);
             let _ = s.logout();
@@ -932,10 +929,7 @@ impl Backend {
             let own = account
                 .as_ref()
                 .and_then(|a| crate::crypto::own_key(&a.email).map(|k| (k, a.pgp_passphrase.clone())));
-            let keys = mail::PgpKeys {
-                own,
-                contact: &crate::crypto::contact_key,
-            };
+            let keys = mail::PgpKeys::stored(own);
             if let Some(account) = b.pop3_account() {
                 let raw = local_op(&account, |s, key| s.raw(key, uid))?
                     .ok_or_else(|| t("err_not_found").to_string())?;

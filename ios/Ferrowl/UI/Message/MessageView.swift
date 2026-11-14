@@ -450,6 +450,8 @@ struct MessageBody: View {
             case .valid: out.append((t("badge_signed"), "signature", true))
             case .invalid: out.append((t("badge_sig_invalid"), "xmark.seal", false))
             case .unknownKey: out.append((t("badge_sig_unknown"), "questionmark.diamond", false))
+            case .unverified: out.append((t("badge_sig_unverified"), "questionmark.diamond", false))
+            case .keyChanged: out.append((t("badge_sig_key_changed"), "exclamationmark.triangle", false))
             case nil: break
             }
         }
