@@ -94,12 +94,32 @@ impl Store {
     }
 
     /// Registers a phone; `token` is its secret (only the hash is kept).
+    #[cfg(test)]
     pub fn add_device(&self, id: &str, token: &str, target: &Target) -> Result<()> {
-        self.lock().execute(
+        self.add_device_within(id, token, target, usize::MAX).map(|_| ())
+    }
+
+    /// Registers a phone unless there are already `max`: false then
+    /// (counted and inserted under the same lock).
+    pub fn add_device_within(&self, id: &str, token: &str, target: &Target, max: usize) -> Result<bool> {
+        let conn = self.lock();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM devices", [], |r| r.get(0))?;
+        if count >= i64::try_from(max).unwrap_or(i64::MAX) {
+            return Ok(false);
+        }
+        conn.execute(
             "INSERT INTO devices (id, token_hash, fcm_token, platform, created) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![id, hash(token), target.token, target.platform.name(), now()],
         )?;
-        Ok(())
+        Ok(true)
+    }
+
+    /// Accounts stored for all phones.
+    pub fn account_count(&self) -> Result<usize> {
+        let count: i64 = self
+            .lock()
+            .query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get(0))?;
+        Ok(usize::try_from(count).unwrap_or(0))
     }
 
     pub fn device_by_token(&self, token: &str) -> Result<Option<Device>> {
