@@ -93,6 +93,13 @@ class MailRepository @Inject constructor(
     }
 
     private val deferred = ConcurrentHashMap<Long, Deferred>()
+
+    /**
+     * Deferred actions whose time came and that are running now: switching
+     * account waits for them too (otherwise the engine moved on mid-way and
+     * the action was refused, leaving the message on the server).
+     */
+    private val running = ConcurrentHashMap<Long, Job>()
     private val nextDeferred = AtomicLong()
 
     /**
@@ -119,7 +126,13 @@ class MailRepository @Inject constructor(
         deferred[id] = job
         job.timer = scope.launch {
             delay(delayMs)
-            deferred.remove(id)?.run?.invoke()
+            val due = deferred.remove(id) ?: return@launch
+            running[id] = coroutineContext[Job]!!
+            try {
+                due.run()
+            } finally {
+                running.remove(id)
+            }
         }
         return id
     }
@@ -138,6 +151,8 @@ class MailRepository @Inject constructor(
             job.timer?.cancel()
             job.run()
         }
+        // And the ones already under way.
+        running.values.toList().forEach { it.join() }
     }
     private val _folders = MutableStateFlow<List<Folder>>(emptyList())
     private val _changes = MutableSharedFlow<Unit>(extraBufferCapacity = 8)

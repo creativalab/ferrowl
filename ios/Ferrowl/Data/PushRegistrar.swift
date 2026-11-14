@@ -318,10 +318,18 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     /// longer unread and updates the number on the icon. iOS delivers these
     /// as it sees fit, and not after the app was swiped away; the app's
     /// own checks catch up then.
-    func application(_ application: UIApplication, didReceiveRemoteNotification info: [AnyHashable: Any]) async
-        -> UIBackgroundFetchResult {
-        guard info["type"] as? String == "read",
-              let account = MailNotifications.account(pushId: info["account"] as? String) else { return .noData }
+    func application(_ application: UIApplication, didReceiveRemoteNotification info: [AnyHashable: Any],
+                     fetchCompletionHandler done: @escaping (UIBackgroundFetchResult) -> Void) {
+        // The completion-handler form: the async one hands the dictionary
+        // (not Sendable) across actors, an error with Swift 6. Only plain
+        // strings go on from here.
+        let type = info["type"] as? String
+        let pushId = info["account"] as? String
+        Task { done(await received(type: type, pushId: pushId)) }
+    }
+
+    private func received(type: String?, pushId: String?) async -> UIBackgroundFetchResult {
+        guard type == "read", let account = MailNotifications.account(pushId: pushId) else { return .noData }
         let cleared = await Self.clearRead(account)
         // Read elsewhere while the app is open: the list shows it.
         await MainActor.run { AppModel.shared?.mail.arrived(account.email) }

@@ -271,6 +271,10 @@ final class MailRepository {
     }
 
     private var deferred: [UUID: Deferred] = [:]
+    /// Deferred actions whose time came and that are running now: switching
+    /// account waits for them too (otherwise the engine moved on mid-way and
+    /// the action was refused, leaving the message on the server).
+    private var running: [UUID: Task<Void, Never>] = [:]
 
     /// Runs `action` (a server change on `account`) after `delay`, unless
     /// cancelled first (Undo). It belongs to the account, not to a screen:
@@ -295,19 +299,23 @@ final class MailRepository {
 
     private func runDeferred(_ id: UUID) async {
         guard let job = deferred.removeValue(forKey: id) else { return }
-        await job.action()
+        let task = Task { await job.action() }
+        running[id] = task
+        await task.value
+        running[id] = nil
     }
 
     /// Before connecting another account: what waits for Undo is done now,
     /// while the engine is still on its account. Also when the app leaves
     /// the screen (it may be stopped before the notice is gone).
     func flushDeferred() async {
-        guard !deferred.isEmpty else { return }
         while let (id, job) = deferred.first {
             deferred.removeValue(forKey: id)
             job.timer.cancel()
             await job.action()
         }
+        // And the ones already under way.
+        for task in Array(running.values) { await task.value }
     }
 
     /// Once per connection: the address book learns who we write to from

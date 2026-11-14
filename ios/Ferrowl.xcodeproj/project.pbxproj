@@ -21,6 +21,8 @@
 /* End PBXAggregateTarget section */
 
 /* Begin PBXBuildFile section */
+		F0000000000000000000B102 /* ferrowl_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0000000000000000000B101 /* ferrowl_ffi.swift */; };
+		F0000000000000000000B103 /* ferrowl_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0000000000000000000B101 /* ferrowl_ffi.swift */; };
 		F0000000000000000000B002 /* FerrowlNotifications.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = F0000000000000000000A005 /* FerrowlNotifications.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		F0000000000000000000B003 /* FerrowlWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = F0000000000000000000A006 /* FerrowlWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
@@ -72,6 +74,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		F0000000000000000000B101 /* ferrowl_ffi.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ferrowl_ffi.swift; path = Engine/Swift/ferrowl_ffi.swift; sourceTree = SOURCE_ROOT; };
 		F0000000000000000000A001 /* Ferrowl.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Ferrowl.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F0000000000000000000A004 /* Config/Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Config/Info.plist; sourceTree = "<group>"; };
 		F0000000000000000000A005 /* FerrowlNotifications.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = FerrowlNotifications.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -82,12 +85,6 @@
 		F0000000000000000000C001 /* Ferrowl */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = Ferrowl;
-			sourceTree = "<group>";
-		};
-		F0000000000000000000C002 /* Engine (generated) */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			name = "Engine (generated)";
-			path = Engine/Swift;
 			sourceTree = "<group>";
 		};
 		F0000000000000000000C003 /* Shared */ = {
@@ -145,7 +142,7 @@
 				F0000000000000000000C004 /* FerrowlNotifications */,
 				F0000000000000000000C005 /* FerrowlWidget */,
 				F0000000000000000000C006 /* WidgetData */,
-				F0000000000000000000C002 /* Engine (generated) */,
+				F0000000000000000000B101 /* ferrowl_ffi.swift */,
 				F0000000000000000000A004 /* Config/Info.plist */,
 				F0000000000000000000E002 /* Products */,
 			);
@@ -182,7 +179,6 @@
 			);
 			fileSystemSynchronizedGroups = (
 				F0000000000000000000C001 /* Ferrowl */,
-				F0000000000000000000C002 /* Engine (generated) */,
 				F0000000000000000000C003 /* Shared */,
 				F0000000000000000000C006 /* WidgetData */,
 			);
@@ -205,7 +201,6 @@
 				F00000000000000000002005 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
-				F0000000000000000000C002 /* Engine (generated) */,
 				F0000000000000000000C003 /* Shared */,
 				F0000000000000000000C004 /* FerrowlNotifications */,
 				F0000000000000000000C006 /* WidgetData */,
@@ -321,6 +316,7 @@
 			outputFileListPaths = (
 			);
 			outputPaths = (
+				"$(SRCROOT)/Engine/Swift/ferrowl_ffi.swift",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -334,6 +330,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F0000000000000000000B102 /* ferrowl_ffi.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -341,6 +338,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F0000000000000000000B103 /* ferrowl_ffi.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
