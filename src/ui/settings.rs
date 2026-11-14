@@ -240,9 +240,13 @@ fn general(app: &App, p: Palette) -> Element<'_, Message> {
 // ---------------------------------------------------------------- Security
 
 /// Blocked and allowed senders: two lists, each with a box to add one.
-fn senders<'a>(app: &'a App, acc: &crate::config::Account, p: Palette) -> Element<'a, Message> {
+fn senders<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
     let list = |allow: bool| -> Element<'a, Message> {
-        let entries = crate::backend::Backend::sender_rules(acc, allow);
+        let entries = if allow {
+            &app.allowed_senders
+        } else {
+            &app.blocked_senders
+        };
         let typed = if allow {
             &app.sender_input.1
         } else {
@@ -264,7 +268,7 @@ fn senders<'a>(app: &'a App, acc: &crate::config::Account, p: Palette) -> Elemen
         for e in entries {
             col = col.push(
                 dir_row(vec![
-                    text(e.clone())
+                    text(e.as_str())
                         .size(14)
                         .font(MONO)
                         .color(p.text)
@@ -273,7 +277,7 @@ fn senders<'a>(app: &'a App, acc: &crate::config::Account, p: Palette) -> Elemen
                     button(text(t("senders_remove")).size(12).color(p.danger))
                         .padding([4, 10])
                         .style(ghost(p, p.danger))
-                        .on_press(Message::RemoveSender(e))
+                        .on_press(Message::RemoveSender(e.clone()))
                         .into(),
                 ])
                 .align_y(Alignment::Center),
@@ -409,7 +413,7 @@ fn security(app: &App, p: Palette) -> Element<'_, Message> {
     column![
         title(t("section_security"), t("security_desc"), p),
         privacy,
-        senders(app, acc, p),
+        senders(app, p),
         own,
         contacts
     ]
@@ -1092,10 +1096,10 @@ fn rule_summary(app: &App, rule: &Rule) -> String {
 }
 
 fn rules(app: &App, p: Palette) -> Element<'_, Message> {
-    let Some(acc) = app.config.account() else {
+    if app.config.account().is_none() {
         return title(t("rules_title"), t("rules_desc"), p);
     };
-    let saved = crate::backend::Backend::rules(acc);
+    let saved = &app.rules;
     let mut list: Vec<Element<'_, Message>> = Vec::new();
     for (i, rule) in saved.iter().enumerate() {
         let name = if rule.name.is_empty() {

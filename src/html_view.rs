@@ -26,6 +26,11 @@ use std::time::{Duration, Instant};
 const TILE: u32 = 2048;
 /// Longest message rendered, in logical pixels.
 const MAX_HEIGHT: u32 = 40_000;
+/// Most physical pixels painted for one message (4 bytes each, and painted
+/// again on every selection change): a long, wide message on a HiDPI
+/// screen is painted at a lower scale, then cut, rather than taking
+/// gigabytes.
+const MAX_PIXELS: u64 = 40_000_000;
 const MAX_FETCHES: usize = 80;
 const MAX_RESOURCE_BYTES: u64 = 8 << 20;
 const FETCH_DEADLINE: Duration = Duration::from_secs(10);
@@ -725,7 +730,26 @@ fn paint(loaded: &mut Loaded, width: u32, scale: f32) -> Rendered {
     let root = doc.root_element();
     let content = (root.scrollable_overflow().y1 / scale as f64) as f32;
     let height = (root.final_layout().size.height.max(content).ceil() as u32).clamp(1, MAX_HEIGHT);
-    let physical_h = (height as f32 * scale).ceil() as u32;
+    let mut scale = scale;
+    let mut physical_h = (height as f32 * scale).ceil() as u32;
+    // Over the pixel budget: a lower scale (not below 1), laid out again.
+    if physical_w as u64 * physical_h as u64 > MAX_PIXELS && scale > 1.0 {
+        let laid_w = physical_w as f32 / scale;
+        let fit = (MAX_PIXELS as f32 / (laid_w * height as f32)).sqrt();
+        scale = fit.clamp(1.0, scale);
+        physical_w = (laid_w * scale).round() as u32;
+        doc.set_viewport(Viewport::new(
+            physical_w,
+            (800.0 * scale) as u32,
+            scale,
+            ColorScheme::Light,
+        ));
+        doc.set_viewport_scroll(blitz_dom::Point { x: 0.0, y: 0.0 });
+        doc.resolve(0.0);
+        physical_h = (height as f32 * scale).ceil() as u32;
+    }
+    // Still over (very long and wide even at scale 1): the end is cut.
+    physical_h = physical_h.min((MAX_PIXELS / physical_w.max(1) as u64).max(1) as u32);
     let painted = Painted {
         width,
         zoom,

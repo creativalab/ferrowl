@@ -10,11 +10,61 @@ use crate::mail;
 use iced::futures::SinkExt;
 use iced::{Subscription, futures::Stream};
 use std::hash::{Hash, Hasher};
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
-/// IDLE is re-issued periodically (RFC 2177 asks for less than 29 minutes;
-/// shorter also bounds how long a dropped watch keeps its connection).
+/// IDLE is re-issued periodically (RFC 2177 asks for less than 29 minutes).
 const IDLE_TIMEOUT: Duration = Duration::from_secs(9 * 60);
+/// IDLE is waited on in steps this long, checking in between whether the
+/// watch is still wanted: a dropped watch (account switched) logs out
+/// within a step instead of keeping its connection for minutes, so quick
+/// switching does not pile up connections.
+const IDLE_STEP: Duration = Duration::from_secs(30);
+
+/// Set when the subscription's stream is dropped: tells the blocking IDLE
+/// wait to log out and stop.
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Waits (up to `IDLE_TIMEOUT`) for a change in `folder`, in `IDLE_STEP`
+/// steps. `None`: the watch was dropped (the session is logged out).
+fn idle_until_change(
+    session: &mut mail::ImapSession,
+    folder: &str,
+    stop: &AtomicBool,
+) -> anyhow::Result<Option<bool>> {
+    let started = Instant::now();
+    // Mail arriving between two steps (while IDLE is re-issued) would not
+    // be reported by the next one: a UID at or past the first unused one
+    // tells it.
+    let uid_next = session.select(folder)?.uid_next;
+    loop {
+        if stop.load(Ordering::SeqCst) {
+            let _ = session.logout();
+            return Ok(None);
+        }
+        if mail::idle_wait_selected(session, IDLE_STEP)? {
+            return Ok(Some(true));
+        }
+        if let Some(next) = uid_next
+            && session
+                .uid_search(format!("UID {next}:*"))?
+                .into_iter()
+                .any(|u| u >= next)
+        {
+            return Ok(Some(true));
+        }
+        if started.elapsed() >= IDLE_TIMEOUT {
+            return Ok(Some(false));
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct Watch {
@@ -45,6 +95,8 @@ pub fn subscription(watch: Watch) -> Subscription<Message> {
 fn stream(watch: &Watch) -> impl Stream<Item = Message> + use<> {
     let watch = watch.clone();
     iced::stream::channel(4, async move |mut out| {
+        let stop = Arc::new(AtomicBool::new(false));
+        let _stop_on_drop = StopOnDrop(stop.clone());
         let mut backoff = 15;
         loop {
             let account = watch.account.clone();
@@ -114,10 +166,15 @@ fn stream(watch: &Watch) -> impl Stream<Item = Message> + use<> {
             loop {
                 let folder = watch.folder.clone();
                 let other = watch.other;
+                let stop = stop.clone();
                 let waited = tokio::task::spawn_blocking(move || {
-                    let r = mail::idle_wait(&mut session, &folder, IDLE_TIMEOUT).and_then(|changed| {
+                    let r = idle_until_change(&mut session, &folder, &stop).and_then(|changed| {
+                        // Dropped: nothing more to do.
+                        let Some(changed) = changed else {
+                            return Ok(None);
+                        };
                         if !(changed && other) {
-                            return Ok((changed, Vec::new(), None));
+                            return Ok(Some((changed, Vec::new(), None)));
                         }
                         let new = match mail::fetch_delta(&mut session, &folder, seen_max, seen_max + 1)? {
                             Some(d) => d.new,
@@ -126,13 +183,14 @@ fn stream(watch: &Watch) -> impl Stream<Item = Message> + use<> {
                         };
                         // Also changes when mail is read elsewhere.
                         let n = session.uid_search("UNSEEN")?.len() as u32;
-                        Ok((changed, new, Some(n)))
+                        Ok(Some((changed, new, Some(n))))
                     });
                     (session, r)
                 })
                 .await;
                 match waited {
-                    Ok((s, Ok((changed, new, n)))) => {
+                    Ok((_, Ok(None))) => return,
+                    Ok((s, Ok(Some((changed, new, n))))) => {
                         session = s;
                         if !changed {
                             continue;

@@ -4,7 +4,6 @@
 
 use super::*;
 use crate::app::{App, EventField, EventForm, SyncState};
-use crate::backend::Backend;
 use crate::i18n::t;
 use chrono::{Datelike, NaiveDate};
 use ferrowl_core::backend::AgendaEntry;
@@ -17,10 +16,10 @@ use iced::{Alignment, Length::Fill, Padding};
 /// theme's accent.
 fn color_of(e: &AgendaEntry, p: Palette) -> Color {
     let hex = e.color.trim();
-    if hex.len() >= 7 && hex.starts_with('#') {
-        crate::theme::hex(&hex[..7])
-    } else {
-        p.accent
+    // `get` rather than slicing: a server's color may not be ASCII.
+    match hex.get(..7) {
+        Some(rgb) if rgb.starts_with('#') => crate::theme::hex(rgb),
+        _ => p.accent,
     }
 }
 
@@ -624,14 +623,11 @@ fn form<'a>(app: &'a App, f: &'a EventForm, p: Palette) -> Element<'a, Message> 
     // Calendar choice for a new event, when there is more than one.
     if f.url.is_none() {
         let calendars: Vec<CalendarChoice> = app
-            .config
-            .account()
-            .map(Backend::calendars)
-            .unwrap_or_default()
-            .into_iter()
+            .calendars
+            .iter()
             .map(|c| CalendarChoice {
                 name: calendar_name(&c.url, &c.name),
-                url: c.url,
+                url: c.url.clone(),
             })
             .collect();
         if calendars.len() > 1 {

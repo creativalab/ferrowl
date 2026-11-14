@@ -39,7 +39,8 @@ pub fn view<'a>(app: &'a App, c: &'a Compose, p: Palette) -> Element<'a, Message
                     },
                     ..Default::default()
                 })
-                .on_press(Message::ComposeClose)
+                // Not while sending: a failure must find its draft.
+                .on_press_maybe((!c.sending).then_some(Message::ComposeClose))
                 .into(),
         ])
         .align_y(Alignment::Center),
@@ -352,7 +353,7 @@ pub fn view<'a>(app: &'a App, c: &'a Compose, p: Palette) -> Element<'a, Message
             .height(44)
             .padding(13)
             .style(ghost(p, p.muted))
-            .on_press(Message::ComposeClose),
+            .on_press_maybe((!c.sending).then_some(Message::ComposeClose)),
         t("discard"),
         p,
     );

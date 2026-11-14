@@ -2270,6 +2270,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "ureq",
  "winresource",
