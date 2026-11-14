@@ -4124,24 +4124,18 @@ impl App {
             Message::ReplyAll => {
                 if let Some(m) = &self.message {
                     let mut c = self.reply_draft(m);
-                    // Everyone else on the thread, without ourselves or duplicates.
-                    let me = self
-                        .config
-                        .account()
-                        .map(|a| a.email.to_lowercase())
-                        .unwrap_or_default();
-                    let mut seen: HashSet<String> = [me, m.from_address.to_lowercase()].into_iter().collect();
-                    let mut keep = |list: &[String]| -> Vec<String> {
-                        list.iter()
-                            .filter(|a| seen.insert(a.to_lowercase()))
-                            .cloned()
-                            .collect()
-                    };
-                    let to = keep(&m.to_addrs);
-                    let cc = keep(&m.cc_addrs);
-                    if !to.is_empty() {
-                        c.to = format!("{}, {}", c.to, to.join(", "));
-                    }
+                    // Reply-To (or the sender) and everyone else on the
+                    // thread, without ourselves or duplicates.
+                    let me = self.config.account().map(|a| a.email.clone()).unwrap_or_default();
+                    let (to, cc) = crate::mail::reply_recipients(
+                        &m.from_address,
+                        &m.reply_to,
+                        &m.to_addrs,
+                        &m.cc_addrs,
+                        true,
+                        &me,
+                    );
+                    c.to = to.join(", ");
                     if !cc.is_empty() {
                         c.cc = cc.join(", ");
                         c.show_cc = true;
