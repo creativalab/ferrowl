@@ -24,7 +24,7 @@ const RETRY_MIN: Duration = Duration::from_secs(30);
 const RETRY_MAX: Duration = Duration::from_secs(15 * 60);
 /// Mail read elsewhere is reported once nothing more was read for this long
 /// (reading several messages in a row makes one message to the phone)...
-const READ_QUIET: Duration = Duration::from_secs(10);
+const READ_QUIET: Duration = Duration::from_secs(4);
 /// ...or at the latest this long after the first one.
 const READ_MAX_DELAY: Duration = Duration::from_secs(60);
 
