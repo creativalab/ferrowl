@@ -45,9 +45,23 @@ pub struct AppState {
 }
 
 pub fn real_login_check(account: &Account) -> Result<(), String> {
-    let mut s = ferrowl_core::mail::connect(account).map_err(|e| format!("{e:#}"))?;
+    let mut s = crate::addr::connect(account).map_err(|e| login_check_error(account, &e))?;
     let _ = s.logout();
     Ok(())
+}
+
+/// What the phone is told when the check fails. Only a refused login says
+/// more than "cannot connect": the answer comes from a real mail server
+/// (TLS checked its name), while connection errors would tell what runs
+/// at any address and port.
+fn login_check_error(account: &Account, e: &anyhow::Error) -> String {
+    if let Some(login) = e.downcast_ref::<ferrowl_core::mail::LoginError>() {
+        login.to_string()
+    } else if e.downcast_ref::<crate::addr::NotAllowed>().is_some() {
+        format!("{}: {e}", ferrowl_core::mail::connect_error(account))
+    } else {
+        ferrowl_core::mail::connect_error(account)
+    }
 }
 
 pub fn router(state: AppState) -> Router {
@@ -217,10 +231,7 @@ async fn add_account(
     }
     let existing = state.store.accounts(&d.id)?;
     if existing.len() >= MAX_ACCOUNTS {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            "too many accounts for this device",
-        ));
+        return Err(too_many());
     }
     // All accounts of a device share its key.
     if let Some(first) = existing.first()
@@ -240,14 +251,20 @@ async fn add_account(
     let account_id = random_token();
     let plain = zeroize::Zeroizing::new(serde_json::to_vec(&account).map_err(anyhow::Error::from)?);
     let (nonce, sealed) = key.seal(&plain, &account_id)?;
-    state.store.add_account(
+    // Counted again with the insert: other requests may have added
+    // accounts during the login check.
+    let added = state.store.add_account_within(
         &d.id,
         &SealedAccount {
             id: account_id.clone(),
             nonce: nonce.to_vec(),
             sealed,
         },
+        MAX_ACCOUNTS,
     )?;
+    if !added {
+        return Err(too_many());
+    }
     lock(&state.keys).insert(d.id.clone(), key);
     state.watchers.start(
         account_id.clone(),
@@ -257,6 +274,10 @@ async fn add_account(
         state.notifier.clone(),
     );
     Ok((StatusCode::CREATED, Json(Added { account_id })))
+}
+
+fn too_many() -> ApiError {
+    ApiError::new(StatusCode::CONFLICT, "too many accounts for this device")
 }
 
 async fn delete_account(
@@ -471,6 +492,19 @@ mod tests {
         )
         .await;
         assert_eq!(code, StatusCode::UNAUTHORIZED, "deleted device is gone");
+    }
+
+    #[test]
+    fn login_check_errors_tell_only_refused_logins() {
+        ferrowl_core::i18n::set(Some("en"));
+        let account: Account = serde_json::from_value(account_json()).unwrap();
+        let generic = ferrowl_core::mail::connect_error(&account);
+        let refused = anyhow::Error::new(ferrowl_core::mail::LoginError("Login failed: NO".into()));
+        assert_eq!(login_check_error(&account, &refused), "Login failed: NO");
+        let closed = anyhow::anyhow!("Connection refused (os error 61)").context(generic.clone());
+        assert_eq!(login_check_error(&account, &closed), generic);
+        let local = anyhow::Error::new(crate::addr::NotAllowed);
+        assert!(login_check_error(&account, &local).ends_with("mail server address not allowed"));
     }
 
     #[tokio::test]

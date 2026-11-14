@@ -7,10 +7,14 @@ struct MainView: View {
     @Environment(MailRepository.self) private var mail
     @Environment(Preferences.self) private var prefs
     @Environment(Notices.self) private var notices
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var model: MailboxModel?
     @State private var column: NavigationSplitViewColumn = .content
     @State private var sheet: Sheet?
+    /// The app went to the background (not only inactive, as with Control
+    /// Center): coming back refreshes the open list.
+    @State private var wasInBackground = false
 
     enum Sheet: Identifiable {
         case compose(ComposeRequest)
@@ -67,6 +71,19 @@ struct MainView: View {
         // New mail (or mail read elsewhere) for this account while open.
         .onChange(of: mail.arrivals) { _, _ in
             Task { await model?.serverChanged() }
+        }
+        // Back on screen: changes made elsewhere meanwhile (mail deleted or
+        // read on the computer) show without pulling to refresh.
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .background:
+                wasInBackground = true
+            case .active where wasInBackground:
+                wasInBackground = false
+                Task { await model?.returned() }
+            default:
+                break
+            }
         }
         .onChange(of: mail.changes) { _, _ in
             Task { await model?.reloadLocal() }

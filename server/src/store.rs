@@ -145,12 +145,30 @@ impl Store {
         Ok(())
     }
 
+    /// Tests only: the API adds accounts with `add_account_within`.
+    #[cfg(test)]
     pub fn add_account(&self, device: &str, account: &SealedAccount) -> Result<()> {
-        self.lock().execute(
+        self.add_account_within(device, account, usize::MAX).map(|_| ())
+    }
+
+    /// Adds the account unless the device already has `max`: false then.
+    /// Counted and inserted under the same lock, so concurrent requests
+    /// cannot go past it.
+    pub fn add_account_within(&self, device: &str, account: &SealedAccount, max: usize) -> Result<bool> {
+        let conn = self.lock();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM accounts WHERE device = ?1",
+            params![device],
+            |r| r.get(0),
+        )?;
+        if count >= i64::try_from(max).unwrap_or(i64::MAX) {
+            return Ok(false);
+        }
+        conn.execute(
             "INSERT INTO accounts (id, device, nonce, sealed, created) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![account.id, device, account.nonce, account.sealed, now()],
         )?;
-        Ok(())
+        Ok(true)
     }
 
     pub fn accounts(&self, device: &str) -> Result<Vec<SealedAccount>> {
@@ -216,5 +234,24 @@ mod tests {
         // Deleting the device removes its accounts.
         s.delete_device("d1").unwrap();
         assert!(s.accounts("d1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn accounts_up_to_a_limit() {
+        let s = Store::in_memory().unwrap();
+        let target = Target {
+            platform: Platform::Fcm,
+            token: "t".into(),
+        };
+        s.add_device("d1", "tok", &target).unwrap();
+        let acc = |id: &str| SealedAccount {
+            id: id.into(),
+            nonce: vec![1; 12],
+            sealed: vec![2; 40],
+        };
+        assert!(s.add_account_within("d1", &acc("a1"), 2).unwrap());
+        assert!(s.add_account_within("d1", &acc("a2"), 2).unwrap());
+        assert!(!s.add_account_within("d1", &acc("a3"), 2).unwrap());
+        assert_eq!(s.accounts("d1").unwrap().len(), 2);
     }
 }

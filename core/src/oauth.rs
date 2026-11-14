@@ -545,12 +545,20 @@ fn wait_for_code(listener: &TcpListener, state: &str, timeout: Duration) -> Resu
                 std::thread::sleep(Duration::from_millis(100));
                 continue;
             }
-            Err(e) => return Err(e.into()),
+            // A connection that failed before we took it: wait for the next.
+            Err(_) => continue,
         };
-        stream.set_nonblocking(false)?;
-        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+        // Browsers open spare connections they may never use, and other
+        // programs can knock on the port too: a connection that sends no
+        // readable request line is dropped and the wait goes on.
         let mut line = String::new();
-        BufReader::new(&stream).read_line(&mut line)?;
+        let read = stream
+            .set_nonblocking(false)
+            .and_then(|_| stream.set_read_timeout(Some(Duration::from_secs(10))))
+            .and_then(|_| BufReader::new(&stream).read_line(&mut line));
+        if read.is_err() {
+            continue;
+        }
         // "GET /?code=...&state=... HTTP/1.1"
         let target = line.split_whitespace().nth(1).unwrap_or("/");
         let params: HashMap<String, String> = url::Url::parse(&format!("http://localhost{target}"))
@@ -561,7 +569,8 @@ fn wait_for_code(listener: &TcpListener, state: &str, timeout: Duration) -> Resu
             let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
             continue;
         }
-        let ok = params.get("state").map(String::as_str) == Some(state) && params.contains_key("code");
+        let ours = params.get("state").map(String::as_str) == Some(state);
+        let ok = ours && params.contains_key("code");
         let (title, text) = if ok {
             (
                 crate::i18n::t("oauth_page_ok_title"),
@@ -583,6 +592,11 @@ fn wait_for_code(listener: &TcpListener, state: &str, timeout: Duration) -> Resu
             "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
             page.len()
         );
+        // Only an answer to this sign-in ends the wait: anything else (an
+        // old tab, another request) gets the failure page and is ignored.
+        if !ours {
+            continue;
+        }
         if let Some(err) = params.get("error") {
             let desc = params.get("error_description").cloned().unwrap_or_default();
             bail!("{err}: {desc}");
@@ -754,6 +768,31 @@ mod tests {
                 .unwrap();
             let mut out = String::new();
             let _ = std::io::Read::read_to_string(&mut s, &mut out);
+        });
+        assert_eq!(
+            wait_for_code(&listener, "xyz", Duration::from_secs(5)).unwrap(),
+            "abc"
+        );
+    }
+
+    #[test]
+    fn stray_connections_do_not_end_the_wait() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let send = move |bytes: &[u8]| {
+            let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.write_all(bytes).unwrap();
+            let mut out = String::new();
+            let _ = std::io::Read::read_to_string(&mut s, &mut out);
+        };
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            // Opened and closed without a request, not text, another state.
+            drop(std::net::TcpStream::connect(("127.0.0.1", port)).unwrap());
+            send(b"\xff\xfe\xfd\r\n");
+            send(b"GET /?code=old&state=other HTTP/1.1\r\n\r\n");
+            send(b"GET /?error=access_denied&state=other HTTP/1.1\r\n\r\n");
+            send(b"GET /?code=abc&state=xyz HTTP/1.1\r\nHost: localhost\r\n\r\n");
         });
         assert_eq!(
             wait_for_code(&listener, "xyz", Duration::from_secs(5)).unwrap(),

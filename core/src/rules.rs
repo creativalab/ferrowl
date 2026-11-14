@@ -50,6 +50,9 @@ pub struct Plan {
     pub archive: Vec<u32>,
     /// By target folder.
     pub moves: Vec<(String, Vec<u32>)>,
+    /// Set by `Backend::apply_rules` when an action failed: its messages
+    /// are left out above, the other actions were still done.
+    pub error: Option<String>,
 }
 
 impl Plan {

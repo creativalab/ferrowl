@@ -6,7 +6,7 @@ use crate::i18n::{t, tf};
 use anyhow::{Context, Result, anyhow, bail};
 use mail_parser::{AddressList, MessageParser};
 use std::collections::HashMap;
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,9 +30,18 @@ impl std::io::Write for TlsStream {
     }
 }
 
+/// Read/write timeout of IMAP commands: a dead connection fails instead of
+/// hanging the caller forever.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+
 impl imap::extensions::idle::SetReadTimeout for TlsStream {
     fn set_read_timeout(&mut self, timeout: Option<Duration>) -> imap::Result<()> {
-        self.0.sock.set_read_timeout(timeout).map_err(imap::Error::Io)
+        // After IDLE the imap crate clears the timeout (None): the commands
+        // that follow (SELECT, SEARCH...) get the usual one back instead.
+        self.0
+            .sock
+            .set_read_timeout(timeout.or(Some(COMMAND_TIMEOUT)))
+            .map_err(imap::Error::Io)
     }
 }
 pub type ImapSession = imap::Session<TlsStream>;
@@ -408,19 +417,45 @@ pub(crate) fn tls_config() -> Arc<rustls::ClientConfig> {
     Arc::new(config)
 }
 
+/// The server refused the login (wrong password, IMAP turned off...): the
+/// message is the server's answer, already translated.
+#[derive(Debug)]
+pub struct LoginError(pub String);
+
+impl std::fmt::Display for LoginError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for LoginError {}
+
 pub fn connect(account: &Account) -> Result<ImapSession> {
-    let addr = (account.imap_host.as_str(), account.imap_port);
-    let tcp = TcpStream::connect(addr).with_context(|| {
-        tf(
-            "err_connect",
-            &[
-                ("host", &account.imap_host),
-                ("port", &account.imap_port.to_string()),
-            ],
-        )
-    })?;
-    tcp.set_read_timeout(Some(Duration::from_secs(60)))?;
-    tcp.set_write_timeout(Some(Duration::from_secs(60)))?;
+    use std::net::ToSocketAddrs;
+    let addrs: Vec<SocketAddr> = (account.imap_host.as_str(), account.imap_port)
+        .to_socket_addrs()
+        .with_context(|| connect_error(account))?
+        .collect();
+    connect_to(account, &addrs)
+}
+
+/// "Cannot connect to host:port".
+pub fn connect_error(account: &Account) -> String {
+    tf(
+        "err_connect",
+        &[
+            ("host", &account.imap_host),
+            ("port", &account.imap_port.to_string()),
+        ],
+    )
+}
+
+/// Like `connect`, to addresses already resolved (the push server checks
+/// them first). The host name is still the one TLS checks.
+pub fn connect_to(account: &Account, addrs: &[SocketAddr]) -> Result<ImapSession> {
+    let tcp = TcpStream::connect(addrs).with_context(|| connect_error(account))?;
+    tcp.set_read_timeout(Some(COMMAND_TIMEOUT))?;
+    tcp.set_write_timeout(Some(COMMAND_TIMEOUT))?;
 
     let server_name = rustls::pki_types::ServerName::try_from(account.imap_host.clone())
         .context("invalid IMAP host name")?;
@@ -431,18 +466,19 @@ pub fn connect(account: &Account) -> Result<ImapSession> {
     client.read_greeting().context("IMAP greeting")?;
     let login_error = |e: imap::Error| {
         let msg = e.to_string();
-        if mailbox_refuses_apps(&msg) {
-            anyhow!(t("err_outlook_imap_off"))
+        let text = if mailbox_refuses_apps(&msg) {
+            t("err_outlook_imap_off").to_string()
         } else if account.oauth.is_none()
             && is_gmail_host(&account.imap_host)
             && crate::errors::kind(&msg) == crate::errors::Kind::WrongPassword
         {
-            anyhow!(t("err_h_gmail_password"))
+            t("err_h_gmail_password").to_string()
         } else if msg.to_uppercase().contains("AUTHENTICATIONFAILED") {
-            anyhow!(tf("err_auth", &[("msg", &msg)]))
+            tf("err_auth", &[("msg", &msg)])
         } else {
-            anyhow!(tf("err_login", &[("msg", &msg)]))
-        }
+            tf("err_login", &[("msg", &msg)])
+        };
+        anyhow::Error::new(LoginError(text))
     };
     match account.oauth {
         // Signed in with Google/Microsoft: XOAUTH2 with a fresh access token.
@@ -470,6 +506,13 @@ pub fn supports_idle(session: &mut ImapSession) -> Result<bool> {
 /// Returns `true` if the server reported a change.
 pub fn idle_wait(session: &mut ImapSession, folder: &str, timeout: Duration) -> Result<bool> {
     session.select(folder)?;
+    idle_wait_selected(session, timeout)
+}
+
+/// Like `idle_wait`, on the folder already selected. Selecting it again
+/// would tell the server the client has seen every change so far, so mail
+/// arrived since the caller last looked would not be reported by IDLE.
+pub fn idle_wait_selected(session: &mut ImapSession, timeout: Duration) -> Result<bool> {
     let outcome = session.idle()?.wait_with_timeout(timeout)?;
     Ok(matches!(
         outcome,
@@ -916,16 +959,43 @@ pub fn header_from_raw(uid: u32, raw: &[u8], seen: bool) -> Header {
     }
 }
 
+/// The addresses in a To/Cc field, trimmed, empty ones left out. Commas
+/// and semicolons separate them only outside quotes and angle brackets:
+/// "Rossi, Mario" <m@x.it> is one address.
+pub fn split_addresses(field: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let (mut start, mut quoted, mut angle, mut escaped) = (0, false, false, false);
+    for (i, c) in field.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' if !angle => quoted = !quoted,
+            '<' if !quoted => angle = true,
+            '>' if !quoted => angle = false,
+            ',' | ';' if !quoted && !angle => {
+                parts.push(&field[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&field[start..]);
+    parts
+        .into_iter()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 /// Addresses typed in a To/Cc field ("Ada <ada@x.org>, bob@y.org") as
 /// (name, address) pairs.
 pub fn parse_recipients(field: &str) -> Vec<(String, String)> {
-    field
-        .split([',', ';'])
-        .map(str::trim)
+    split_addresses(field)
+        .into_iter()
         .filter(|s| s.contains('@'))
         .map(|s| match (s.rfind('<'), s.rfind('>')) {
             (Some(a), Some(b)) if a < b => (
-                s[..a].trim().trim_matches('"').to_string(),
+                s[..a].trim().trim_matches('"').replace("\\\"", "\""),
                 s[a + 1..b].trim().to_string(),
             ),
             _ => (String::new(), s.to_string()),
@@ -1422,9 +1492,8 @@ pub fn send(account: &Account, mail: &Outgoing) -> Result<Vec<u8>> {
         .subject(&mail.subject)
         .message_id(Some(new_message_id(&account.email)));
     let split = |s: &str| {
-        s.split([',', ';'])
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
+        split_addresses(s)
+            .into_iter()
             .map(str::to_string)
             .collect::<Vec<_>>()
     };
@@ -1670,7 +1739,7 @@ fn protect_with(
         let mut keys = vec![own.to_public_key()];
         let all = [&mail.to, &mail.cc, &mail.bcc]
             .iter()
-            .flat_map(|s| s.split([',', ';']))
+            .flat_map(|s| split_addresses(s))
             .map(bare_address)
             .filter(|a| !a.is_empty())
             .collect::<Vec<_>>();
@@ -2032,6 +2101,41 @@ mod tests {
                 ("Ada".to_string(), "ada@x.org".to_string()),
                 (String::new(), "bob@y.org".to_string()),
                 ("Carl C".to_string(), "carl@z.org".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn sending_splits_addresses_outside_quotes() {
+        let field = "\"Rossi, Mario\" <m@x.it>; ugo@y.it,  ,";
+        let parts = split_addresses(field);
+        assert_eq!(parts, ["\"Rossi, Mario\" <m@x.it>", "ugo@y.it"]);
+        // Each part is one address for lettre (what send builds the
+        // message from) and for the PGP key lookup.
+        let first: lettre::message::Mailbox = parts[0].parse().unwrap();
+        assert_eq!(first.name.as_deref(), Some("Rossi, Mario"));
+        assert_eq!(first.email.to_string(), "m@x.it");
+        let bare: Vec<String> = parts.iter().map(|p| bare_address(p)).collect();
+        assert_eq!(bare, ["m@x.it", "ugo@y.it"]);
+    }
+
+    #[test]
+    fn recipients_keep_separators_inside_quotes_and_brackets() {
+        assert_eq!(
+            parse_recipients("\"Rossi, Mario\" <m@x.it>; \"Bianchi; Anna\" <a@x.it>,ugo@y.it"),
+            vec![
+                ("Rossi, Mario".to_string(), "m@x.it".to_string()),
+                ("Bianchi; Anna".to_string(), "a@x.it".to_string()),
+                (String::new(), "ugo@y.it".to_string()),
+            ]
+        );
+        // An escaped quote doesn't end the name; a comma in the brackets
+        // doesn't split the address.
+        assert_eq!(
+            parse_recipients(r#""Ada \"A, B\" L" <ada@x.org>, Bob <bob,x@y.org>"#),
+            vec![
+                (r#"Ada "A, B" L"#.to_string(), "ada@x.org".to_string()),
+                ("Bob".to_string(), "bob,x@y.org".to_string()),
             ]
         );
     }

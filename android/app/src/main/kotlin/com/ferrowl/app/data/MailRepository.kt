@@ -79,6 +79,18 @@ class MailRepository @Inject constructor(
         _arrivals.tryEmit(email)
     }
 
+    private val _returns = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    /**
+     * Emits when the app comes back to the screen: what changed meanwhile
+     * elsewhere (mail deleted or read on another device) is fetched again.
+     */
+    val returns: SharedFlow<Unit> = _returns.asSharedFlow()
+
+    fun returned() {
+        _returns.tryEmit(Unit)
+    }
+
 
     suspend fun savedAccount(): Account? = accounts.account.first()
 
