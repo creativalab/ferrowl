@@ -115,7 +115,7 @@ class MailboxViewModel @Inject constructor(
             _state.update { it.copy(refreshing = true) }
             val (early, gmail) = repo.cachedInbox()
             if (early.isNotEmpty()) {
-                _state.update { if (it.folderId.isEmpty()) it.copy(folderId = "INBOX", messages = early, tabs = gmail) else it }
+                _state.update { if (it.folderId.isEmpty()) it.copy(folderId = "INBOX", messages = visible(early, "INBOX"), tabs = gmail) else it }
             }
             try {
                 repo.ensureConnected()
@@ -199,7 +199,7 @@ class MailboxViewModel @Inject constructor(
         viewModelScope.launch {
             repo.changes.collect {
                 val id = _state.value.folderId
-                if (id.isNotEmpty()) _state.update { it.copy(messages = repo.cachedHeaders(id)) }
+                if (id.isNotEmpty()) _state.update { it.copy(messages = visible(repo.cachedHeaders(id), id)) }
                 loadUnread()
             }
         }
@@ -339,6 +339,19 @@ class MailboxViewModel @Inject constructor(
     private var fetchAgain = false
 
     /**
+     * Deleted with Undo but not yet on the server (it is asked when the
+     * notice is gone), per folder: lists loaded meanwhile from the local
+     * copy or the server must not show them again. Main thread only.
+     */
+    private val pendingDeletes = mutableMapOf<String, MutableSet<UInt>>()
+
+    /** [list] without the messages of [folder] waiting to be deleted. */
+    private fun visible(list: List<Header>, folder: String): List<Header> {
+        val gone = pendingDeletes[folder]
+        return if (gone.isNullOrEmpty()) list else list.filterNot { it.uid in gone }
+    }
+
+    /**
      * The local copy at once, then the newest messages from the server.
      * [quiet]: not asked by the user (a push, the app back on screen), so no
      * error is shown when offline.
@@ -370,7 +383,7 @@ class MailboxViewModel @Inject constructor(
     private suspend fun fetch(id: String, quiet: Boolean) {
         try {
             val cached = repo.cachedHeaders(id)
-            if (cached.isNotEmpty()) _state.update { if (it.folderId == id) it.copy(messages = cached) else it }
+            if (cached.isNotEmpty()) _state.update { if (it.folderId == id) it.copy(messages = visible(cached, id)) else it }
             var fresh = repo.headers(id)
             // Sender lists: blocked mail leaves the inbox, allowed mail leaves Spam.
             val moved = runCatching { repo.applySenderRules(id, fresh) }.getOrDefault(emptyList())
@@ -381,7 +394,7 @@ class MailboxViewModel @Inject constructor(
                     it.copy(seen = it.seen || it.uid in done.read, flagged = it.flagged || it.uid in done.starred)
                 }
             }
-            _state.update { if (it.folderId == id) it.copy(messages = fresh) else it }
+            _state.update { if (it.folderId == id) it.copy(messages = visible(fresh, id)) else it }
             loadUnread()
         } catch (e: FerrowlException) {
             if (!quiet) _state.update { it.copy(error = e.message) }
@@ -422,7 +435,8 @@ class MailboxViewModel @Inject constructor(
         if (text.isBlank()) return
         searchJob = viewModelScope.launch {
             _state.update { it.copy(searching = true) }
-            val found = repo.search(_state.value.folderId, text)
+            val folder = _state.value.folderId
+            val found = visible(repo.search(folder, text), folder)
             _state.update { it.copy(results = found, searching = false) }
         }
     }
@@ -545,17 +559,21 @@ class MailboxViewModel @Inject constructor(
         val folder = _state.value.folderId
         val rows = _state.value.messages.filter { it.uid in uids }
         _state.update { s -> s.copy(messages = s.messages.filterNot { it.uid in uids }) }
+        pendingDeletes.getOrPut(folder) { mutableSetOf() }.addAll(uids)
         val job = viewModelScope.launch {
             delay(UNDO_MS)
             try {
                 repo.delete(folder, uids, quiet = true)
+                pendingDeletes[folder]?.removeAll(uids.toSet())
             } catch (e: FerrowlException) {
+                pendingDeletes[folder]?.removeAll(uids.toSet())
                 _state.update { it.copy(error = e.message) }
                 refresh()
             }
         }
         notices.withAction(translate("moved_to_trash"), translate("undo")) {
             job.cancel()
+            pendingDeletes[folder]?.removeAll(uids.toSet())
             _state.update { s ->
                 if (s.folderId != folder) s else s.copy(messages = (s.messages + rows).sortedByDescending { it.timestamp })
             }
