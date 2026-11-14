@@ -916,16 +916,43 @@ pub fn header_from_raw(uid: u32, raw: &[u8], seen: bool) -> Header {
     }
 }
 
+/// The addresses in a To/Cc field, trimmed, empty ones left out. Commas
+/// and semicolons separate them only outside quotes and angle brackets:
+/// "Rossi, Mario" <m@x.it> is one address.
+pub fn split_addresses(field: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let (mut start, mut quoted, mut angle, mut escaped) = (0, false, false, false);
+    for (i, c) in field.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' if !angle => quoted = !quoted,
+            '<' if !quoted => angle = true,
+            '>' if !quoted => angle = false,
+            ',' | ';' if !quoted && !angle => {
+                parts.push(&field[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&field[start..]);
+    parts
+        .into_iter()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 /// Addresses typed in a To/Cc field ("Ada <ada@x.org>, bob@y.org") as
 /// (name, address) pairs.
 pub fn parse_recipients(field: &str) -> Vec<(String, String)> {
-    field
-        .split([',', ';'])
-        .map(str::trim)
+    split_addresses(field)
+        .into_iter()
         .filter(|s| s.contains('@'))
         .map(|s| match (s.rfind('<'), s.rfind('>')) {
             (Some(a), Some(b)) if a < b => (
-                s[..a].trim().trim_matches('"').to_string(),
+                s[..a].trim().trim_matches('"').replace("\\\"", "\""),
                 s[a + 1..b].trim().to_string(),
             ),
             _ => (String::new(), s.to_string()),
@@ -1422,9 +1449,8 @@ pub fn send(account: &Account, mail: &Outgoing) -> Result<Vec<u8>> {
         .subject(&mail.subject)
         .message_id(Some(new_message_id(&account.email)));
     let split = |s: &str| {
-        s.split([',', ';'])
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
+        split_addresses(s)
+            .into_iter()
             .map(str::to_string)
             .collect::<Vec<_>>()
     };
@@ -1670,7 +1696,7 @@ fn protect_with(
         let mut keys = vec![own.to_public_key()];
         let all = [&mail.to, &mail.cc, &mail.bcc]
             .iter()
-            .flat_map(|s| s.split([',', ';']))
+            .flat_map(|s| split_addresses(s))
             .map(bare_address)
             .filter(|a| !a.is_empty())
             .collect::<Vec<_>>();
@@ -2032,6 +2058,41 @@ mod tests {
                 ("Ada".to_string(), "ada@x.org".to_string()),
                 (String::new(), "bob@y.org".to_string()),
                 ("Carl C".to_string(), "carl@z.org".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn sending_splits_addresses_outside_quotes() {
+        let field = "\"Rossi, Mario\" <m@x.it>; ugo@y.it,  ,";
+        let parts = split_addresses(field);
+        assert_eq!(parts, ["\"Rossi, Mario\" <m@x.it>", "ugo@y.it"]);
+        // Each part is one address for lettre (what send builds the
+        // message from) and for the PGP key lookup.
+        let first: lettre::message::Mailbox = parts[0].parse().unwrap();
+        assert_eq!(first.name.as_deref(), Some("Rossi, Mario"));
+        assert_eq!(first.email.to_string(), "m@x.it");
+        let bare: Vec<String> = parts.iter().map(|p| bare_address(p)).collect();
+        assert_eq!(bare, ["m@x.it", "ugo@y.it"]);
+    }
+
+    #[test]
+    fn recipients_keep_separators_inside_quotes_and_brackets() {
+        assert_eq!(
+            parse_recipients("\"Rossi, Mario\" <m@x.it>; \"Bianchi; Anna\" <a@x.it>,ugo@y.it"),
+            vec![
+                ("Rossi, Mario".to_string(), "m@x.it".to_string()),
+                ("Bianchi; Anna".to_string(), "a@x.it".to_string()),
+                (String::new(), "ugo@y.it".to_string()),
+            ]
+        );
+        // An escaped quote doesn't end the name; a comma in the brackets
+        // doesn't split the address.
+        assert_eq!(
+            parse_recipients(r#""Ada \"A, B\" L" <ada@x.org>, Bob <bob,x@y.org>"#),
+            vec![
+                (r#"Ada "A, B" L"#.to_string(), "ada@x.org".to_string()),
+                ("Bob".to_string(), "bob,x@y.org".to_string()),
             ]
         );
     }

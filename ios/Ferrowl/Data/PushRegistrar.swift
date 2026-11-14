@@ -152,10 +152,12 @@ final class PushRegistrar {
             }
         }
         if device == nil {
+            // The key first: without one there is nothing to register.
+            let newKey = try Self.newKey()
             let reply = try await call("POST", "/v1/devices", token: nil, body: body)
             guard let token = reply["device_token"] as? String else { throw PushError.status(0, "") }
             Keychain.set(Self.secrets, "device", token)
-            Keychain.set(Self.secrets, "key", Self.newKey())
+            Keychain.set(Self.secrets, "key", newKey)
             device = token
         }
         guard let token = device, let key = Keychain.get(Self.secrets, "key") else { return }
@@ -203,9 +205,14 @@ final class PushRegistrar {
     private static let sandbox = false
     #endif
 
-    private static func newKey() -> String {
+    /// The key that seals the accounts' passwords on the server. If the
+    /// system gives no random bytes it fails: the zeros left in the buffer
+    /// would be a key anyone knows.
+    private static func newKey() throws -> String {
         var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            throw PushError.status(0, "No secure random bytes for the device key")
+        }
         return Data(bytes).base64EncodedString()
     }
 

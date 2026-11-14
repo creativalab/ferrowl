@@ -1801,6 +1801,11 @@ impl Engine {
         let folders = lock(&self.folders).clone();
         let core: Vec<mail::Header> = headers.iter().map(mail::Header::from).collect();
         let plan = self.backend.apply_rules(folder_id, core, folders).await?;
+        // A failed action is left out of the outcome; what worked still
+        // reaches the list on screen.
+        if let Some(e) = &plan.error {
+            eprintln!("rules: {e}");
+        }
         Ok(RulesOutcome {
             removed: plan.removed(),
             read: plan.mark_read,
