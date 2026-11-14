@@ -5,6 +5,8 @@
 //!
 //! The mail's own HTML is kept, but a Content-Security-Policy stops its
 //! scripts; only our one-line `print()` runs (allowed by a random nonce).
+//! What the policy does not cover (`<meta http-equiv=refresh>` redirects,
+//! `<base>`, forms, linked style sheets) is taken out of the mail first.
 //! Remote images load only if the user allows them for mail.
 
 use crate::mail::FullMessage;
@@ -34,7 +36,7 @@ pub fn page(msg: &FullMessage, remote_images: bool, nonce: &str, labels: &Labels
                 let mime = image_mime(data);
                 html = html.replace(&format!("cid:{id}"), &format!("data:{mime};base64,{b64}"));
             }
-            format!("<div class=\"mail\">{html}</div>")
+            format!("<div class=\"mail\">{}</div>", without_active_tags(&html))
         }
         None => format!("<pre class=\"mail\">{}</pre>", escape(&msg.body)),
     };
@@ -60,7 +62,7 @@ pub fn page(msg: &FullMessage, remote_images: bool, nonce: &str, labels: &Labels
     format!(
         r#"<!doctype html>
 <html><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src {img_src}; style-src 'unsafe-inline'; font-src data:; script-src 'nonce-{nonce}'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src {img_src}; style-src 'unsafe-inline'; font-src data:; script-src 'nonce-{nonce}'; form-action 'none'; base-uri 'none'">
 <title>{title}</title>
 <style>
 body {{ font: 14px/1.5 system-ui, sans-serif; color: #111; margin: 24px; }}
@@ -83,6 +85,44 @@ pre.mail {{ white-space: pre-wrap; font: inherit; margin: 0; }}
     )
 }
 
+/// The mail's HTML without the tags that act on their own when the page
+/// opens: `<meta>` (a refresh navigates away, to a tracker or worse),
+/// `<base>`, `<link>`, `<form>` and scripts (with their content).
+fn without_active_tags(html: &str) -> String {
+    // ASCII lowercase keeps every byte where it is: indices match `html`.
+    let lower = html.to_ascii_lowercase();
+    let mut out = String::with_capacity(html.len());
+    let mut i = 0;
+    while let Some(rel) = lower[i..].find('<') {
+        let start = i + rel;
+        out.push_str(&html[i..start]);
+        let after = &lower[start + 1..];
+        let closing = after.starts_with('/');
+        let name: String = after
+            .trim_start_matches('/')
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect();
+        let end = lower[start..].find('>').map_or(html.len(), |e| start + e + 1);
+        match name.as_str() {
+            // The script's text goes too, up to its end tag.
+            "script" if !closing => {
+                i = lower[end..]
+                    .find("</script")
+                    .and_then(|c| lower[end + c..].find('>').map(|e| end + c + e + 1))
+                    .unwrap_or(html.len());
+            }
+            "script" | "meta" | "base" | "link" | "form" => i = end,
+            _ => {
+                out.push_str(&html[start..end]);
+                i = end;
+            }
+        }
+    }
+    out.push_str(&html[i..]);
+    out
+}
+
 /// Image type from the first bytes (inline images are almost always one
 /// of these).
 fn image_mime(data: &[u8]) -> &'static str {
@@ -103,6 +143,9 @@ pub struct Labels {
     pub when: String,
 }
 
+/// How long the page stays on disk: the browser reads it right away.
+const PAGE_LIFETIME: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
 /// Writes the page (owner-only file) and opens it in the browser.
 pub fn open(msg: &FullMessage, remote_images: bool, labels: &Labels) -> anyhow::Result<()> {
     let nonce: String = {
@@ -110,20 +153,23 @@ pub fn open(msg: &FullMessage, remote_images: bool, labels: &Labels) -> anyhow::
         let mut rng = rand::thread_rng();
         (0..24).map(|_| char::from(b'a' + rng.gen_range(0..26))).collect()
     };
-    let path: PathBuf = std::env::temp_dir().join(format!("ferrowl-print-{}.html", msg.uid));
     let html = page(msg, remote_images, &nonce, labels);
+    // A new file with a random name, owner-only, created exclusively: on a
+    // shared /tmp nobody can have put a link or a file there in advance.
+    let mut file = tempfile::Builder::new()
+        .prefix("ferrowl-print-")
+        .suffix(".html")
+        .tempfile()?;
     {
         use std::io::Write;
-        let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        opts.open(&path)?.write_all(html.as_bytes())?;
+        file.write_all(html.as_bytes())?;
     }
+    let (_, path): (_, PathBuf) = file.keep()?;
     open::that_detached(&path)?;
+    std::thread::spawn(move || {
+        std::thread::sleep(PAGE_LIFETIME);
+        let _ = std::fs::remove_file(path);
+    });
     Ok(())
 }
 
@@ -168,5 +214,19 @@ mod tests {
         assert!(page.contains("Ada &lt;script&gt;"));
         assert!(page.contains("line &lt;b&gt;1&lt;/b&gt;"));
         assert!(page.contains("<title>Hi &amp; bye</title>"));
+    }
+
+    #[test]
+    fn active_tags_are_taken_out_of_mail_html() {
+        let html = r#"<META http-equiv="refresh" content="0;url=https://t.example"><base href="https://x">
+<p>Hi <b>there</b></p><link rel=stylesheet href="https://s"><form action="https://f"><input></form>
+<script>alert("<b>")</script><SCRIPT src=x></SCRIPT><metadata>ok</metadata>è"#;
+        let out = without_active_tags(html);
+        assert!(!out.to_lowercase().contains("<meta "), "{out}");
+        assert!(!out.contains("refresh") && !out.contains("<base") && !out.contains("<link"));
+        assert!(!out.contains("<form") && !out.contains("</form>") && !out.contains("alert"));
+        assert!(!out.to_lowercase().contains("script"));
+        assert!(out.contains("<p>Hi <b>there</b></p>") && out.contains("<input>"));
+        assert!(out.contains("<metadata>ok</metadata>è"));
     }
 }

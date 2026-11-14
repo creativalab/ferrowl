@@ -12,6 +12,7 @@ ferrowl-core = { path = "core" }
 anyhow = "1.0.104"
 base64 = "0.22"
 rand = "0.8"
+tempfile = "3.27"
 anyrender = "0.14"
 anyrender_vello_cpu = "0.18"
 blitz-dom = { version = "0.3.0-beta.4", default-features = false, features = ["svg", "woff", "system-fonts"] }

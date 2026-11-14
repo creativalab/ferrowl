@@ -2038,6 +2038,26 @@ pub fn toast_layer<'a>(app: &'a App, p: Palette) -> Option<Element<'a, Message>>
             .align_y(Alignment::Center),
         );
     }
+    if let Some((label, msg)) = &toast.action {
+        col = col.push(
+            button(text(t(label)).size(12).font(semibold()))
+                .padding([4, 10])
+                .style(move |_, st| button::Style {
+                    background: Some(Background::Color(if matches!(st, button::Status::Hovered) {
+                        mix(bg, fg, 0.25)
+                    } else {
+                        mix(bg, fg, 0.12)
+                    })),
+                    text_color: fg,
+                    border: Border {
+                        radius: radius(6.0),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+                .on_press(msg.clone()),
+        );
+    }
     let close = button(icon(icons::CLOSE, 14.0, fg))
         .padding(6)
         .style(move |_, _| button::Style {
@@ -2612,16 +2632,20 @@ fn preview_overlay<'a>(
 
 /// Modal "delete forever?" dialog (Enter confirms, Esc or a click outside cancels).
 fn delete_dialog<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
-    let subject = app
-        .selected
-        .and_then(|uid| {
-            app.visible()
-                .into_iter()
-                .find(|h| h.uid == uid)
-                .map(|h| h.subject.clone())
-        })
-        .or_else(|| app.message.as_ref().map(|m| m.subject.clone()))
-        .unwrap_or_default();
+    // For the checked messages: how many, not the open one's subject.
+    let subject = if app.bulk_delete {
+        tf("delete_n_messages", &[("n", &app.checked.len().to_string())])
+    } else {
+        app.selected
+            .and_then(|uid| {
+                app.visible()
+                    .into_iter()
+                    .find(|h| h.uid == uid)
+                    .map(|h| h.subject.clone())
+            })
+            .or_else(|| app.message.as_ref().map(|m| m.subject.clone()))
+            .unwrap_or_default()
+    };
     let danger_btn = button(
         row![
             icon(icons::TRASH, 16.0, if p.dark { p.bg } else { Color::WHITE }),

@@ -22,6 +22,9 @@ pub const READER_ID: &str = "reader";
 /// Scrollable of the message list.
 pub const LIST_ID: &str = "message-list";
 const AUTO_REFRESH: Duration = Duration::from_secs(120);
+/// Pause in typing before the search box (or a recipient field) is looked up.
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
+const SUGGEST_DEBOUNCE: Duration = Duration::from_millis(150);
 
 // ---------------------------------------------------------------- state
 
@@ -303,6 +306,8 @@ pub enum ComposeMode {
 }
 
 pub struct Compose {
+    /// Tells a send result which draft it belongs to.
+    pub id: u64,
     pub mode: ComposeMode,
     pub to: String,
     pub cc: String,
@@ -324,6 +329,17 @@ pub struct Compose {
     pub preview: Option<Vec<iced::widget::markdown::Item>>,
     /// Address suggestions under a recipient field: (field, (name, address)).
     pub suggest: Option<(ComposeField, Vec<(String, String)>)>,
+    /// Private folder holding copies of forwarded attachments, removed
+    /// once the draft is sent or discarded.
+    pub temp_dir: Option<PathBuf>,
+}
+
+/// A message whose sending failed after its draft was gone: kept so the
+/// draft can be opened again from the error notice.
+pub struct Unsent {
+    pub out: Outgoing,
+    pub rich: bool,
+    pub temp_dir: Option<PathBuf>,
 }
 
 /// Actions of the message context menu.
@@ -376,7 +392,9 @@ pub enum Fmt {
 
 impl Compose {
     fn new(mode: ComposeMode) -> Self {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             mode,
             to: String::new(),
             cc: String::new(),
@@ -394,7 +412,27 @@ impl Compose {
             encrypt: false,
             preview: None,
             suggest: None,
+            temp_dir: None,
         }
+    }
+
+    /// The draft back from a message that could not be sent.
+    fn from_unsent(u: Unsent) -> Self {
+        let mut c = Compose::new(ComposeMode::New);
+        c.to = u.out.to;
+        c.cc = u.out.cc;
+        c.bcc = u.out.bcc;
+        c.show_cc = !c.cc.is_empty() || !c.bcc.is_empty();
+        c.subject = u.out.subject;
+        c.body = text_editor::Content::with_text(&u.out.body);
+        c.attachments = u.out.attachments;
+        c.in_reply_to = u.out.in_reply_to;
+        c.references = u.out.references;
+        c.sign = u.out.sign;
+        c.encrypt = u.out.encrypt;
+        c.rich = u.rich;
+        c.temp_dir = u.temp_dir;
+        c
     }
 
     /// Applies a toolbar action to the editor: wraps the selection
@@ -596,6 +634,8 @@ pub struct Toast {
     pub id: u64,
     pub text: String,
     pub error: bool,
+    /// A button in the notice: its label key and what it does.
+    pub action: Option<(&'static str, Message)>,
 }
 
 pub struct App {
@@ -673,6 +713,30 @@ pub struct App {
     /// Action waiting for the message to load (reply/forward from the menu).
     pending_action: Option<(u32, CtxAction)>,
     pub loading_message: bool,
+    /// Bumped by every `open`: a loaded message (or its invitation) is
+    /// shown only if it answers the latest one.
+    open_seq: u64,
+    /// A push arrived while the list was loading: load it again after.
+    reload_after: bool,
+    /// Failed connection attempts in a row (automatic retries back off).
+    conn_failures: u32,
+    /// The pending automatic reconnection (older ones are dropped).
+    reconnect_seq: u64,
+    /// A background refresh of the list failed and said so already: the
+    /// next ones stay quiet until one works.
+    list_failed: bool,
+    /// Latest search typed and address lookup (typing is debounced, and
+    /// late answers to older ones are dropped).
+    search_seq: u64,
+    suggest_seq: u64,
+    /// A message that failed to send after its draft was closed.
+    pub unsent: Option<Unsent>,
+    /// The account's calendars, sender lists and rules, read from the
+    /// local database in `update` (views must not query it every frame).
+    pub calendars: Vec<ferrowl_core::dav::Collection>,
+    pub blocked_senders: Vec<String>,
+    pub allowed_senders: Vec<String>,
+    pub rules: Vec<ferrowl_core::rules::Rule>,
     pub confirm_delete: bool,
     /// Messages checked in the list (uids of the open folder).
     pub checked: std::collections::BTreeSet<u32>,
@@ -762,6 +826,23 @@ pub enum Message {
         silent: bool,
         result: Res<(Vec<Header>, u32)>,
     },
+    /// A loaded page after the sender lists looked at it: `ruled` are the
+    /// messages they move (to Spam when `to_spam`, else to the inbox).
+    ListReady {
+        folder: String,
+        headers: Vec<Header>,
+        first_seq: u32,
+        ruled: Vec<u32>,
+        to_spam: bool,
+    },
+    /// The folder's list as stored on this computer, shown while the
+    /// server's answer comes.
+    CachedList {
+        folder: String,
+        headers: Vec<Header>,
+    },
+    /// Time for an automatic reconnection attempt (its number).
+    Reconnect(u64),
     /// A background indexing step finished; `Some(seq)` = continue from there.
     Indexed {
         folder: String,
@@ -794,6 +875,13 @@ pub enum Message {
     Tick,
     // list
     Search(String),
+    /// The search typed stopped changing: look it up (its number).
+    SearchRun(u64),
+    Searched {
+        seq: u64,
+        folder: String,
+        found: Option<Vec<Header>>,
+    },
     SetFilter(ListFilter),
     /// Checkbox of a list row: its uids (a whole conversation when grouped).
     Check(Vec<u32>, bool),
@@ -850,6 +938,7 @@ pub enum Message {
     /// Moves the checked messages to a folder.
     BulkMove(MoveTarget),
     BulkDone {
+        folder: String,
         uids: Vec<u32>,
         note: &'static str,
         result: Res<()>,
@@ -860,7 +949,10 @@ pub enum Message {
     /// Expands or collapses a conversation in the list (its messages).
     ToggleThread(Vec<u32>),
     Open(u32),
-    Loaded(Res<FullMessage>),
+    /// The message asked for by `open` number `.0`.
+    Loaded(u64, Res<FullMessage>),
+    /// The open message's invitation card, for `open` number `.0`.
+    InviteLoaded(u64, Option<InviteCard>),
     ToggleHtml,
     /// The painted HTML of message `uid`, or why there is none.
     HtmlRendered(
@@ -919,11 +1011,13 @@ pub enum Message {
     ConfirmDelete(bool),
     ToggleRead,
     Done {
+        folder: String,
         uid: u32,
         note: &'static str,
         result: Res<()>,
     },
     Archived {
+        folder: String,
         uid: u32,
         result: Res<String>,
     },
@@ -1023,6 +1117,9 @@ pub enum Message {
     // compose
     ComposeNew,
     ComposeField(ComposeField, String),
+    /// Typing in a recipient field paused: look up addresses for the word.
+    SuggestRun(u64, ComposeField, String),
+    Suggested(u64, ComposeField, Vec<(String, String)>),
     /// Chosen address suggestion: (field, name, address).
     ComposePick(ComposeField, String, String),
     /// Enter in a recipient field: take the first suggestion.
@@ -1036,8 +1133,11 @@ pub enum Message {
     ComposeAttached(Vec<PathBuf>),
     ComposeRemove(usize),
     ComposeSend,
-    ComposeSent(Res<Option<String>>),
+    /// Result of sending draft `.0` (what was sent, for a retry).
+    ComposeSent(u64, Box<Outgoing>, Res<Option<String>>),
     ComposeClose,
+    /// Open again the draft of a message that failed to send.
+    ReopenUnsent,
     // misc
     Key(keyboard::Event),
     DismissToast(u64),
@@ -1121,6 +1221,18 @@ impl App {
             drop_folder: None,
             pending_action: None,
             loading_message: false,
+            open_seq: 0,
+            reload_after: false,
+            conn_failures: 0,
+            reconnect_seq: 0,
+            list_failed: false,
+            search_seq: 0,
+            suggest_seq: 0,
+            unsent: None,
+            calendars: Vec::new(),
+            blocked_senders: Vec::new(),
+            allowed_senders: Vec::new(),
+            rules: Vec::new(),
             confirm_delete: false,
             checked: Default::default(),
             open_threads: Default::default(),
@@ -1165,6 +1277,7 @@ impl App {
             contact_form: None,
             confirm_contact_delete: false,
         };
+        app.reload_lists();
         // Development: open a given view directly (used for screenshots).
         match std::env::var("FERROWL_DEV_VIEW").as_deref() {
             Ok("settings") => app.screen = Screen::Settings(Section::Accounts),
@@ -1406,13 +1519,13 @@ impl App {
         else {
             return Task::none();
         };
+        if !self.config.ui.notifications {
+            return Task::none();
+        }
         let mut new: Vec<&Header> = headers.iter().filter(|h| h.uid > previous && !h.seen).collect();
         // Rules may keep some of them quiet.
-        if let Some(acc) = self.config.account() {
-            let quiet = Backend::silenced(acc, headers);
-            new.retain(|h| !quiet.contains(&h.uid));
-        }
-        if new.is_empty() || !self.config.ui.notifications {
+        new.retain(|h| !ferrowl_core::rules::silenced(&self.rules, h));
+        if new.is_empty() {
             return Task::none();
         }
         let (summary, body) = match new.as_slice() {
@@ -1641,6 +1754,7 @@ impl App {
         }
         let note = if to_spam { "spam_moved" } else { "inbox_moved" };
         let ids = uids.clone();
+        let from = folder.clone();
         self.perform(
             async move {
                 if to_spam {
@@ -1650,6 +1764,7 @@ impl App {
                 }
             },
             move |result| Message::BulkDone {
+                folder: from.clone(),
                 uids: uids.clone(),
                 note,
                 result,
@@ -1672,6 +1787,7 @@ impl App {
         for a in addrs {
             let _ = Backend::set_sender_rule(&acc, &a, true);
         }
+        self.reload_lists();
     }
 
     fn bulk(&mut self, action: Bulk) -> Task<Message> {
@@ -1683,8 +1799,10 @@ impl App {
             return Task::none();
         }
         let b = self.backend.clone();
+        let from = folder.clone();
         let done = |note: &'static str, uids: Vec<u32>| {
             move |result| Message::BulkDone {
+                folder: from.clone(),
                 uids: uids.clone(),
                 note,
                 result,
@@ -1749,7 +1867,7 @@ impl App {
                 }
                 // In Trash: confirm, then delete for good.
                 _ => {
-                    self.bulk_delete = true;
+                    self.bulk_delete = !self.checked.is_empty();
                     self.confirm_delete = true;
                     Task::none()
                 }
@@ -1766,9 +1884,14 @@ impl App {
         }
         let b = self.backend.clone();
         let folders = self.folders.clone();
+        let from = folder.clone();
         self.perform(
             async move { b.archive(folder, uid, folders).await },
-            move |result| Message::Archived { uid, result },
+            move |result| Message::Archived {
+                folder: from.clone(),
+                uid,
+                result,
+            },
         )
     }
 
@@ -1780,9 +1903,11 @@ impl App {
             // Outside Trash: move to Trash (recoverable).
             Some(trash) if trash != folder => {
                 let b = self.backend.clone();
+                let from = folder.clone();
                 self.perform(
                     async move { b.move_to(folder, uid, trash).await },
                     move |result| Message::Done {
+                        folder: from.clone(),
                         uid,
                         note: "moved_to_trash",
                         result,
@@ -1803,6 +1928,8 @@ impl App {
             Task::none()
         };
         self.confirm_delete = true;
+        // This dialog is for one message, whatever is checked.
+        self.bulk_delete = false;
         open
     }
 
@@ -1812,9 +1939,11 @@ impl App {
         };
         let b = self.backend.clone();
         let refresh = self.refresh_unseen();
+        let from = folder.clone();
         let mv = self.perform(
             async move { b.move_to(folder, uid, target).await },
             move |result| Message::Done {
+                folder: from.clone(),
                 uid,
                 note: "moved_ok",
                 result,
@@ -1860,17 +1989,77 @@ impl App {
     }
 
     /// Searches the local index (all cached messages of the folder, not only
-    /// the ones loaded). Falls back to in-memory matching if the index has
-    /// nothing (e.g. cache unavailable).
-    fn run_search(&mut self) {
+    /// the ones loaded), off the UI thread. Falls back to in-memory matching
+    /// if the index has nothing (e.g. cache unavailable).
+    fn run_search(&mut self) -> Task<Message> {
         let words = self.free_words();
-        self.search_results = match (self.config.account(), &self.current_folder) {
-            (Some(acc), Some(folder)) if !words.is_empty() => {
-                let found = Backend::search(acc, folder, &words);
-                (!found.is_empty() || crate::cache::get().is_some()).then_some(found)
-            }
-            _ => None,
+        let (Some(acc), Some(folder)) = (self.config.account().cloned(), self.current_folder.clone()) else {
+            self.search_results = None;
+            return Task::none();
         };
+        if words.is_empty() {
+            self.search_results = None;
+            return Task::none();
+        }
+        let seq = self.search_seq;
+        let f = folder.clone();
+        self.perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let found = Backend::search(&acc, &f, &words);
+                    (!found.is_empty() || crate::cache::get().is_some()).then_some(found)
+                })
+                .await
+                .unwrap_or(None)
+            },
+            move |found| Message::Searched {
+                seq,
+                folder: folder.clone(),
+                found,
+            },
+        )
+    }
+
+    /// Reads the account's calendars, sender lists and rules from the local
+    /// database (after a change, or when the account changes).
+    fn reload_lists(&mut self) {
+        let Some(acc) = self.config.account() else {
+            self.calendars.clear();
+            self.blocked_senders.clear();
+            self.allowed_senders.clear();
+            self.rules.clear();
+            return;
+        };
+        self.calendars = Backend::calendars(acc);
+        self.blocked_senders = Backend::sender_rules(acc, false);
+        self.allowed_senders = Backend::sender_rules(acc, true);
+        self.rules = Backend::rules(acc);
+    }
+
+    /// Keeps the page shown within the list (it shrinks after a refresh or
+    /// a removal).
+    fn clamp_page(&mut self) {
+        let size = self.config.ui.page_size.max(1) as usize;
+        let pages = self.list_rows().len().div_ceil(size).max(1);
+        self.page = self.page.min(pages - 1);
+    }
+
+    /// Takes a fresh newest page from the server, keeping the older
+    /// messages loaded with "next page" (only those older than the page:
+    /// within its range the server's answer is the truth).
+    fn merge_headers(&mut self, new: Vec<Header>, floor: Option<u32>) {
+        let mut older: Vec<Header> = match floor {
+            Some(min) => {
+                let fresh: HashSet<u32> = new.iter().map(|h| h.uid).collect();
+                std::mem::take(&mut self.headers)
+                    .into_iter()
+                    .filter(|h| h.uid < min && !fresh.contains(&h.uid))
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        self.headers = new;
+        self.headers.append(&mut older);
     }
 
     /// POP3: messages downloaded in the background go straight into the
@@ -1880,6 +2069,7 @@ impl App {
             && let Some(account) = self.config.account().filter(|a| a.is_pop3())
         {
             self.headers = Backend::cached_headers(account, folder);
+            self.clamp_page();
             return self.refresh_unseen();
         }
         Task::none()
@@ -2011,6 +2201,32 @@ impl App {
         self.hover_link = None;
         self.unseen.clear();
         self.confirm_delete = false;
+        // Everything below names messages, events or rules of this account:
+        // kept across a switch it would act on the next account's (same
+        // UIDs, other mail).
+        self.bulk_delete = false;
+        self.checked.clear();
+        self.open_threads.clear();
+        self.anchor = None;
+        self.page = 0;
+        self.pending_action = None;
+        self.loading_message = false;
+        self.loading_list = false;
+        self.reload_after = false;
+        self.list_failed = false;
+        self.menu = None;
+        self.drag = None;
+        self.popup = None;
+        self.preview = None;
+        self.thumbs.clear();
+        self.invite = None;
+        self.insights = None;
+        self.html_failed = None;
+        self.html_rendering = false;
+        self.event_form = None;
+        self.confirm_event_delete = false;
+        self.rule_edit = None;
+        self.rule_preview.clear();
         self.last_sync = None;
         self.pane = Pane::Mail;
         self.contacts.clear();
@@ -2035,6 +2251,8 @@ impl App {
         self.generation += 1;
         self.backend = Backend::default();
         self.reset_mailbox();
+        self.reload_lists();
+        self.conn_failures = 0;
         self.screen = Screen::Mail;
         self.connect()
     }
@@ -2046,6 +2264,16 @@ impl App {
         self.conn = Conn::Connecting;
         let b = self.backend.clone();
         self.perform(async move { b.connect(acc).await }, Message::Connected)
+    }
+
+    /// After a failed connection: tries again by itself, waiting longer
+    /// each time (15 s, 30 s… up to 8 min), so starting before the network
+    /// is up, or losing it, needs no click on Sync.
+    fn schedule_reconnect(&mut self) -> Task<Message> {
+        self.reconnect_seq += 1;
+        let seq = self.reconnect_seq;
+        let delay = Duration::from_secs(15 << self.conn_failures.saturating_sub(1).min(5));
+        self.perform(tokio::time::sleep(delay), move |_| Message::Reconnect(seq))
     }
 
     /// Syncs the active account's contacts after `delay`.
@@ -2063,19 +2291,34 @@ impl App {
         )
     }
 
-    /// The invitation card for a message with a calendar part.
-    fn invite_card(&self, msg: &FullMessage) -> Option<InviteCard> {
-        let ics = msg.calendar.clone()?;
-        let invitation = ferrowl_core::invite::read(&ics)?;
-        let acc = self.config.account()?;
-        Some(InviteCard {
-            uid: msg.uid,
-            reply: Backend::invitation_reply(acc, &invitation.uid),
-            in_calendar: invitation.method == "CANCEL" && Backend::in_calendar(acc, &invitation.uid),
-            ics,
-            invitation,
-            busy: false,
-        })
+    /// Builds the invitation card for a message with a calendar part, off
+    /// the UI thread (it looks up our answer in the local database).
+    fn load_invite(&self, msg: &FullMessage) -> Task<Message> {
+        let (Some(ics), Some(acc)) = (msg.calendar.clone(), self.config.account().cloned()) else {
+            return Task::none();
+        };
+        let uid = msg.uid;
+        let seq = self.open_seq;
+        self.perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let invitation = ferrowl_core::invite::read(&ics)?;
+                    Some(InviteCard {
+                        uid,
+                        reply: Backend::invitation_reply(&acc, &invitation.uid),
+                        in_calendar: invitation.method == "CANCEL"
+                            && Backend::in_calendar(&acc, &invitation.uid),
+                        ics,
+                        invitation,
+                        busy: false,
+                    })
+                })
+                .await
+                .ok()
+                .flatten()
+            },
+            move |card| Message::InviteLoaded(seq, card),
+        )
     }
 
     /// Syncs the active account's calendars after `delay`.
@@ -2126,24 +2369,37 @@ impl App {
     }
 
     fn load_folder(&mut self, folder: String, silent: bool) -> Task<Message> {
+        let mut cached = Task::none();
         if !silent {
             self.loading_list = true;
             // Show the cached list right away; the server's answer replaces it.
             if self.headers.is_empty()
-                && let Some(acc) = self.config.account()
+                && let Some(acc) = self.config.account().cloned()
             {
-                self.headers = Backend::cached_headers(acc, &folder);
+                let f = folder.clone();
+                cached = self.perform(
+                    async move {
+                        let from = f.clone();
+                        let headers =
+                            tokio::task::spawn_blocking(move || Backend::cached_headers(&acc, &from))
+                                .await
+                                .unwrap_or_default();
+                        (f, headers)
+                    },
+                    |(folder, headers)| Message::CachedList { folder, headers },
+                );
             }
         }
         let b = self.backend.clone();
         let f = folder.clone();
-        self.perform(async move { b.headers(f).await }, move |result| {
+        let load = self.perform(async move { b.headers(f).await }, move |result| {
             Message::HeadersLoaded {
                 folder: folder.clone(),
                 silent,
                 result,
             }
-        })
+        });
+        Task::batch([cached, load])
     }
 
     fn refresh_unseen(&self) -> Task<Message> {
@@ -2220,17 +2476,42 @@ impl App {
     }
 
     fn toast(&mut self, text: impl Into<String>, error: bool) -> Task<Message> {
+        self.toast_with(text, error, None)
+    }
+
+    /// A notice with a button (`action`: its label key and message).
+    fn toast_with(
+        &mut self,
+        text: impl Into<String>,
+        error: bool,
+        action: Option<(&'static str, Message)>,
+    ) -> Task<Message> {
         self.toast_seq += 1;
         let id = self.toast_seq;
         self.toast = Some(Toast {
             id,
             text: text.into(),
             error,
+            action,
         });
         let secs = if error { 12 } else { 5 };
         Task::perform(tokio::time::sleep(Duration::from_secs(secs)), move |_| {
             Message::DismissToast(id)
         })
+    }
+
+    /// Opens a draft in the compose window. Not over a message being sent:
+    /// its result would have no draft to go back to.
+    fn set_compose(&mut self, c: Compose) -> Task<Message> {
+        if self.compose.as_ref().is_some_and(|c| c.sending) {
+            remove_temp_dir(c.temp_dir);
+            return self.toast(t("compose_busy"), false);
+        }
+        if let Some(old) = self.compose.take() {
+            remove_temp_dir(old.temp_dir);
+        }
+        self.compose = Some(c);
+        Task::none()
     }
 
     fn save_config(&mut self) -> Task<Message> {
@@ -2253,49 +2534,107 @@ impl App {
         self.html_rendering = false;
         self.loading_message = true;
         self.confirm_delete = false;
+        self.bulk_delete = false;
+        self.invite = None;
+        self.open_seq += 1;
+        let seq = self.open_seq;
         let b = self.backend.clone();
-        self.perform(async move { b.message(folder, uid).await }, Message::Loaded)
+        self.perform(async move { b.message(folder, uid).await }, move |r| {
+            Message::Loaded(seq, r)
+        })
+    }
+
+    /// The messages in the order the list shows them, an open
+    /// conversation's one by one (newest first, as drawn under its row):
+    /// (message to open, the messages that line stands for).
+    fn nav_order(&self) -> Vec<(u32, Vec<u32>)> {
+        let mut out = Vec::new();
+        for (h, uids, _) in self.list_rows() {
+            if uids.len() > 1 && uids.iter().any(|u| self.open_threads.contains(u)) {
+                for m in self.conversation(h.uid).into_iter().rev() {
+                    out.push((m.uid, vec![m.uid]));
+                }
+            } else {
+                out.push((h.uid, uids));
+            }
+        }
+        out
+    }
+
+    /// Turns to the page holding the row of message `uid`.
+    fn show_page_of(&mut self, uid: u32) {
+        let size = self.config.ui.page_size.max(1) as usize;
+        if let Some(i) = self.rows().iter().position(|r| r.contains(&uid)) {
+            self.page = i / size;
+        }
     }
 
     /// After removing a message from the list, opens the next one.
     fn remove_and_advance(&mut self, uid: u32) -> Task<Message> {
-        let visible: Vec<u32> = self.visible().iter().map(|h| h.uid).collect();
-        let pos = visible.iter().position(|&u| u == uid);
+        let order = self.nav_order();
+        let pos = order.iter().position(|(_, uids)| uids.contains(&uid));
         self.headers.retain(|h| h.uid != uid);
         if let Some(r) = self.search_results.as_mut() {
             r.retain(|h| h.uid != uid);
         }
+        self.checked.remove(&uid);
         if self.selected != Some(uid) {
+            self.clamp_page();
             return Task::none();
         }
         self.selected = None;
         self.message = None;
         let next = pos.and_then(|p| {
-            visible
-                .get(p + 1)
-                .or_else(|| p.checked_sub(1).and_then(|q| visible.get(q)))
-                .copied()
+            order[p + 1..]
+                .iter()
+                .chain(order[..p].iter().rev())
+                .find(|(u, _)| *u != uid)
+                .map(|(u, _)| *u)
         });
+        self.clamp_page();
         match next {
-            Some(n) => self.open(n),
+            Some(n) => {
+                self.show_page_of(n);
+                self.open(n)
+            }
             None => Task::none(),
         }
     }
 
+    /// j/k and the arrows: the next or previous message as the list shows
+    /// it (chosen order, conversations, pages).
     fn step(&mut self, delta: isize) -> Task<Message> {
-        let visible: Vec<u32> = self.visible().iter().map(|h| h.uid).collect();
-        if visible.is_empty() {
+        let order = self.nav_order();
+        if order.is_empty() {
             return Task::none();
         }
-        let idx = self
+        let idx = match self
             .selected
-            .and_then(|s| visible.iter().position(|&u| u == s))
-            .map(|i| (i as isize + delta).clamp(0, visible.len() as isize - 1) as usize)
-            .unwrap_or(0);
-        if Some(visible[idx]) == self.selected {
+            .and_then(|s| order.iter().position(|(_, uids)| uids.contains(&s)))
+        {
+            Some(i) => (i as isize + delta).clamp(0, order.len() as isize - 1) as usize,
+            // Nothing open: the first message of the page shown.
+            None => {
+                let size = self.config.ui.page_size.max(1) as usize;
+                let first: HashSet<u32> = self
+                    .rows()
+                    .into_iter()
+                    .skip(self.page * size)
+                    .take(1)
+                    .flatten()
+                    .collect();
+                order
+                    .iter()
+                    .position(|(_, uids)| uids.iter().any(|u| first.contains(u)))
+                    .unwrap_or(0)
+            }
+        };
+        let uid = order[idx].0;
+        if Some(uid) == self.selected {
             return Task::none();
         }
-        self.open(visible[idx])
+        self.show_page_of(uid);
+        self.open(uid)
     }
 
     fn reply_draft(&self, msg: &FullMessage) -> Compose {
@@ -2338,15 +2677,27 @@ impl App {
             msg.to,
             msg.body
         ));
-        // The original attachments are saved to a temporary folder and re-attached.
-        let dir = std::env::temp_dir().join(format!("ferrowl-fwd-{}", msg.uid));
-        if !msg.attachments.is_empty() && std::fs::create_dir_all(&dir).is_ok() {
+        // The original attachments are saved to a private temporary folder
+        // (owner-only, unique name: never one another user prepared) and
+        // re-attached; the folder goes once the draft is sent or discarded.
+        if !msg.attachments.is_empty()
+            && let Ok(dir) = tempfile::Builder::new().prefix("ferrowl-fwd-").tempdir()
+        {
+            let dir = dir.keep();
             for a in &msg.attachments {
-                let path = dir.join(safe_name(&a.name));
+                // Two attachments with the same name must not overwrite each other.
+                let safe = safe_name(&a.name);
+                let mut path = dir.join(&safe);
+                let mut n = 1;
+                while path.exists() {
+                    path = dir.join(format!("({n}) {safe}"));
+                    n += 1;
+                }
                 if std::fs::write(&path, &a.data).is_ok() {
                     c.attachments.push(path);
                 }
             }
+            c.temp_dir = Some(dir);
         }
         c
     }
@@ -2364,6 +2715,7 @@ impl App {
             }
             Message::Connected(Ok(folders)) => {
                 self.conn = Conn::Online;
+                self.conn_failures = 0;
                 self.gmail = self.backend.is_gmail();
                 self.folders = folders;
                 let start = self
@@ -2379,6 +2731,9 @@ impl App {
                     self.headers.clear();
                     self.selected = None;
                     self.message = None;
+                    self.loading_message = false;
+                    self.checked.clear();
+                    self.page = 0;
                 }
                 let load = match self.current_folder.clone() {
                     Some(f) => self.load_folder(f, false),
@@ -2415,7 +2770,19 @@ impl App {
             }
             Message::Connected(Err(e)) => {
                 self.conn = Conn::Error(e.clone());
-                self.toast(e, true)
+                self.conn_failures += 1;
+                let retry = self.schedule_reconnect();
+                // Said once: the automatic retries that follow stay quiet.
+                if self.conn_failures > 1 {
+                    return retry;
+                }
+                Task::batch([retry, self.toast(e, true)])
+            }
+            Message::Reconnect(seq) => {
+                if seq != self.reconnect_seq || !matches!(self.conn, Conn::Error(_) | Conn::Offline) {
+                    return Task::none();
+                }
+                self.connect()
             }
             Message::Unseen(Ok(map)) => {
                 self.unseen.extend(map);
@@ -2472,9 +2839,11 @@ impl App {
                 }
                 let b = self.backend.clone();
                 let ids = uids.clone();
+                let from = folder.clone();
                 self.perform(
                     async move { b.move_many(folder, ids, target.name).await },
                     move |result| Message::BulkDone {
+                        folder: from.clone(),
                         uids: uids.clone(),
                         note: "bulk_moved",
                         result,
@@ -2488,17 +2857,27 @@ impl App {
                 }
                 Err(e) => self.toast(e, true),
             },
-            Message::BulkDone { uids, note, result } => match result {
+            Message::BulkDone {
+                folder,
+                uids,
+                note,
+                result,
+            } => match result {
                 Ok(()) => {
-                    self.headers.retain(|h| !uids.contains(&h.uid));
-                    if let Some(r) = self.search_results.as_mut() {
-                        r.retain(|h| !uids.contains(&h.uid));
+                    // The UIDs are the folder's they were taken from: in the
+                    // folder open now they would be other messages.
+                    if self.current_folder.as_deref() == Some(&folder) {
+                        self.headers.retain(|h| !uids.contains(&h.uid));
+                        if let Some(r) = self.search_results.as_mut() {
+                            r.retain(|h| !uids.contains(&h.uid));
+                        }
+                        if self.selected.is_some_and(|u| uids.contains(&u)) {
+                            self.selected = None;
+                            self.message = None;
+                        }
+                        self.checked.retain(|u| !uids.contains(u));
+                        self.clamp_page();
                     }
-                    if self.selected.is_some_and(|u| uids.contains(&u)) {
-                        self.selected = None;
-                        self.message = None;
-                    }
-                    self.checked.clear();
                     let note = tf(note, &[("n", &uids.len().to_string())]);
                     Task::batch([self.toast(note, false), self.refresh_unseen()])
                 }
@@ -2519,7 +2898,13 @@ impl App {
                 self.search_results = None;
                 self.selected = None;
                 self.message = None;
+                self.html_render = None;
+                self.invite = None;
+                self.loading_message = false;
+                self.pending_action = None;
                 self.confirm_delete = false;
+                self.bulk_delete = false;
+                self.reload_after = false;
                 self.load_folder(name, false)
             }
             Message::ToggleNode(id) => {
@@ -2536,55 +2921,122 @@ impl App {
                 if self.current_folder.as_deref() != Some(&folder) {
                     return Task::none();
                 }
-                self.loading_list = false;
                 match result {
-                    Ok((mut headers, first_seq)) => {
+                    Ok((headers, first_seq)) => {
                         self.conn = Conn::Online;
+                        self.list_failed = false;
                         // Sender lists: blocked mail leaves the inbox for
-                        // Spam, allowed mail leaves Spam for the inbox.
+                        // Spam, allowed mail leaves Spam for the inbox. They
+                        // are looked up off the UI thread.
                         let kind = self.folders.iter().find(|f| f.name == folder).map(|f| f.kind);
-                        let ruled = match (kind, self.config.account()) {
+                        match (kind, self.config.account().cloned()) {
                             (Some(k @ (FolderKind::Inbox | FolderKind::Spam)), Some(acc)) => {
                                 let to_spam = k == FolderKind::Inbox;
-                                let uids = Backend::ruled(acc, &headers, to_spam);
-                                headers.retain(|h| !uids.contains(&h.uid));
-                                self.junk(folder.clone(), uids, to_spam, true)
+                                self.perform(
+                                    async move {
+                                        let page = headers.clone();
+                                        let ruled = tokio::task::spawn_blocking(move || {
+                                            Backend::ruled(&acc, &page, to_spam)
+                                        })
+                                        .await
+                                        .unwrap_or_default();
+                                        (headers, ruled)
+                                    },
+                                    move |(headers, ruled)| Message::ListReady {
+                                        folder: folder.clone(),
+                                        headers,
+                                        first_seq,
+                                        ruled,
+                                        to_spam,
+                                    },
+                                )
                             }
-                            _ => Task::none(),
-                        };
-                        let (notify, rules) = if self
-                            .folder_by_kind(FolderKind::Inbox)
-                            .is_some_and(|f| f.name == folder)
-                        {
-                            (
-                                self.note_new_mail(&headers),
-                                self.apply_rules(folder.clone(), &headers),
-                            )
-                        } else {
-                            (Task::none(), Task::none())
-                        };
-                        self.headers = headers;
-                        self.last_sync = Some(chrono::Local::now());
-                        self.run_search();
-                        let index = if self.indexed.insert(folder.clone()) {
-                            self.index_step(folder, first_seq, INDEX_FIRST_PAUSE)
-                        } else {
-                            Task::none()
-                        };
-                        Task::batch([self.refresh_unseen(), index, notify, ruled, rules])
+                            _ => self.update(Message::ListReady {
+                                folder,
+                                headers,
+                                first_seq,
+                                ruled: Vec::new(),
+                                to_spam: false,
+                            }),
+                        }
                     }
                     Err(e) => {
-                        if !silent {
-                            self.conn = Conn::Error(e.clone());
+                        self.loading_list = false;
+                        // One folder failing is not the connection failing:
+                        // the rest keeps working (and the backend opens a new
+                        // session by itself when the old one is gone).
+                        // A background refresh says it once, not every time.
+                        if silent && std::mem::replace(&mut self.list_failed, true) {
+                            return Task::none();
                         }
                         self.toast(e, true)
                     }
                 }
             }
+            Message::ListReady {
+                folder,
+                mut headers,
+                first_seq,
+                ruled,
+                to_spam,
+            } => {
+                if self.current_folder.as_deref() != Some(&folder) {
+                    return Task::none();
+                }
+                self.loading_list = false;
+                // Taken before the sender lists remove any: older loaded
+                // messages are those below the server's page.
+                let floor = headers.iter().map(|h| h.uid).min();
+                headers.retain(|h| !ruled.contains(&h.uid));
+                let ruled = self.junk(folder.clone(), ruled, to_spam, true);
+                let (notify, rules) = if self
+                    .folder_by_kind(FolderKind::Inbox)
+                    .is_some_and(|f| f.name == folder)
+                {
+                    (
+                        self.note_new_mail(&headers),
+                        self.apply_rules(folder.clone(), &headers),
+                    )
+                } else {
+                    (Task::none(), Task::none())
+                };
+                self.merge_headers(headers, floor);
+                self.clamp_page();
+                self.last_sync = Some(chrono::Local::now());
+                let search = self.run_search();
+                let index = if self.indexed.insert(folder.clone()) {
+                    self.index_step(folder.clone(), first_seq, INDEX_FIRST_PAUSE)
+                } else {
+                    Task::none()
+                };
+                // A push came while this was loading: what it announced may
+                // not be in this answer.
+                let again = if std::mem::take(&mut self.reload_after) {
+                    self.load_folder(folder, true)
+                } else {
+                    Task::none()
+                };
+                Task::batch([self.refresh_unseen(), index, notify, ruled, rules, search, again])
+            }
+            Message::CachedList { folder, headers } => {
+                // Only while the server's answer is still awaited.
+                if self.current_folder.as_deref() == Some(&folder)
+                    && self.loading_list
+                    && self.headers.is_empty()
+                {
+                    self.headers = headers;
+                    return self.run_search();
+                }
+                Task::none()
+            }
             Message::Sync => match (&self.conn, self.current_folder.clone()) {
                 (Conn::Online, Some(f)) => self.load_folder(f, false),
                 (Conn::Connecting, _) => Task::none(),
-                _ => self.connect(),
+                _ => {
+                    // Asked for: a failure is reported again.
+                    self.conn_failures = 0;
+                    self.connect()
+                }
             },
             Message::Tick => match (&self.conn, self.current_folder.clone()) {
                 (Conn::Online, Some(f)) if !self.loading_list => self.load_folder(f, true),
@@ -2593,7 +3045,31 @@ impl App {
             Message::Search(s) => {
                 self.page = 0;
                 self.search = s;
-                self.run_search();
+                // Typing is debounced: the index is searched once it pauses.
+                self.search_seq += 1;
+                if self.free_words().is_empty() {
+                    self.search_results = None;
+                    return Task::none();
+                }
+                let seq = self.search_seq;
+                Task::perform(tokio::time::sleep(SEARCH_DEBOUNCE), move |_| {
+                    Message::SearchRun(seq)
+                })
+            }
+            Message::SearchRun(seq) => {
+                if seq != self.search_seq {
+                    return Task::none();
+                }
+                self.run_search()
+            }
+            Message::Searched { seq, folder, found } => {
+                if seq == self.search_seq
+                    && self.current_folder.as_deref() == Some(&folder)
+                    && !self.free_words().is_empty()
+                {
+                    self.search_results = found;
+                    self.clamp_page();
+                }
                 Task::none()
             }
             Message::Push(generation) => {
@@ -2605,6 +3081,8 @@ impl App {
                 }
                 if self.current_folder.as_deref() == Some(&inbox) {
                     if self.loading_list {
+                        // Its answer may predate this change: load again after.
+                        self.reload_after = true;
                         return Task::none();
                     }
                     return self.load_folder(inbox, true);
@@ -2786,8 +3264,7 @@ impl App {
                 }
                 Ok(None) => {
                     let shown = self.show_pop3_downloads(&folder);
-                    self.run_search();
-                    shown
+                    Task::batch([shown, self.run_search()])
                 }
                 Err(_) => {
                     self.indexed.remove(&folder);
@@ -2950,6 +3427,7 @@ impl App {
                 if let Err(e) = Backend::set_sender_rule(&acc, &msg.from_address, false) {
                     return self.toast(e, true);
                 }
+                self.reload_lists();
                 // This message and the sender's other loaded ones.
                 let addr = msg.from_address.to_lowercase();
                 let mut uids: Vec<u32> = self
@@ -2998,7 +3476,7 @@ impl App {
                 let Some(acc) = self.config.account() else {
                     return Task::none();
                 };
-                if let Some(rule) = Backend::rules(acc).into_iter().find(|r| r.id == id) {
+                if let Some(rule) = self.rules.iter().find(|r| r.id == id).cloned() {
                     self.rule_preview = rule_preview(acc, &rule.condition);
                     self.rule_edit = Some((rule, false));
                 }
@@ -3060,6 +3538,7 @@ impl App {
                     Ok(()) => {
                         self.rule_edit = None;
                         self.rule_preview.clear();
+                        self.reload_lists();
                         self.toast(t("rules_saved").to_string(), false)
                     }
                     Err(e) => self.toast(e, true),
@@ -3072,7 +3551,9 @@ impl App {
                 if self.rule_edit.as_ref().is_some_and(|(r, _)| r.id == id) {
                     self.rule_edit = None;
                 }
-                match Backend::delete_rule(acc, &id) {
+                let done = Backend::delete_rule(acc, &id);
+                self.reload_lists();
+                match done {
                     Ok(()) => Task::none(),
                     Err(e) => self.toast(e, true),
                 }
@@ -3081,11 +3562,13 @@ impl App {
                 let Some(acc) = self.config.account() else {
                     return Task::none();
                 };
-                let Some(mut rule) = Backend::rules(acc).into_iter().find(|r| r.id == id) else {
+                let Some(mut rule) = self.rules.iter().find(|r| r.id == id).cloned() else {
                     return Task::none();
                 };
                 rule.enabled = on;
-                match Backend::save_rule(acc, &rule) {
+                let done = Backend::save_rule(acc, &rule);
+                self.reload_lists();
+                match done {
                     Ok(()) => Task::none(),
                     Err(e) => self.toast(e, true),
                 }
@@ -3107,8 +3590,8 @@ impl App {
                             h.flagged = true;
                         }
                     }
-                    self.run_search();
                 }
+                let search = self.run_search();
                 let mut n: Vec<u32> = plan
                     .mark_read
                     .iter()
@@ -3123,7 +3606,7 @@ impl App {
                     Some(e) => self.toast(e, true),
                     None => self.toast(tf("rules_applied", &[("n", &n.len().to_string())]), false),
                 };
-                Task::batch([toast, self.refresh_unseen()])
+                Task::batch([toast, self.refresh_unseen(), search])
             }
             Message::MailRules(Err(e)) => self.toast(e, true),
             Message::SenderInput(allow, text) => {
@@ -3147,7 +3630,9 @@ impl App {
                 if !text.contains('@') {
                     return Task::none();
                 }
-                match Backend::set_sender_rule(&acc, text, allow) {
+                let done = Backend::set_sender_rule(&acc, text, allow);
+                self.reload_lists();
+                match done {
                     Ok(()) => Task::none(),
                     Err(e) => self.toast(e, true),
                 }
@@ -3156,6 +3641,7 @@ impl App {
                 if let Some(acc) = self.config.account() {
                     Backend::remove_sender_rule(acc, &address);
                 }
+                self.reload_lists();
                 Task::none()
             }
             Message::Print => {
@@ -3178,6 +3664,10 @@ impl App {
                 self.message = None;
                 self.html_render = None;
                 self.invite = None;
+                // A message still loading is no longer wanted.
+                self.loading_message = false;
+                self.pending_action = None;
+                self.open_seq += 1;
                 Task::none()
             }
             Message::StarSaved(Ok(())) => Task::none(),
@@ -3188,23 +3678,28 @@ impl App {
                 };
                 Task::batch([self.toast(e, true), reload])
             }
-            Message::Loaded(Ok(msg)) => {
+            // An answer to an older `open` (another message clicked since,
+            // folder changed, reader closed) is dropped.
+            Message::Loaded(seq, _) | Message::InviteLoaded(seq, _) if seq != self.open_seq => Task::none(),
+            Message::Loaded(_, Ok(msg)) => {
                 if Some(msg.uid) != self.selected {
+                    self.loading_message = false;
                     return Task::none();
                 }
                 self.loading_message = false;
-                if let Some(h) = self.headers.iter_mut().find(|h| h.uid == msg.uid) {
-                    h.seen = true;
-                }
-                if let Some(h) = self
-                    .search_results
+                // Opening reads it: one less unread only if it was unread.
+                let mut was_unseen = false;
+                for h in self
+                    .headers
                     .iter_mut()
-                    .flatten()
-                    .find(|h| h.uid == msg.uid)
+                    .chain(self.search_results.iter_mut().flatten())
+                    .filter(|h| h.uid == msg.uid)
                 {
+                    was_unseen |= !h.seen;
                     h.seen = true;
                 }
-                if let Some(c) = &self.current_folder
+                if was_unseen
+                    && let Some(c) = &self.current_folder
                     && let Some(n) = self.unseen.get_mut(c)
                 {
                     *n = n.saturating_sub(1);
@@ -3212,7 +3707,8 @@ impl App {
                 self.body = text_editor::Content::with_text(&msg.body);
                 self.body_probe = text_editor::Content::with_text(&msg.body);
                 self.body_link_hover = false;
-                self.invite = self.invite_card(&msg);
+                self.invite = None;
+                let invite = self.load_invite(&msg);
                 self.insights = Some((
                     msg.uid,
                     ferrowl_core::insights::find(&msg.subject, &msg.from_address, &msg.body),
@@ -3240,11 +3736,22 @@ impl App {
                 } else {
                     Task::none()
                 };
-                Task::batch([top, self.start_html_render(), pending, thumbs, dev_preview])
+                Task::batch([
+                    top,
+                    self.start_html_render(),
+                    pending,
+                    thumbs,
+                    dev_preview,
+                    invite,
+                ])
             }
-            Message::Loaded(Err(e)) => {
+            Message::Loaded(_, Err(e)) => {
                 self.loading_message = false;
                 self.toast(e, true)
+            }
+            Message::InviteLoaded(_, card) => {
+                self.invite = card;
+                Task::none()
             }
             Message::ToggleHtml => {
                 self.config.ui.prefer_html = !self.config.ui.prefer_html;
@@ -3547,19 +4054,23 @@ impl App {
                     return Task::none();
                 }
                 if let Some(rest) = url.strip_prefix("mailto:") {
-                    if self.compose.is_none() && self.config.account().is_some() {
-                        let mut c = Compose::new(ComposeMode::New);
-                        c.rich = self.config.ui.rich_compose;
-                        let (to, query) = rest.split_once('?').unwrap_or((rest, ""));
-                        c.to = to.to_string();
-                        for (k, v) in query.split('&').filter_map(|kv| kv.split_once('=')) {
-                            if k.eq_ignore_ascii_case("subject") {
-                                c.subject = percent_decode(v);
-                            }
-                        }
-                        self.compose = Some(c);
+                    if self.config.account().is_none() {
+                        return Task::none();
                     }
-                    return Task::none();
+                    if self.compose.is_some() {
+                        // Not over the message being written.
+                        return self.toast(t("compose_busy"), false);
+                    }
+                    let link = parse_mailto(rest);
+                    let mut c = Compose::new(ComposeMode::New);
+                    c.rich = self.config.ui.rich_compose;
+                    c.to = link.to;
+                    c.show_cc = !link.cc.is_empty() || !link.bcc.is_empty();
+                    c.cc = link.cc;
+                    c.bcc = link.bcc;
+                    c.subject = link.subject;
+                    c.body = text_editor::Content::with_text(&link.body);
+                    return self.set_compose(c);
                 }
                 if let Err(e) = open::that_detached(&url) {
                     return self.toast(e.to_string(), true);
@@ -3601,12 +4112,13 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Reply => {
-                if let Some(m) = &self.message {
-                    self.compose = Some(self.reply_draft(m));
+            Message::Reply => match &self.message {
+                Some(m) => {
+                    let c = self.reply_draft(m);
+                    self.set_compose(c)
                 }
-                Task::none()
-            }
+                None => Task::none(),
+            },
             Message::ReplyAll => {
                 if let Some(m) = &self.message {
                     let mut c = self.reply_draft(m);
@@ -3632,22 +4144,29 @@ impl App {
                         c.cc = cc.join(", ");
                         c.show_cc = true;
                     }
-                    self.compose = Some(c);
+                    return self.set_compose(c);
                 }
                 Task::none()
             }
-            Message::Forward => {
-                if let Some(m) = &self.message {
-                    self.compose = Some(self.forward_draft(m));
+            Message::Forward => match &self.message {
+                Some(m) => {
+                    let c = self.forward_draft(m);
+                    self.set_compose(c)
                 }
-                Task::none()
-            }
+                None => Task::none(),
+            },
             Message::Archive => match self.selected {
                 Some(uid) => self.archive(uid),
                 None => Task::none(),
             },
-            Message::Archived { uid, result } => match result {
+            Message::Archived { folder, uid, result } => match result {
                 Ok(target) => {
+                    // Only in the folder it left: there the UID is this message.
+                    let next = if self.current_folder.as_deref() == Some(&folder) {
+                        self.remove_and_advance(uid)
+                    } else {
+                        Task::none()
+                    };
                     if self.folder_by_kind(FolderKind::Archive).is_none() {
                         // Folder just created: reload the folder list in the background.
                         let b = self.backend.clone();
@@ -3657,11 +4176,9 @@ impl App {
                             Some(a) => self.perform(async move { b.connect(a).await }, Message::Connected),
                             None => Task::none(),
                         };
-                        let next = self.remove_and_advance(uid);
                         let toast = self.toast(t("archived"), false);
                         return Task::batch([reload, next, toast]);
                     }
-                    let next = self.remove_and_advance(uid);
                     Task::batch([next, self.toast(t("archived"), false)])
                 }
                 Err(e) => self.toast(e, true),
@@ -3679,9 +4196,11 @@ impl App {
                 let uids = self.targets();
                 let b = self.backend.clone();
                 let ids = uids.clone();
+                let from = folder.clone();
                 self.perform(
                     async move { b.delete_forever_many(folder, ids).await },
                     move |result| Message::BulkDone {
+                        folder: from.clone(),
                         uids: uids.clone(),
                         note: "bulk_deleted_forever",
                         result,
@@ -3695,18 +4214,29 @@ impl App {
                     return Task::none();
                 };
                 let b = self.backend.clone();
+                let from = folder.clone();
                 self.perform(
                     async move { b.delete_forever(folder, uid).await },
                     move |result| Message::Done {
+                        folder: from.clone(),
                         uid,
                         note: "deleted_forever",
                         result,
                     },
                 )
             }
-            Message::Done { uid, note, result } => match result {
+            Message::Done {
+                folder,
+                uid,
+                note,
+                result,
+            } => match result {
                 Ok(()) => {
-                    let next = self.remove_and_advance(uid);
+                    let next = if self.current_folder.as_deref() == Some(&folder) {
+                        self.remove_and_advance(uid)
+                    } else {
+                        Task::none()
+                    };
                     Task::batch([next, self.toast(t(note), false)])
                 }
                 Err(e) => self.toast(e, true),
@@ -3770,6 +4300,7 @@ impl App {
                 self.confirm_remove = false;
                 self.test_result = None;
                 self.screen = Screen::Settings(section);
+                self.reload_lists();
                 Task::none()
             }
             Message::CloseSettings => {
@@ -4017,6 +4548,7 @@ impl App {
                         self.draft = AccountDraft::blank();
                         self.editing = None;
                         self.reset_mailbox();
+                        self.reload_lists();
                         self.backend = Backend::default();
                         self.conn = Conn::Offline;
                         save
@@ -4191,6 +4723,7 @@ impl App {
                     Err(e) => SyncState::Failed(e),
                 };
                 self.reload_agenda();
+                self.reload_lists();
                 Task::none()
             }
             Message::InviteRespond(reply) => {
@@ -4211,11 +4744,12 @@ impl App {
                     Ok(note) => self.toast(note, false),
                     Err(e) => self.toast(e, true),
                 };
-                if let Some(msg) = self.message.clone() {
-                    self.invite = self.invite_card(&msg);
-                }
+                let card = match &self.message {
+                    Some(msg) => self.load_invite(msg),
+                    None => Task::none(),
+                };
                 self.reload_agenda();
-                toast
+                Task::batch([toast, card])
             }
             Message::CopyInsight(value) => {
                 let toast = self.toast(t("insight_copied"), false);
@@ -4228,7 +4762,7 @@ impl App {
                 let Some(acc) = self.config.account().cloned() else {
                     return Task::none();
                 };
-                let Some(calendar) = Backend::calendars(&acc).into_iter().next() else {
+                let Some(calendar) = self.calendars.first().cloned() else {
                     return self.toast(t("err_no_calendar"), true);
                 };
                 let what = [number, amount]
@@ -4278,18 +4812,19 @@ impl App {
                     Ok(note) => self.toast(note, false),
                     Err(e) => self.toast(e, true),
                 };
-                if let Some(msg) = self.message.clone() {
-                    self.invite = self.invite_card(&msg);
-                }
+                let card = match &self.message {
+                    Some(msg) => self.load_invite(msg),
+                    None => Task::none(),
+                };
                 self.reload_agenda();
-                toast
+                Task::batch([toast, card])
             }
             Message::NewEvent => {
                 let Some(acc) = self.config.account() else {
                     return Task::none();
                 };
-                let calendars = Backend::calendars(acc);
-                let Some(first) = calendars.first() else {
+                self.calendars = Backend::calendars(acc);
+                let Some(first) = self.calendars.first() else {
                     return self.toast(t("err_no_calendar"), true);
                 };
                 // On today when this month is shown, else on its first day.
@@ -4473,17 +5008,20 @@ impl App {
                 }
             }
             Message::WriteTo(name, address) => {
-                if self.compose.is_none() && self.config.account().is_some() {
-                    let mut c = Compose::new(ComposeMode::New);
-                    c.rich = self.config.ui.rich_compose;
-                    c.to = if name.is_empty() || name == address {
-                        address
-                    } else {
-                        format!("{name} <{address}>")
-                    };
-                    self.compose = Some(c);
+                if self.config.account().is_none() {
+                    return Task::none();
                 }
-                Task::none()
+                if self.compose.is_some() {
+                    return self.toast(t("compose_busy"), false);
+                }
+                let mut c = Compose::new(ComposeMode::New);
+                c.rich = self.config.ui.rich_compose;
+                c.to = if name.is_empty() || name == address {
+                    address
+                } else {
+                    format!("{name} <{address}>")
+                };
+                self.set_compose(c)
             }
             Message::ComposeNew => {
                 if self.compose.is_none() && self.config.account().is_some() {
@@ -4529,21 +5067,29 @@ impl App {
                 }
             }
             Message::ComposeField(field, value) => {
-                // Suggestions for the word being typed in a recipient field.
-                let suggest = match (field, self.config.account()) {
-                    (ComposeField::To | ComposeField::Cc | ComposeField::Bcc, Some(acc)) => {
+                // Suggestions for the word being typed in a recipient field,
+                // looked up once typing pauses (older lookups are dropped).
+                self.suggest_seq += 1;
+                let seq = self.suggest_seq;
+                let lookup = match field {
+                    ComposeField::To | ComposeField::Cc | ComposeField::Bcc => {
                         let word = value.rsplit([',', ';']).next().unwrap_or("").trim();
-                        let list = if word.chars().count() >= 2 && !word.contains('<') {
-                            Backend::suggest(acc, word)
-                        } else {
-                            Vec::new()
-                        };
-                        (!list.is_empty()).then_some((field, list))
+                        (word.chars().count() >= 2 && !word.contains('<')).then(|| word.to_string())
                     }
-                    _ => None,
+                    ComposeField::Subject => None,
+                };
+                let keep = lookup.is_some();
+                let task = match lookup {
+                    Some(word) => Task::perform(tokio::time::sleep(SUGGEST_DEBOUNCE), move |_| {
+                        Message::SuggestRun(seq, field, word.clone())
+                    }),
+                    None => Task::none(),
                 };
                 if let Some(c) = self.compose.as_mut() {
-                    c.suggest = suggest;
+                    // The list shown stays until the new one comes (no flicker).
+                    if !keep || c.suggest.as_ref().is_some_and(|(f, _)| *f != field) {
+                        c.suggest = None;
+                    }
                     match field {
                         ComposeField::To => c.to = value,
                         ComposeField::Cc => c.cc = value,
@@ -4551,6 +5097,27 @@ impl App {
                         ComposeField::Subject => c.subject = value,
                     }
                     c.error = None;
+                }
+                task
+            }
+            Message::SuggestRun(seq, field, word) => {
+                let Some(acc) = self.config.account().cloned().filter(|_| seq == self.suggest_seq) else {
+                    return Task::none();
+                };
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || Backend::suggest(&acc, &word))
+                            .await
+                            .unwrap_or_default()
+                    },
+                    move |list| Message::Suggested(seq, field, list),
+                )
+            }
+            Message::Suggested(seq, field, list) => {
+                if seq == self.suggest_seq
+                    && let Some(c) = self.compose.as_mut()
+                {
+                    c.suggest = (!list.is_empty()).then_some((field, list));
                 }
                 Task::none()
             }
@@ -4653,12 +5220,21 @@ impl App {
                     encrypt: c.encrypt,
                     calendar: None,
                 };
+                let id = c.id;
+                let copy = Box::new(out.clone());
                 let b = self.backend.clone();
-                Task::perform(async move { b.send(out, sent).await }, Message::ComposeSent)
+                Task::perform(async move { b.send(out, sent).await }, move |r| {
+                    Message::ComposeSent(id, copy.clone(), r)
+                })
             }
-            Message::ComposeSent(result) => match result {
+            Message::ComposeSent(id, out, result) => match result {
                 Ok(note) => {
-                    self.compose = None;
+                    // Only the draft that was sent closes (not one opened since).
+                    if self.compose.as_ref().is_some_and(|c| c.id == id)
+                        && let Some(c) = self.compose.take()
+                    {
+                        remove_temp_dir(c.temp_dir);
+                    }
                     let toast = match note {
                         None => self.toast(t("sent_ok"), false),
                         Some(e) => self.toast(tf("sent_no_copy", &[("err", &e)]), true),
@@ -4671,16 +5247,45 @@ impl App {
                     Task::batch([toast, reload])
                 }
                 Err(e) => {
-                    if let Some(c) = self.compose.as_mut() {
+                    if let Some(c) = self.compose.as_mut().filter(|c| c.id == id) {
                         c.sending = false;
                         c.error = Some(e);
+                        return Task::none();
                     }
-                    Task::none()
+                    // Its draft is gone: say so, and keep the message so the
+                    // draft can be opened again from the notice.
+                    let rich = out.html.is_some();
+                    self.unsent = Some(Unsent {
+                        out: *out,
+                        rich,
+                        temp_dir: None,
+                    });
+                    self.toast_with(
+                        tf("send_failed_closed", &[("err", &e)]),
+                        true,
+                        Some(("reopen_draft", Message::ReopenUnsent)),
+                    )
                 }
             },
             Message::ComposeClose => {
-                self.compose = None;
+                // Not while sending: a failure would have no draft to show in.
+                if self.compose.as_ref().is_some_and(|c| c.sending) {
+                    return Task::none();
+                }
+                if let Some(c) = self.compose.take() {
+                    remove_temp_dir(c.temp_dir);
+                }
                 Task::none()
+            }
+            Message::ReopenUnsent => {
+                if self.compose.is_some() {
+                    return self.toast(t("compose_busy"), false);
+                }
+                self.toast = None;
+                match self.unsent.take() {
+                    Some(u) => self.set_compose(Compose::from_unsent(u)),
+                    None => Task::none(),
+                }
             }
             Message::Key(event) => self.shortcut(event),
             Message::DismissToast(id) => {
@@ -4724,7 +5329,7 @@ impl App {
                         pgp: None,
                         calendar: None,
                     };
-                    return self.update(Message::Loaded(Ok(msg)));
+                    return self.update(Message::Loaded(self.open_seq, Ok(msg)));
                 }
                 // Open the first message so the reader pane is populated.
                 if std::env::var_os("FERROWL_DEV_CONFIRM").is_some() && self.selected.is_some() {
@@ -4953,8 +5558,52 @@ fn save_attachment(name: &str, data: &[u8]) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
-/// Minimal percent-decoding for `mailto:` query values.
-fn percent_decode(s: &str) -> String {
+/// What a `mailto:` link fills in (RFC 6068).
+#[derive(Debug, Default, PartialEq)]
+struct MailtoLink {
+    to: String,
+    cc: String,
+    bcc: String,
+    subject: String,
+    body: String,
+}
+
+/// Reads a `mailto:` link (without the scheme): recipients before the `?`
+/// and in `to=`, `cc=`, `bcc=`; `subject=` and `body=`.
+fn parse_mailto(rest: &str) -> MailtoLink {
+    let (to, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let mut link = MailtoLink {
+        to: percent_decode(to, false),
+        ..Default::default()
+    };
+    // Several recipients add up, as a list.
+    let add = |list: &mut String, more: String| {
+        let more = more.trim();
+        if more.is_empty() {
+            return;
+        }
+        if !list.is_empty() {
+            list.push_str(", ");
+        }
+        list.push_str(more);
+    };
+    for (k, v) in query.split('&').filter_map(|kv| kv.split_once('=')) {
+        match k.to_ascii_lowercase().as_str() {
+            "to" => add(&mut link.to, percent_decode(v, false)),
+            "cc" => add(&mut link.cc, percent_decode(v, false)),
+            "bcc" => add(&mut link.bcc, percent_decode(v, false)),
+            "subject" => link.subject = percent_decode(v, true),
+            "body" => link.body = percent_decode(v, true).replace("\r\n", "\n"),
+            _ => {}
+        }
+    }
+    link
+}
+
+/// Minimal percent-decoding for `mailto:` parts. `plus_is_space`: a `+`
+/// stands for a space (form style, used by many links in subjects and
+/// bodies); in addresses it is a real `+` (`me+tag@x`).
+fn percent_decode(s: &str, plus_is_space: bool) -> String {
     let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -4970,10 +5619,24 @@ fn percent_decode(s: &str) -> String {
             i += 3;
             continue;
         }
-        out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
+        out.push(if plus_is_space && bytes[i] == b'+' {
+            b' '
+        } else {
+            bytes[i]
+        });
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Removes a draft's private folder of attachment copies (in the
+/// background: it may hold big files).
+fn remove_temp_dir(dir: Option<PathBuf>) {
+    if let Some(dir) = dir {
+        std::thread::spawn(move || {
+            let _ = std::fs::remove_dir_all(dir);
+        });
+    }
 }
 
 /// Ends the process immediately. Background threads (IMAP IDLE waits up to
@@ -5027,4 +5690,34 @@ fn rule_preview(account: &Account, condition: &str) -> Vec<(String, String)> {
         .into_iter()
         .map(|h| (h.from, h.subject))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mailto_links_fill_every_field() {
+        let link = parse_mailto(
+            "ada%40example.com,bob+news@example.com?cc=carl@example.com&BCC=dan@example.com\
+             &to=eve@example.com&subject=Hi+there%21&body=Line%201%0D%0ALine+2",
+        );
+        assert_eq!(
+            link,
+            MailtoLink {
+                to: "ada@example.com,bob+news@example.com, eve@example.com".into(),
+                cc: "carl@example.com".into(),
+                bcc: "dan@example.com".into(),
+                subject: "Hi there!".into(),
+                body: "Line 1\nLine 2".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn mailto_without_query_is_just_the_address() {
+        let link = parse_mailto("me@example.com");
+        assert_eq!(link.to, "me@example.com");
+        assert!(link.subject.is_empty() && link.body.is_empty() && link.cc.is_empty());
+    }
 }
