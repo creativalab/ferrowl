@@ -30,9 +30,18 @@ impl std::io::Write for TlsStream {
     }
 }
 
+/// Read/write timeout of IMAP commands: a dead connection fails instead of
+/// hanging the caller forever.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+
 impl imap::extensions::idle::SetReadTimeout for TlsStream {
     fn set_read_timeout(&mut self, timeout: Option<Duration>) -> imap::Result<()> {
-        self.0.sock.set_read_timeout(timeout).map_err(imap::Error::Io)
+        // After IDLE the imap crate clears the timeout (None): the commands
+        // that follow (SELECT, SEARCH...) get the usual one back instead.
+        self.0
+            .sock
+            .set_read_timeout(timeout.or(Some(COMMAND_TIMEOUT)))
+            .map_err(imap::Error::Io)
     }
 }
 pub type ImapSession = imap::Session<TlsStream>;
@@ -445,8 +454,8 @@ pub fn connect_error(account: &Account) -> String {
 /// them first). The host name is still the one TLS checks.
 pub fn connect_to(account: &Account, addrs: &[SocketAddr]) -> Result<ImapSession> {
     let tcp = TcpStream::connect(addrs).with_context(|| connect_error(account))?;
-    tcp.set_read_timeout(Some(Duration::from_secs(60)))?;
-    tcp.set_write_timeout(Some(Duration::from_secs(60)))?;
+    tcp.set_read_timeout(Some(COMMAND_TIMEOUT))?;
+    tcp.set_write_timeout(Some(COMMAND_TIMEOUT))?;
 
     let server_name = rustls::pki_types::ServerName::try_from(account.imap_host.clone())
         .context("invalid IMAP host name")?;
