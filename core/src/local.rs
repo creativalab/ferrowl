@@ -401,6 +401,9 @@ mod tests {
         )
         .unwrap();
         let s = Store::with_connection(conn).unwrap();
-        assert_eq!(s.headers("acc", INBOX, 10).unwrap()[0].from_address, "ada@example.org");
+        assert_eq!(
+            s.headers("acc", INBOX, 10).unwrap()[0].from_address,
+            "ada@example.org"
+        );
     }
 }

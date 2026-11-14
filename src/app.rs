@@ -2640,7 +2640,9 @@ impl App {
     fn reply_draft(&self, msg: &FullMessage) -> Compose {
         let mut c = Compose::new(ComposeMode::Reply);
         c.rich = self.config.ui.rich_compose;
-        c.to = msg.from_address.clone();
+        // Reply-To when the message has one (mailing lists, support mail).
+        let (to, _) = crate::mail::reply_recipients(&msg.from_address, &msg.reply_to, &[], &[], false, "");
+        c.to = to.join(", ");
         c.subject = if msg.subject.to_lowercase().starts_with("re:") {
             msg.subject.clone()
         } else {
@@ -5315,6 +5317,7 @@ impl App {
                         cc: String::new(),
                         to_addrs: Vec::new(),
                         cc_addrs: Vec::new(),
+                        reply_to: Vec::new(),
                         subject: h.subject.clone(),
                         timestamp: h.timestamp,
                         message_id: None,

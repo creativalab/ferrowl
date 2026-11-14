@@ -246,6 +246,9 @@ pub struct FullMessage {
     /// Bare addresses of To and Cc (for "Reply all").
     pub to_addrs: Vec<String>,
     pub cc_addrs: Vec<String>,
+    /// Bare addresses of Reply-To, where replies go instead of From
+    /// (mailing lists, shop and support mail). Empty when absent.
+    pub reply_to: Vec<String>,
     pub subject: String,
     pub timestamp: i64,
     pub message_id: Option<String>,
@@ -391,9 +394,8 @@ pub fn unwrap_pgp(
             };
             let canonical = crlf(&signed);
             let from = from.to_lowercase();
-            let signed_by = |key: &pgp::composed::SignedPublicKey| {
-                crate::crypto::verify(&canonical, &signature, key)
-            };
+            let signed_by =
+                |key: &pgp::composed::SignedPublicKey| crate::crypto::verify(&canonical, &signature, key);
             let state = match ((keys.contact)(&from), (keys.autocrypt)(&from)) {
                 (Some(key), _) if signed_by(&key) => SigState::Valid,
                 (None, Some(key)) if signed_by(&key) => SigState::Unverified,
@@ -713,6 +715,43 @@ fn bare_list(addr: Option<AddressList>) -> Vec<String> {
             .collect()
     })
     .unwrap_or_default()
+}
+
+/// Who a reply goes to, as (To, Cc): the Reply-To addresses if the
+/// message has them, otherwise the sender; with `all`, also everyone else
+/// in To and Cc. Our own address (`own`) is left out of the others, and
+/// no address appears twice (case ignored).
+pub fn reply_recipients(
+    from: &str,
+    reply_to: &[String],
+    to: &[String],
+    cc: &[String],
+    all: bool,
+    own: &str,
+) -> (Vec<String>, Vec<String>) {
+    let own = own.trim().to_lowercase();
+    let mut seen = std::collections::HashSet::new();
+    let primary: Vec<String> = if reply_to.iter().any(|a| !a.trim().is_empty()) {
+        reply_to.to_vec()
+    } else {
+        vec![from.to_string()]
+    };
+    let mut keep = |list: &[String], skip_own: bool| -> Vec<String> {
+        list.iter()
+            .map(|a| a.trim())
+            .filter(|a| !a.is_empty())
+            .filter(|a| !(skip_own && a.to_lowercase() == own))
+            .filter(|a| seen.insert(a.to_lowercase()))
+            .map(str::to_string)
+            .collect()
+    };
+    let mut out_to = keep(&primary, false);
+    let mut out_cc = Vec::new();
+    if all {
+        out_to.extend(keep(to, true));
+        out_cc = keep(cc, true);
+    }
+    (out_to, out_cc)
 }
 
 fn one_line(s: &str, max: usize) -> String {
@@ -1236,6 +1275,7 @@ pub fn parse_full(uid: u32, raw: &[u8], keys: &PgpKeys) -> Result<FullMessage> {
         cc: addr_list(outer.cc()),
         to_addrs: bare_list(outer.to()),
         cc_addrs: bare_list(outer.cc()),
+        reply_to: bare_list(outer.reply_to()),
         subject: outer.subject().unwrap_or(t("no_subject")).to_string(),
         timestamp: outer.date().map(|d| d.to_timestamp()).unwrap_or(0),
         message_id: outer.message_id().map(str::to_string),
@@ -1898,6 +1938,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn replies_go_to_reply_to() {
+        let raw = b"From: Shop <noreply@shop.example>\r\nReply-To: Help <help@shop.example>, sales@shop.example\r\n\
+To: me@example.org, Bob <bob@example.org>\r\nCc: carl@example.org\r\nSubject: Order\r\n\r\nThanks\r\n";
+        let nobody = |_: &str| None;
+        let keys = PgpKeys {
+            own: None,
+            contact: &nobody,
+            autocrypt: &nobody,
+            learn: &|_, _| {},
+        };
+        let m = parse_full(1, raw, &keys).unwrap();
+        assert_eq!(m.reply_to, ["help@shop.example", "sales@shop.example"]);
+        let reply = |all| {
+            reply_recipients(
+                &m.from_address,
+                &m.reply_to,
+                &m.to_addrs,
+                &m.cc_addrs,
+                all,
+                "ME@example.org",
+            )
+        };
+        assert_eq!(reply(false), (m.reply_to.clone(), vec![]));
+        let (to, cc) = reply(true);
+        assert_eq!(to, ["help@shop.example", "sales@shop.example", "bob@example.org"]);
+        assert_eq!(cc, ["carl@example.org"]);
+        // Without Reply-To: the sender, and no address twice.
+        let (to, _) = reply_recipients(
+            "ada@example.org",
+            &[],
+            &["Ada@example.org".into(), "me@example.org".into()],
+            &[],
+            true,
+            "me@example.org",
+        );
+        assert_eq!(to, ["ada@example.org"]);
+    }
+
+    #[test]
     fn outlook_mailbox_without_imap_is_recognised() {
         assert!(mailbox_refuses_apps("User is authenticated but not connected."));
         assert!(mailbox_refuses_apps(
@@ -2416,7 +2495,11 @@ mod tests {
             learn: &learns_nothing,
         };
         assert_eq!(
-            parse_full(1, &raw, &autocrypt_alice).unwrap().pgp.unwrap().signature,
+            parse_full(1, &raw, &autocrypt_alice)
+                .unwrap()
+                .pgp
+                .unwrap()
+                .signature,
             Some(SigState::Unverified)
         );
         // Eve writes as Alice, signs with her own key and offers it in an
@@ -2446,7 +2529,9 @@ mod tests {
         .formatted();
         let learned = std::cell::RefCell::new(Vec::new());
         let remember = |a: &str, k: &pgp::composed::SignedPublicKey| {
-            learned.borrow_mut().push((a.to_string(), crate::crypto::fingerprint(k)))
+            learned
+                .borrow_mut()
+                .push((a.to_string(), crate::crypto::fingerprint(k)))
         };
         let watching = PgpKeys {
             own: None,

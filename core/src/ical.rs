@@ -10,8 +10,7 @@
 //! 9:00 meeting stays at 9:00 across daylight-saving changes.
 
 use chrono::{
-    DateTime, Datelike, Days, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc,
-    Weekday,
+    DateTime, Datelike, Days, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc, Weekday,
 };
 use chrono_tz::Tz;
 
@@ -613,7 +612,10 @@ fn month_days(year: i32, month: u32, by_month_day: &[i32]) -> Vec<NaiveDate> {
 
 fn add_months(year: i32, month: u32, n: u32) -> Option<(i32, u32)> {
     let total = i64::from(year) * 12 + (i64::from(month) - 1) + i64::from(n);
-    Some((i32::try_from(total.div_euclid(12)).ok()?, (total.rem_euclid(12) + 1) as u32))
+    Some((
+        i32::try_from(total.div_euclid(12)).ok()?,
+        (total.rem_euclid(12) + 1) as u32,
+    ))
 }
 
 /// The dates of the series in period `k` (k-th interval after the start),
@@ -1054,7 +1056,9 @@ mod tests {
     #[test]
     fn absurd_values_do_not_panic() {
         // A duration past the end of chrono's calendar is ignored.
-        let c = cal("BEGIN:VEVENT\r\nUID:d\r\nDTSTART:20261110T100000Z\r\nDURATION:P100000000D\r\nEND:VEVENT\r\n");
+        let c = cal(
+            "BEGIN:VEVENT\r\nUID:d\r\nDTSTART:20261110T100000Z\r\nDURATION:P100000000D\r\nEND:VEVENT\r\n",
+        );
         assert_eq!(c.events[0].end, c.events[0].start);
         assert!(parse_duration("P9999999999999999W").is_none());
         // A series repeating every 4 billion weeks is not a series.

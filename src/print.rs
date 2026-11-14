@@ -196,6 +196,7 @@ mod tests {
             cc: String::new(),
             to_addrs: vec![],
             cc_addrs: vec![],
+            reply_to: vec![],
             subject: "Hi & bye".into(),
             timestamp: 0,
             message_id: None,

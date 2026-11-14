@@ -367,8 +367,10 @@ BEGIN:VALARM\r\nTRIGGER:-PT15M\r\nDESCRIPTION:Promemoria\r\nEND:VALARM\r\nEND:VE
 
     #[test]
     fn absurd_values_do_not_panic() {
-        let huge = REQUEST
-            .replace("DTEND;TZID=Europe/Rome:20261110T110000\r\n", "DURATION:P100000000D\r\n");
+        let huge = REQUEST.replace(
+            "DTEND;TZID=Europe/Rome:20261110T110000\r\n",
+            "DURATION:P100000000D\r\n",
+        );
         let inv = read(&huge).unwrap();
         // The duration is ignored: the invitation is an instant.
         assert_eq!(inv.when.end, inv.when.start);

@@ -52,10 +52,7 @@ impl<S: Send + Sync> FromRequestParts<S> for ClientIp {
             .extensions
             .get::<ConnectInfo<SocketAddr>>()
             .map(|c| c.0.ip());
-        let forwarded = parts
-            .headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok());
+        let forwarded = parts.headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
         Ok(ClientIp(client_ip(peer, forwarded)))
     }
 }

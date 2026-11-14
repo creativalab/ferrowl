@@ -152,7 +152,10 @@ fn run_on_session<T>(
     repeatable: bool,
     op: &impl Fn(&mut ImapSession) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
-    if !repeatable && let Some(s) = g.session.as_mut() && s.noop().is_err() {
+    if !repeatable
+        && let Some(s) = g.session.as_mut()
+        && s.noop().is_err()
+    {
         g.session = None;
     }
     if let Some(s) = g.session.as_mut() {
@@ -557,7 +560,9 @@ impl Backend {
         reply: crate::invite::Reply,
         sent_folder: Option<String>,
     ) -> Res<String> {
-        let account = self.account_now()?.ok_or_else(|| t("err_no_account").to_string())?;
+        let account = self
+            .account_now()?
+            .ok_or_else(|| t("err_no_account").to_string())?;
         let mail = crate::invite::reply_mail(&account, &ics, reply).map_err(text)?;
         let warning = self.send(mail, sent_folder).await?;
         let uid = crate::invite::read(&ics).map(|i| i.uid).unwrap_or_default();

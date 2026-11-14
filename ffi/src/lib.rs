@@ -392,6 +392,9 @@ pub struct Message {
     pub cc: String,
     pub to_addresses: Vec<String>,
     pub cc_addresses: Vec<String>,
+    /// Reply-To addresses (replies go there instead of `from_address`;
+    /// `reply_draft` already does it). Empty when the message has none.
+    pub reply_to_addresses: Vec<String>,
     pub subject: String,
     pub timestamp: i64,
     pub message_id: Option<String>,
@@ -507,6 +510,7 @@ impl From<mail::FullMessage> for Message {
             cc: m.cc,
             to_addresses: m.to_addrs,
             cc_addresses: m.cc_addrs,
+            reply_to_addresses: m.reply_to,
             subject: m.subject,
             timestamp: m.timestamp,
             message_id: m.message_id,
@@ -1267,18 +1271,18 @@ fn blank_draft() -> Outgoing {
 
 /// A reply, as the desktop writes it: "Re:" subject, quoted text with a
 /// translated "On <date>, <name> wrote:" line, threading headers.
-/// `reply_all` adds the other recipients (never `own_address`).
+/// To the Reply-To addresses when the message has them, otherwise the
+/// sender; `reply_all` adds the other recipients (never `own_address`).
 #[uniffi::export]
 pub fn reply_draft(message: Message, reply_all: bool, own_address: String) -> Outgoing {
-    let own = own_address.trim().to_lowercase();
-    let not_me = |a: &&String| a.trim().to_lowercase() != own;
-    let mut to = vec![message.from_address.clone()];
-    let mut cc = Vec::new();
-    if reply_all {
-        to.extend(message.to_addresses.iter().filter(not_me).cloned());
-        cc.extend(message.cc_addresses.iter().filter(not_me).cloned());
-    }
-    to.dedup();
+    let (to, cc) = mail::reply_recipients(
+        &message.from_address,
+        &message.reply_to_addresses,
+        &message.to_addresses,
+        &message.cc_addresses,
+        reply_all,
+        &own_address,
+    );
     let subject = if message.subject.to_lowercase().starts_with("re:") {
         message.subject.clone()
     } else {
@@ -1817,8 +1821,7 @@ impl Engine {
 
     /// Moves messages to Spam (marked $Junk for the server's filter).
     pub async fn report_spam(&self, folder_id: String, uids: Vec<u32>) -> Result<String> {
-        self.report_spam_for_account(String::new(), folder_id, uids)
-            .await
+        self.report_spam_for_account(String::new(), folder_id, uids).await
     }
 
     pub async fn report_spam_for_account(
@@ -1836,8 +1839,7 @@ impl Engine {
 
     /// Moves messages from Spam back to the inbox (marked $NotJunk).
     pub async fn not_spam(&self, folder_id: String, uids: Vec<u32>) -> Result<String> {
-        self.not_spam_for_account(String::new(), folder_id, uids)
-            .await
+        self.not_spam_for_account(String::new(), folder_id, uids).await
     }
 
     pub async fn not_spam_for_account(
@@ -2072,6 +2074,7 @@ mod tests {
             cc: String::new(),
             to_addresses: vec!["me@example.org".into(), "bob@example.org".into()],
             cc_addresses: vec!["carl@example.org".into()],
+            reply_to_addresses: Vec::new(),
             subject: "Engines".into(),
             timestamp: 1_790_000_000,
             message_id: Some("<1@x>".into()),
@@ -2123,6 +2126,19 @@ mod tests {
 
         let all = reply_draft(sample(), true, "ME@example.org".into());
         assert_eq!(all.to, "ada@example.org, bob@example.org");
+        assert_eq!(all.cc, "carl@example.org");
+
+        // Reply-To wins over From, in both kinds of reply.
+        let list = Message {
+            reply_to_addresses: vec!["list@example.org".into()],
+            ..sample()
+        };
+        assert_eq!(
+            reply_draft(list.clone(), false, "me@example.org".into()).to,
+            "list@example.org"
+        );
+        let all = reply_draft(list, true, "me@example.org".into());
+        assert_eq!(all.to, "list@example.org, bob@example.org");
         assert_eq!(all.cc, "carl@example.org");
 
         let f = forward_draft(sample());

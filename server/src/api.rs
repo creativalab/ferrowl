@@ -191,9 +191,10 @@ async fn register(
     }
     let device_id = random_token();
     let device_token = random_token();
-    let added = state
-        .store
-        .add_device_within(&device_id, &device_token, &target, state.limits.max_devices)?;
+    let added =
+        state
+            .store
+            .add_device_within(&device_id, &device_token, &target, state.limits.max_devices)?;
     if !added {
         return Err(server_full());
     }

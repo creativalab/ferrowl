@@ -788,7 +788,9 @@ impl Cache {
             )?;
             for (calendar, item) in &changes.items {
                 // Objects without events (tasks, journals) are not kept.
-                let Some((first, last)) = crate::ical::no_panic(|| crate::ical::span(&crate::ical::parse(&item.data))).flatten() else {
+                let Some((first, last)) =
+                    crate::ical::no_panic(|| crate::ical::span(&crate::ical::parse(&item.data))).flatten()
+                else {
                     continue;
                 };
                 put.execute(params![
@@ -824,7 +826,9 @@ impl Cache {
     /// Stores an event of the calendar on this device. False when the data
     /// holds no event.
     pub fn put_local_event(&self, account: &str, url: &str, ics: &str) -> Result<bool> {
-        let Some((first, last)) = crate::ical::no_panic(|| crate::ical::span(&crate::ical::parse(ics))).flatten() else {
+        let Some((first, last)) =
+            crate::ical::no_panic(|| crate::ical::span(&crate::ical::parse(ics))).flatten()
+        else {
             return Ok(false);
         };
         self.lock().execute(

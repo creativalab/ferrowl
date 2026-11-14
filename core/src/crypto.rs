@@ -405,7 +405,9 @@ mod tests {
     #[test]
     fn autocrypt_offers_never_replace_keys() {
         use base64::Engine;
-        let alice = generate("Alice", "alice@example.com", "").unwrap().to_public_key();
+        let alice = generate("Alice", "alice@example.com", "")
+            .unwrap()
+            .to_public_key();
         let mut bin = Vec::new();
         alice.to_writer(&mut bin).unwrap();
         let header = format!(
@@ -416,7 +418,9 @@ mod tests {
         assert_eq!(offered.fingerprint(), alice.fingerprint());
         // Only for the address in From.
         assert!(autocrypt_offer("mallory@example.com", &header).is_none());
-        let other = generate("Mallory", "alice@example.com", "").unwrap().to_public_key();
+        let other = generate("Mallory", "alice@example.com", "")
+            .unwrap()
+            .to_public_key();
         assert!(should_learn(None, None));
         assert!(!should_learn(Some(&other), None));
         assert!(!should_learn(None, Some(&other)));
