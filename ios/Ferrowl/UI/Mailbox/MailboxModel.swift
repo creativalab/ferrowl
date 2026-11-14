@@ -45,6 +45,11 @@ final class MailboxModel {
 
     private var searchTask: Task<Void, Never>?
     private var started = false
+    /// The folder being fetched from the server, and whether another fetch
+    /// was asked meanwhile: fetches never overlap (each applies the rules,
+    /// which must not run twice on the same new messages).
+    private var fetching: String?
+    private var fetchAgain = false
 
     init(mail: MailRepository, prefs: Preferences, notices: Notices) {
         self.mail = mail
@@ -131,18 +136,51 @@ final class MailboxModel {
     /// The server has news for the account (a push while the app is open):
     /// the inbox, if open, is fetched again; elsewhere only the counts.
     func serverChanged() async {
-        if folderId == mail.inboxId, query.trimmingCharacters(in: .whitespaces).isEmpty {
-            await refresh()
-        } else {
+        await update(onlyInbox: true)
+    }
+
+    /// The app came back to the screen: the open folder from the server
+    /// (during a search, only the counts).
+    func returned() async {
+        guard started else { return }
+        await update(onlyInbox: false)
+    }
+
+    /// Something changed without the user asking (a push, the app back on
+    /// screen): the open folder again, quietly (no error notice when
+    /// offline), or only the counts during a search or in another folder.
+    private func update(onlyInbox: Bool) async {
+        let searching = !query.trimmingCharacters(in: .whitespaces).isEmpty
+        if searching || (onlyInbox && folderId != mail.inboxId) {
             await loadUnread()
+        } else {
+            await refresh(quiet: true)
         }
     }
 
-    func refresh() async {
+    func refresh(quiet: Bool = false) async {
         let id = folderId
         guard !id.isEmpty else { return }
+        if fetching == id {
+            fetchAgain = true
+            return
+        }
+        fetching = id
+        defer {
+            if fetching == id { fetching = nil }
+        }
         refreshing = true
         defer { if folderId == id { refreshing = false } }
+        await fetch(id, quiet: quiet)
+        // Asked again while fetching (a push during the fetch): once more.
+        while fetchAgain, folderId == id {
+            fetchAgain = false
+            await fetch(id, quiet: true)
+        }
+        fetchAgain = false
+    }
+
+    private func fetch(_ id: String, quiet: Bool) async {
         let cached = await mail.cachedHeaders(id)
         if !cached.isEmpty, folderId == id { messages = cached }
         do {
@@ -169,7 +207,7 @@ final class MailboxModel {
             }
             await loadUnread()
         } catch {
-            notices.error(describe(error))
+            if !quiet { notices.error(describe(error)) }
         }
     }
 

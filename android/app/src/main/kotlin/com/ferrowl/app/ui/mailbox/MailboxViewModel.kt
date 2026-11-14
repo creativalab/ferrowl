@@ -185,7 +185,14 @@ class MailboxViewModel @Inject constructor(
             repo.arrivals.collect { email ->
                 val s = _state.value
                 if (!email.equals(s.active, ignoreCase = true)) return@collect
-                if (s.folderId == repo.inboxId() && s.query.isBlank()) refresh() else loadUnread()
+                if (s.folderId == repo.inboxId() && s.query.isBlank()) refresh(quiet = true) else loadUnread()
+            }
+        }
+        // Back on screen: changes made elsewhere meanwhile (mail deleted or
+        // read on the computer) show without pulling to refresh.
+        viewModelScope.launch {
+            repo.returns.collect {
+                if (_state.value.query.isBlank()) refresh(quiet = true) else loadUnread()
             }
         }
         // Something was moved, deleted or sent: reload from the local copy.
@@ -323,29 +330,61 @@ class MailboxViewModel @Inject constructor(
         refresh()
     }
 
-    /** The local copy at once, then the newest messages from the server. */
-    fun refresh() {
+    /**
+     * The folder being fetched from the server, and whether another fetch was
+     * asked meanwhile: fetches never overlap (each applies the rules, which
+     * must not run twice on the same new messages). Main thread only.
+     */
+    private var fetching: String? = null
+    private var fetchAgain = false
+
+    /**
+     * The local copy at once, then the newest messages from the server.
+     * [quiet]: not asked by the user (a push, the app back on screen), so no
+     * error is shown when offline.
+     */
+    fun refresh(quiet: Boolean = false) {
         val id = _state.value.folderId.ifEmpty { return }
-        _state.update { it.copy(refreshing = true, error = null) }
+        if (fetching == id) {
+            fetchAgain = true
+            return
+        }
+        fetching = id
+        _state.update { it.copy(refreshing = true, error = if (quiet) it.error else null) }
         viewModelScope.launch {
             try {
-                val cached = repo.cachedHeaders(id)
-                if (cached.isNotEmpty()) _state.update { if (it.folderId == id) it.copy(messages = cached) else it }
-                var fresh = repo.headers(id)
-                // Sender lists: blocked mail leaves the inbox, allowed mail leaves Spam.
-                val moved = runCatching { repo.applySenderRules(id, fresh) }.getOrDefault(emptyList())
-                if (moved.isNotEmpty()) fresh = fresh.filter { it.uid !in moved }
-                // The user's rules on the inbox's new messages.
-                repo.applyRules(id, fresh)?.let { done ->
-                    fresh = fresh.filter { it.uid !in done.removed }.map {
-                        it.copy(seen = it.seen || it.uid in done.read, flagged = it.flagged || it.uid in done.starred)
-                    }
+                fetch(id, quiet)
+                // Asked again while fetching (a push during the fetch): once more.
+                while (fetchAgain && _state.value.folderId == id) {
+                    fetchAgain = false
+                    fetch(id, quiet = true)
                 }
-                _state.update { if (it.folderId == id) it.copy(messages = fresh, refreshing = false) else it }
-                loadUnread()
-            } catch (e: FerrowlException) {
-                _state.update { it.copy(refreshing = false, error = e.message) }
+            } finally {
+                fetchAgain = false
+                if (fetching == id) fetching = null
+                _state.update { if (it.folderId == id) it.copy(refreshing = false) else it }
             }
+        }
+    }
+
+    private suspend fun fetch(id: String, quiet: Boolean) {
+        try {
+            val cached = repo.cachedHeaders(id)
+            if (cached.isNotEmpty()) _state.update { if (it.folderId == id) it.copy(messages = cached) else it }
+            var fresh = repo.headers(id)
+            // Sender lists: blocked mail leaves the inbox, allowed mail leaves Spam.
+            val moved = runCatching { repo.applySenderRules(id, fresh) }.getOrDefault(emptyList())
+            if (moved.isNotEmpty()) fresh = fresh.filter { it.uid !in moved }
+            // The user's rules on the inbox's new messages.
+            repo.applyRules(id, fresh)?.let { done ->
+                fresh = fresh.filter { it.uid !in done.removed }.map {
+                    it.copy(seen = it.seen || it.uid in done.read, flagged = it.flagged || it.uid in done.starred)
+                }
+            }
+            _state.update { if (it.folderId == id) it.copy(messages = fresh) else it }
+            loadUnread()
+        } catch (e: FerrowlException) {
+            if (!quiet) _state.update { it.copy(error = e.message) }
         }
     }
 
