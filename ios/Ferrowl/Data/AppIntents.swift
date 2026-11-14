@@ -279,7 +279,7 @@ struct SendMailIntent: AppIntent {
         // an assistant that read it in a message.
         if capabilityNeedsConfirmation(capability: .send) {
             let question = t("intent_send_confirm", ["subject": subject.isEmpty ? t("no_subject") : subject, "to": to])
-            try await requestConfirmation(result: .result(dialog: "\(question)"), confirmationActionName: .send)
+            try await confirm("\(question)", action: .send)
         }
         let draft = Outgoing(to: to, cc: "", bcc: "", subject: subject, body: body,
                              html: markdownToHtml(markdown: body), inReplyTo: nil, references: [],
@@ -534,9 +534,7 @@ struct NewEventIntent: AppIntent {
         }
         // Adding to the user's calendar: confirmed, like sending.
         let when = start.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(Language.locale))
-        try await requestConfirmation(
-            result: .result(dialog: "\(t("intent_event_confirm", ["title": title, "when": when]))")
-        )
+        try await confirm("\(t("intent_event_confirm", ["title": title, "when": when]))")
         let format = DateFormatter()
         format.locale = Locale(identifier: "en_US_POSIX")
         format.dateFormat = "yyyy-MM-dd'T'HH:mm"
@@ -603,7 +601,7 @@ struct MarkMailIntent: AppIntent {
         guard !messages.isEmpty else { return .result(dialog: "\(t("intent_done"))") }
         if capabilityNeedsConfirmation(capability: .write) {
             let key = read ? "intent_mark_read_confirm" : "intent_mark_unread_confirm"
-            try await requestConfirmation(result: .result(dialog: "\(t(key, ["n": "\(messages.count)"]))"))
+            try await confirm("\(t(key, ["n": "\(messages.count)"]))")
         }
         let read = read
         try await Bridge.each(messages) { engine, folder, uids in
@@ -625,9 +623,7 @@ struct ArchiveMailIntent: AppIntent {
         try await Bridge.requirePro(.write)
         guard !messages.isEmpty else { return .result(dialog: "\(t("intent_done"))") }
         if capabilityNeedsConfirmation(capability: .write) {
-            try await requestConfirmation(
-                result: .result(dialog: "\(t("intent_archive_confirm", ["n": "\(messages.count)"]))")
-            )
+            try await confirm("\(t("intent_archive_confirm", ["n": "\(messages.count)"]))")
         }
         try await Bridge.each(messages) { engine, folder, uids in
             _ = try await engine.archiveMany(folderId: folder, uids: uids)
@@ -694,7 +690,7 @@ struct MailDetailsIntent: AppIntent {
         } catch {
             throw BridgeError(message: describe(error))
         }
-        var details = MailDetails()
+        let details = MailDetails()
         details.sender = full.from.isEmpty ? full.fromAddress : full.from
         details.subject = full.subject
         details.date = Date(timeIntervalSince1970: TimeInterval(full.timestamp))
@@ -799,5 +795,18 @@ struct FerrowlShortcuts: AppShortcutsProvider {
             shortTitle: "intent_send_title",
             systemImageName: "paperplane"
         )
+    }
+}
+
+extension AppIntent {
+    /// Asks before acting. iOS 18 has a new call for it; on iOS 17 the old
+    /// one is the only one, so its deprecation warning stays (here only)
+    /// until the app requires iOS 18.
+    func confirm(_ dialog: IntentDialog, action: ConfirmationActionName = .continue) async throws {
+        if #available(iOS 18.0, *) {
+            try await requestConfirmation(actionName: action, dialog: dialog)
+        } else {
+            try await requestConfirmation(result: .result(dialog: dialog), confirmationActionName: action)
+        }
     }
 }

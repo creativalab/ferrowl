@@ -136,8 +136,16 @@ fun ComposeScreen(
     // The body keeps its cursor and selection here (the formatting bar
     // wraps the selection); the text goes to the view model.
     var body by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
-    LaunchedEffect(s.loading) {
-        if (!s.loading && body.text.isEmpty() && s.body.isNotEmpty()) body = TextFieldValue(s.body)
+    // The view model fills the body once: from a reply/forward draft (after
+    // loading) or at once from a link, a share or mailto (loading stays
+    // false then, so the body itself must restart this). Once filled, the
+    // user's edits are the text, even when they empty it.
+    var filled by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(s.loading, s.body) {
+        if (!filled && !s.loading && body.text.isEmpty() && s.body.isNotEmpty()) {
+            body = TextFieldValue(s.body)
+            filled = true
+        }
     }
     fun edit(v: TextFieldValue) {
         body = v
