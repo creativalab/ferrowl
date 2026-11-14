@@ -1475,6 +1475,12 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        // Only from the given UID up: older messages stay...
+        c.prune("a", "INBOX", 3, &[]).unwrap();
+        assert_eq!(c.headers("a", "INBOX", 10).unwrap()[0].uid, 1);
+        // ...unless the whole folder is checked (a folder emptied elsewhere).
+        c.prune("a", "INBOX", 0, &[]).unwrap();
+        assert!(c.headers("a", "INBOX", 10).unwrap().is_empty());
         // UIDVALIDITY change empties the folder.
         c.check_uidvalidity("a", "INBOX", 2).unwrap();
         assert!(c.headers("a", "INBOX", 10).unwrap().is_empty());

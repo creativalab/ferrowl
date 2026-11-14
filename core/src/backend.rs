@@ -820,7 +820,22 @@ impl Backend {
         present.extend(delta.new.iter().map(|h| h.uid));
         c.store_headers(&key, folder, &delta.new, &own).map_err(text)?;
         c.set_flags_many(&key, folder, &delta.flags).map_err(text)?;
-        c.prune(&key, folder, window_min, &present).map_err(text)?;
+        // The window only covers the newest messages; older ones deleted
+        // elsewhere would stay in the cache (and in scrolling and search)
+        // forever. An empty folder is simply emptied; when the cache holds
+        // more than the server, the server's UIDs say which ones to drop.
+        let reconcile = if delta.exists == 0 {
+            Some(Vec::new())
+        } else if c.folder_stats(&key, folder).is_ok_and(|(n, _)| n > delta.exists) {
+            self.with_session_sync(|s| mail::all_uids(s, folder)).ok()
+        } else {
+            None
+        };
+        match reconcile {
+            Some(all) => c.prune(&key, folder, 0, &all),
+            None => c.prune(&key, folder, window_min, &present),
+        }
+        .map_err(text)?;
         let headers = c.headers(&key, folder, mail::PAGE_SIZE).map_err(text)?;
         let shown = headers.len() as u32;
         let first_seq = delta.exists.saturating_sub(shown.saturating_sub(1)).max(1);

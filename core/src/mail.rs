@@ -806,6 +806,13 @@ pub fn fetch_delta(
     Ok(Some(delta))
 }
 
+/// Every UID of a folder (UIDs only: a few bytes per message), to find
+/// cached messages deleted by other clients below the refreshed window.
+pub fn all_uids(session: &mut ImapSession, folder: &str) -> Result<Vec<u32>> {
+    session.select(folder)?;
+    Ok(session.uid_search("ALL")?.into_iter().collect())
+}
+
 /// What a new-mail notification needs from the inbox. See [`peek_inbox`].
 #[derive(Debug, Clone, Default)]
 pub struct Peek {
