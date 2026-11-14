@@ -1287,6 +1287,19 @@ pub fn move_message(session: &mut ImapSession, from: &str, uids: &[u32], to: &st
     } else {
         session.uid_copy(&set, to)?;
         session.uid_store(&set, "+FLAGS (\\Deleted)")?;
+        expunge_uids(session, &set)?;
+    }
+    Ok(())
+}
+
+/// Removes the given messages (already flagged \Deleted). With UIDPLUS only
+/// those; without it EXPUNGE is the only way, and it also removes messages
+/// other clients flagged \Deleted in the folder.
+fn expunge_uids(session: &mut ImapSession, set: &str) -> Result<()> {
+    let uidplus = session.capabilities().is_ok_and(|c| c.has_str("UIDPLUS"));
+    if uidplus {
+        session.uid_expunge(set)?;
+    } else {
         session.expunge()?;
     }
     Ok(())
@@ -1298,8 +1311,9 @@ pub fn delete_permanently(session: &mut ImapSession, folder: &str, uids: &[u32])
         return Ok(());
     }
     session.select(folder)?;
-    session.uid_store(uid_set(uids), "+FLAGS (\\Deleted)")?;
-    session.expunge()?;
+    let set = uid_set(uids);
+    session.uid_store(&set, "+FLAGS (\\Deleted)")?;
+    expunge_uids(session, &set)?;
     Ok(())
 }
 
