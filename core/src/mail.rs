@@ -919,13 +919,32 @@ pub fn header_from_raw(uid: u32, raw: &[u8], seen: bool) -> Header {
 /// Addresses typed in a To/Cc field ("Ada <ada@x.org>, bob@y.org") as
 /// (name, address) pairs.
 pub fn parse_recipients(field: &str) -> Vec<(String, String)> {
-    field
-        .split([',', ';'])
+    // Commas and semicolons separate addresses only outside quotes and
+    // angle brackets: "Rossi, Mario" <m@x.it> is one address.
+    let mut parts = Vec::new();
+    let (mut start, mut quoted, mut angle, mut escaped) = (0, false, false, false);
+    for (i, c) in field.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' if !angle => quoted = !quoted,
+            '<' if !quoted => angle = true,
+            '>' if !quoted => angle = false,
+            ',' | ';' if !quoted && !angle => {
+                parts.push(&field[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&field[start..]);
+    parts
+        .into_iter()
         .map(str::trim)
         .filter(|s| s.contains('@'))
         .map(|s| match (s.rfind('<'), s.rfind('>')) {
             (Some(a), Some(b)) if a < b => (
-                s[..a].trim().trim_matches('"').to_string(),
+                s[..a].trim().trim_matches('"').replace("\\\"", "\""),
                 s[a + 1..b].trim().to_string(),
             ),
             _ => (String::new(), s.to_string()),
@@ -2032,6 +2051,27 @@ mod tests {
                 ("Ada".to_string(), "ada@x.org".to_string()),
                 (String::new(), "bob@y.org".to_string()),
                 ("Carl C".to_string(), "carl@z.org".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn recipients_keep_separators_inside_quotes_and_brackets() {
+        assert_eq!(
+            parse_recipients("\"Rossi, Mario\" <m@x.it>; \"Bianchi; Anna\" <a@x.it>,ugo@y.it"),
+            vec![
+                ("Rossi, Mario".to_string(), "m@x.it".to_string()),
+                ("Bianchi; Anna".to_string(), "a@x.it".to_string()),
+                (String::new(), "ugo@y.it".to_string()),
+            ]
+        );
+        // An escaped quote doesn't end the name; a comma in the brackets
+        // doesn't split the address.
+        assert_eq!(
+            parse_recipients(r#""Ada \"A, B\" L" <ada@x.org>, Bob <bob,x@y.org>"#),
+            vec![
+                (r#"Ada "A, B" L"#.to_string(), "ada@x.org".to_string()),
+                ("Bob".to_string(), "bob,x@y.org".to_string()),
             ]
         );
     }
