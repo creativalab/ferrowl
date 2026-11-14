@@ -695,6 +695,18 @@ impl Cache {
             .optional()?)
     }
 
+    /// A stored contact's whole vCard, as last saved or downloaded.
+    pub fn contact_vcard(&self, account: &str, url: &str) -> Result<Option<String>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT vcard FROM contacts WHERE account = ?1 AND url = ?2",
+                params![account, url],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     pub fn delete_contact(&self, account: &str, url: &str) -> Result<()> {
         self.lock().execute(
             "DELETE FROM contacts WHERE account = ?1 AND url = ?2",

@@ -184,7 +184,16 @@ impl Backend {
             if contact.name.trim().is_empty() {
                 contact.name = contact.emails.first().cloned().unwrap_or_default();
             }
-            let vcard = crate::vcard::write(&contact);
+            // A stored contact changes only what the form shows: the rest of
+            // its card (address, birthday, photo...) is kept.
+            let original = match &stored {
+                Some(_) => cache.contact_vcard(&key, &contact.url).map_err(text)?,
+                None => None,
+            };
+            let vcard = match original.filter(|v| !v.trim().is_empty()) {
+                Some(original) => crate::vcard::merge(&original, &contact),
+                None => crate::vcard::write(&contact),
+            };
             let (url, book) = if contact.url.is_empty() {
                 let books = cache.address_books(&key).unwrap_or_default();
                 match books.first() {

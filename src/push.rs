@@ -68,7 +68,6 @@ fn stream(watch: &Watch) -> impl Stream<Item = Message> + use<> {
                     continue;
                 }
             };
-            backoff = 15;
             // Other accounts: the highest UID already seen, so only mail
             // arrived after this point is reported.
             let mut seen_max = 0;
@@ -79,7 +78,13 @@ fn stream(watch: &Watch) -> impl Stream<Item = Message> + use<> {
                 match tokio::task::spawn_blocking(move || {
                     let r = session
                         .select(&folder)
-                        .map(|m| m.uid_next.unwrap_or(1).saturating_sub(1))
+                        .and_then(|m| match m.uid_next {
+                            Some(next) => Ok(next.saturating_sub(1)),
+                            None if m.exists == 0 => Ok(0),
+                            // No UIDNEXT from the server: the last message's
+                            // UID, or all the unread mail would look new.
+                            None => Ok(session.uid_search("*")?.into_iter().max().unwrap_or(0)),
+                        })
                         .and_then(|max| Ok((max, session.uid_search("UNSEEN")?.len() as u32)));
                     (session, r)
                 })
@@ -97,9 +102,15 @@ fn stream(watch: &Watch) -> impl Stream<Item = Message> + use<> {
                             return;
                         }
                     }
-                    _ => continue,
+                    // Wait before logging in again, as for a failed connect.
+                    _ => {
+                        tokio::time::sleep(Duration::from_secs(backoff)).await;
+                        backoff = (backoff * 2).min(300);
+                        continue;
+                    }
                 }
             }
+            backoff = 15;
             loop {
                 let folder = watch.folder.clone();
                 let other = watch.other;

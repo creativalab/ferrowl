@@ -635,7 +635,8 @@ pub struct App {
     /// The open message's HTML, rendered into image tiles.
     pub html_render: Option<crate::html_view::Rendered>,
     pub html_rendering: bool,
-    /// A message whose HTML could not be painted: it is shown as text.
+    /// The open message's HTML could not be painted (its UID): it is shown
+    /// as text. Cleared when a message loads.
     pub html_failed: Option<u32>,
     /// Width the reader actually gives the HTML message, once measured.
     pub reader_width: Option<f32>,
@@ -714,6 +715,9 @@ pub struct App {
     pub invite: Option<InviteCard>,
     /// What the open message is about (shipment, code, bill), by its UID.
     pub insights: Option<(u32, Vec<ferrowl_core::insights::Insight>)>,
+    /// A bill's due date is being added to the calendar (a second click
+    /// would add it twice).
+    pub due_adding: bool,
     pub event_form: Option<EventForm>,
     /// Keyboard modifiers held now (for Shift/Ctrl+click in the list).
     pub modifiers: keyboard::Modifiers,
@@ -858,8 +862,11 @@ pub enum Message {
     Open(u32),
     Loaded(Res<FullMessage>),
     ToggleHtml,
-    /// The painted HTML of message `uid`; `None` when it could not be painted.
-    HtmlRendered(u32, Option<crate::html_view::Rendered>),
+    /// The painted HTML of message `uid`, or why there is none.
+    HtmlRendered(
+        u32,
+        Result<crate::html_view::Rendered, crate::html_view::Unrendered>,
+    ),
     LoadRemoteImages,
     ToggleRemoteImages(bool),
     /// Pointer moved over the HTML view (document coordinates).
@@ -1143,6 +1150,7 @@ impl App {
             calendar_sync: SyncState::Idle,
             invite: None,
             insights: None,
+            due_adding: false,
             event_form: None,
             modifiers: keyboard::Modifiers::default(),
             anchor: None,
@@ -1984,8 +1992,7 @@ impl App {
             async move {
                 tokio::task::spawn_blocking(move || crate::html_view::render(job))
                     .await
-                    .ok()
-                    .flatten()
+                    .unwrap_or(Err(crate::html_view::Unrendered::Failed))
             },
             move |rendered| Message::HtmlRendered(uid, rendered),
         )
@@ -2015,6 +2022,8 @@ impl App {
         self.agenda.clear();
         self.agenda_selected = None;
         self.calendar_sync = SyncState::Idle;
+        // Its answer is dropped as stale: do not wait for it.
+        self.due_adding = false;
     }
 
     /// Shows account `i` in the main window, with a fresh IMAP session.
@@ -3210,6 +3219,9 @@ impl App {
                 ));
                 self.message = Some(msg);
                 self.html_render = None;
+                // A failure was for the message open then: a UID repeats in
+                // other folders and accounts, and this one gets its own try.
+                self.html_failed = None;
                 self.hover_link = None;
                 let top = operation::snap_to(READER_ID, iced::widget::scrollable::RelativeOffset::START);
                 let pending = match self.pending_action.take() {
@@ -3243,7 +3255,9 @@ impl App {
                 };
                 Task::batch([self.save_config(), render])
             }
-            Message::HtmlRendered(uid, None) => {
+            // A newer request (resize, zoom) replaced it: that one answers.
+            Message::HtmlRendered(_, Err(crate::html_view::Unrendered::Superseded)) => Task::none(),
+            Message::HtmlRendered(uid, Err(crate::html_view::Unrendered::Failed)) => {
                 // The HTML could not be painted: show the text instead.
                 if self.message.as_ref().is_some_and(|m| m.uid == uid) {
                     self.html_rendering = false;
@@ -3251,14 +3265,14 @@ impl App {
                 }
                 Task::none()
             }
-            Message::HtmlRendered(_, rendered) => {
+            Message::HtmlRendered(_, Ok(rendered)) => {
                 // Ignore results for a message that is no longer open.
-                if rendered.as_ref().map(|r| r.uid) == self.message.as_ref().map(|m| m.uid) {
+                if self.message.as_ref().is_some_and(|m| m.uid == rendered.uid) {
                     self.html_rendering = false;
                     // First render of this message: start from the top (a re-render
                     // after a resize keeps the position).
                     let first = self.html_render.is_none();
-                    self.html_render = rendered;
+                    self.html_render = Some(rendered);
                     // The reader changed width while this was being painted.
                     let again = self.relayout_html();
                     if first {
@@ -4208,6 +4222,9 @@ impl App {
                 Task::batch([iced::clipboard::write(value), toast])
             }
             Message::AddDue(day, number, amount) => {
+                if self.due_adding {
+                    return Task::none();
+                }
                 let Some(acc) = self.config.account().cloned() else {
                     return Task::none();
                 };
@@ -4233,12 +4250,14 @@ impl App {
                     description: String::new(),
                     repeat: ferrowl_core::events::Repeat::Never,
                 };
+                self.due_adding = true;
                 self.perform(
                     Backend::save_event(acc, calendar.url, None, draft),
                     Message::DueAdded,
                 )
             }
             Message::DueAdded(result) => {
+                self.due_adding = false;
                 let toast = match result {
                     Ok(_) => self.toast(t("insight_due_added"), false),
                     Err(e) => self.toast(e, true),
