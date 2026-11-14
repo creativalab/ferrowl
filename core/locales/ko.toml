@@ -122,6 +122,7 @@ setup_title = "Ferrowl에 오신 것을 환영합니다"
 setup_desc = "메일 계정을 추가하여 시작하세요."
 
 err_no_account = "설정된 계정이 없습니다"
+err_other_account = "지금은 다른 계정이 열려 있습니다. 아무것도 변경되지 않았습니다."
 err_connect = "{host}:{port}에 연결할 수 없습니다"
 err_login = "IMAP 로그인 실패: {msg}"
 err_auth = "IMAP 로그인 실패: 사용자 이름 또는 비밀번호가 잘못되었습니다 (서버: {msg})"

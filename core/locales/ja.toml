@@ -122,6 +122,7 @@ setup_title = "Ferrowl へようこそ"
 setup_desc = "メールアカウントを追加して始めましょう。"
 
 err_no_account = "アカウントが設定されていません"
+err_other_account = "現在は別のアカウントが開いています。何も変更されていません。"
 err_connect = "{host}:{port} に接続できません"
 err_login = "IMAP ログインに失敗しました：{msg}"
 err_auth = "IMAP ログインに失敗しました：ユーザー名またはパスワードが正しくありません（サーバー：{msg}）"

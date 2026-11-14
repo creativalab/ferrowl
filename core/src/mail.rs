@@ -33,6 +33,9 @@ impl std::io::Write for TlsStream {
 /// Read/write timeout of IMAP commands: a dead connection fails instead of
 /// hanging the caller forever.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+/// Opening the connection: an unreachable server (a network that drops
+/// packets) would otherwise keep the engine busy for minutes.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
 impl imap::extensions::idle::SetReadTimeout for TlsStream {
     fn set_read_timeout(&mut self, timeout: Option<Duration>) -> imap::Result<()> {
@@ -498,7 +501,18 @@ pub fn connect_error(account: &Account) -> String {
 /// Like `connect`, to addresses already resolved (the push server checks
 /// them first). The host name is still the one TLS checks.
 pub fn connect_to(account: &Account, addrs: &[SocketAddr]) -> Result<ImapSession> {
-    let tcp = TcpStream::connect(addrs).with_context(|| connect_error(account))?;
+    let mut last = None;
+    let tcp = addrs
+        .iter()
+        .find_map(|a| {
+            TcpStream::connect_timeout(a, CONNECT_TIMEOUT)
+                .map_err(|e| last = Some(e))
+                .ok()
+        })
+        .ok_or_else(|| {
+            last.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no address"))
+        })
+        .with_context(|| connect_error(account))?;
     tcp.set_read_timeout(Some(COMMAND_TIMEOUT))?;
     tcp.set_write_timeout(Some(COMMAND_TIMEOUT))?;
 
@@ -1344,6 +1358,11 @@ pub fn set_keywords(session: &mut ImapSession, folder: &str, uids: &[u32], add: 
     if !remove.is_empty() {
         let _ = session.uid_store(uid_set(uids), format!("-FLAGS ({})", remove.join(" ")));
     }
+}
+
+/// Whether the server moves messages itself (RFC 6851).
+pub fn has_move(session: &mut ImapSession) -> bool {
+    session.capabilities().is_ok_and(|c| c.has_str("MOVE"))
 }
 
 /// Whether the server is Gmail (labels through the X-GM-EXT-1 extension).

@@ -122,6 +122,7 @@ setup_title = "مرحبًا بك في Ferrowl"
 setup_desc = "أضف حساب بريدك للبدء."
 
 err_no_account = "لم يتم إعداد أي حساب"
+err_other_account = "حساب آخر مفتوح الآن: لم يتغيّر شيء."
 err_connect = "تعذّر الاتصال بـ {host}:{port}"
 err_login = "فشل تسجيل الدخول إلى IMAP: {msg}"
 err_auth = "فشل تسجيل الدخول إلى IMAP: اسم المستخدم أو كلمة المرور غير صحيحة (الخادم: {msg})"

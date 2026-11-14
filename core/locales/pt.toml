@@ -122,6 +122,7 @@ setup_title = "Boas-vindas ao Ferrowl"
 setup_desc = "Adicione sua conta de e-mail para começar."
 
 err_no_account = "Nenhuma conta configurada"
+err_other_account = "Agora está aberta outra conta: nada foi alterado."
 err_connect = "Não foi possível conectar a {host}:{port}"
 err_login = "Falha no login IMAP: {msg}"
 err_auth = "Falha no login IMAP: nome de usuário ou senha incorretos (servidor: {msg})"
