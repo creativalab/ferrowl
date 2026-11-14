@@ -62,7 +62,7 @@ fi
 XCODE_PLATFORM=${PLATFORM_NAME:-iphonesimulator}
 unset ARCHS PLATFORM_NAME CONFIGURATION
 # Same minimum iOS version as the app (ios/Ferrowl.xcodeproj).
-export IPHONEOS_DEPLOYMENT_TARGET=17.0
+export IPHONEOS_DEPLOYMENT_TARGET=18.0
 
 flag=()
 dir=debug

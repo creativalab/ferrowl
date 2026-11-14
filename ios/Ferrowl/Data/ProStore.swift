@@ -17,14 +17,32 @@ final class ProStore {
     /// Development and TestFlight builds always have Pro (as on Android),
     /// so several accounts can be tried without a paid subscription.
     #if DEBUG
-    private static let unlocked = true
+    private static let alwaysPro = true
     #else
-    private static let unlocked = isTestFlight
+    private static let alwaysPro = false
     #endif
 
-    /// TestFlight installs carry a sandbox receipt (App Store ones a
-    /// regular one): known at once, before the App Store answers anything.
-    private static let isTestFlight = Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"
+    /// TestFlight installs: the app's own transaction comes from the sandbox
+    /// (App Store installs: production). Read once per launch, and kept like
+    /// the subscription so the next launch knows at once.
+    private var testFlight: Bool?
+    private static let testFlightKey = "pro.testflight"
+
+    private func isTestFlight() async -> Bool {
+        if let testFlight { return testFlight }
+        var sandbox = false
+        switch try? await AppTransaction.shared {
+        case .verified(let app)?, .unverified(let app, _)?:
+            // Only unlocks testing builds, so an unverified one is fine.
+            sandbox = app.environment == .sandbox
+        case nil:
+            // Offline at first launch: the last answer stands.
+            sandbox = SharedStorage.defaults.bool(forKey: Self.testFlightKey)
+        }
+        testFlight = sandbox
+        SharedStorage.defaults.set(sandbox, forKey: Self.testFlightKey)
+        return sandbox
+    }
 
     /// Where the last answer is kept (shared settings: background launches
     /// and the extensions start from it too), as Android keeps it.
@@ -33,7 +51,8 @@ final class ProStore {
     /// The last known state at once (the App Store answers later, and until
     /// then a subscriber must not lose the other accounts: push registrations,
     /// background checks, the active account).
-    private(set) var pro = ProStore.unlocked || SharedStorage.defaults.bool(forKey: ProStore.savedKey)
+    private(set) var pro = ProStore.alwaysPro || SharedStorage.defaults.bool(forKey: ProStore.savedKey)
+        || SharedStorage.defaults.bool(forKey: ProStore.testFlightKey)
     /// The subscriptions were read in this process: `pro` is not only the
     /// remembered state. Nothing is taken away before.
     private(set) var known = false
@@ -70,7 +89,8 @@ final class ProStore {
             }
         }
         SharedStorage.defaults.set(active, forKey: Self.savedKey)
-        pro = Self.unlocked || active
+        let testing = await isTestFlight()
+        pro = Self.alwaysPro || testing || active
         known = true
         if item == nil, let found = try? await Product.products(for: [Self.product]).first {
             item = found

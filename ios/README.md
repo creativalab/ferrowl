@@ -1,6 +1,6 @@
 # Ferrowl for iOS
 
-SwiftUI app (iPhone and iPad, iOS 17+) on top of the Rust engine (`../core`,
+SwiftUI app (iPhone and iPad, iOS 18+) on top of the Rust engine (`../core`,
 bound with UniFFI in `../ffi`), the same engine as the desktop and Android
 apps.
 

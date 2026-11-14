@@ -799,14 +799,8 @@ struct FerrowlShortcuts: AppShortcutsProvider {
 }
 
 extension AppIntent {
-    /// Asks before acting. iOS 18 has a new call for it; on iOS 17 the old
-    /// one is the only one, so its deprecation warning stays (here only)
-    /// until the app requires iOS 18.
+    /// Asks before acting.
     func confirm(_ dialog: IntentDialog, action: ConfirmationActionName = .continue) async throws {
-        if #available(iOS 18.0, *) {
-            try await requestConfirmation(actionName: action, dialog: dialog)
-        } else {
-            try await requestConfirmation(result: .result(dialog: dialog), confirmationActionName: action)
-        }
+        try await requestConfirmation(actionName: action, dialog: dialog)
     }
 }
