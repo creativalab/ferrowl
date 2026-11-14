@@ -49,6 +49,16 @@ final class MailRepository {
     /// Another account is being connected (the screen shows it).
     private(set) var switching: String?
 
+    /// A message being written is open: switches the app makes by itself
+    /// (a notification of another account, a Focus, the end of Ferrowl Pro)
+    /// wait for it to close, as switching starts the screens over.
+    var composing = false
+
+    /// Waits until no message being written is open.
+    func afterCompose() async {
+        while composing, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(400)) }
+    }
+
     init(engine: Engine, notices: Notices, directory: URL) {
         self.engine = engine
         self.notices = notices
@@ -76,6 +86,7 @@ final class MailRepository {
 
     /// Connects and, if it works, saves the account (it becomes active).
     func setUp(_ account: Account) async throws {
+        await flushDeferred()
         // After any connection in progress (see `switchTo`).
         while let task = connecting { _ = try? await task.value }
         let task = Task { try await engine.connect(account: account) }
@@ -96,6 +107,7 @@ final class MailRepository {
         guard let account = accounts.first(where: { $0.email.caseInsensitiveCompare(email) == .orderedSame }) else { return }
         switching = account.email
         defer { switching = nil }
+        await flushDeferred()
         // One connection at a time: one still in progress (the previous
         // account, at start-up) would otherwise finish last and leave the
         // engine on it, so a message of this account would be fetched (and
@@ -117,6 +129,8 @@ final class MailRepository {
     /// connection is retried with the right account).
     func backToFirst() async {
         guard let first = accounts.first, first.email != activeEmail else { return }
+        await flushDeferred()
+        guard first.email != activeEmail else { return }
         activeEmail = first.email
         folders = []
         persist()
@@ -130,6 +144,7 @@ final class MailRepository {
         guard let removed = accounts.first(where: { $0.email.caseInsensitiveCompare(email) == .orderedSame }) else {
             return !accounts.isEmpty
         }
+        await flushDeferred()
         if let provider = removed.oauth { oauthForget(provider: provider, email: removed.email) }
         // The same mailbox added twice shares its cache: kept then.
         let sharesCache = accounts.contains {
@@ -159,11 +174,30 @@ final class MailRepository {
         return true
     }
 
-    /// Changes the saved settings of an account (same address).
-    func update(_ account: Account) {
+    /// Changes the saved settings of an account (same address). The account
+    /// in use connects again, so its address book and calendars follow the
+    /// new servers (the engine keeps the settings it was connected with).
+    func update(_ account: Account) async {
         guard let i = accounts.firstIndex(where: { $0.email == account.email }) else { return }
+        let old = accounts[i]
         accounts[i] = account
         persist()
+        let servers = old.displayName != account.displayName || old.carddavUrl != account.carddavUrl || old.caldavUrl != account.caldavUrl
+            || old.davUsername != account.davUsername || old.davPassword != account.davPassword
+        guard servers, account.email == activeEmail, connected == account.email else { return }
+        while let task = connecting { _ = try? await task.value }
+        guard account.email == activeEmail, connected == account.email else { return }
+        let engine = engine
+        let task = Task { try await engine.connect(account: account) }
+        connecting = task
+        defer { connecting = nil }
+        guard let list = try? await task.value else {
+            // Connected again at the next action.
+            folders = []
+            return
+        }
+        folders = list
+        afterConnect()
     }
 
     /// Connects the active account once per process (concurrent callers
@@ -197,6 +231,83 @@ final class MailRepository {
     /// connection is made (it comes from the phone's copy), so wait for it.
     private func ready() async throws {
         if folders.isEmpty || connected != activeEmail { try await ensureConnected() }
+    }
+
+    /// `ready`, for an action asked on `account`: refused when the app has
+    /// moved to another account meanwhile, or the same message numbers
+    /// would be changed (or deleted) in the other mailbox.
+    @discardableResult
+    private func ready(for account: String?) async throws -> String {
+        guard let account, isCurrent(account) else { throw AccountChanged() }
+        try await ready()
+        guard isCurrent(account), connected?.caseInsensitiveCompare(account) == .orderedSame else { throw AccountChanged() }
+        return account
+    }
+
+    /// An engine action given the account it is meant for (`…ForAccount`):
+    /// the engine itself refuses when it is on another one (a switch while
+    /// the call waited), which counts as `AccountChanged` here too.
+    private func guarded<T>(_ call: () async throws -> T) async throws -> T {
+        do {
+            return try await call()
+        } catch let error as FerrowlError {
+            if case .Failed(let message) = error, message == t("err_other_account") { throw AccountChanged() }
+            throw error
+        }
+    }
+
+    /// Whether `account` is still the one in use.
+    func isCurrent(_ account: String?) -> Bool {
+        guard let account, let activeEmail else { return false }
+        return account.caseInsensitiveCompare(activeEmail) == .orderedSame
+    }
+
+    // MARK: actions waiting for Undo
+
+    private struct Deferred {
+        let account: String
+        let action: () async -> Void
+        let timer: Task<Void, Never>
+    }
+
+    private var deferred: [UUID: Deferred] = [:]
+
+    /// Runs `action` (a server change on `account`) after `delay`, unless
+    /// cancelled first (Undo). It belongs to the account, not to a screen:
+    /// before the engine moves to another account it runs at once.
+    func later(on account: String, after delay: Duration, _ action: @escaping () async -> Void) -> UUID {
+        let id = UUID()
+        let timer = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            await self?.runDeferred(id)
+        }
+        deferred[id] = Deferred(account: account, action: action, timer: timer)
+        return id
+    }
+
+    /// Undo: false when the action already ran.
+    func cancelLater(_ id: UUID) -> Bool {
+        guard let job = deferred.removeValue(forKey: id) else { return false }
+        job.timer.cancel()
+        return true
+    }
+
+    private func runDeferred(_ id: UUID) async {
+        guard let job = deferred.removeValue(forKey: id) else { return }
+        await job.action()
+    }
+
+    /// Before connecting another account: what waits for Undo is done now,
+    /// while the engine is still on its account. Also when the app leaves
+    /// the screen (it may be stopped before the notice is gone).
+    func flushDeferred() async {
+        guard !deferred.isEmpty else { return }
+        while let (id, job) = deferred.first {
+            deferred.removeValue(forKey: id)
+            job.timer.cancel()
+            await job.action()
+        }
     }
 
     /// Once per connection: the address book learns who we write to from
@@ -249,19 +360,33 @@ final class MailRepository {
         return await Task.detached { engine.cachedInbox(account: account) }.value
     }
 
+    /// The engine reads the phone's copy of the account it is connected
+    /// to: with none yet (the app just started, e.g. from a notification)
+    /// those reads come back empty, so the connection is made first. Offline
+    /// they still give what there is.
+    private func readable() async {
+        if folders.isEmpty || connected != activeEmail { _ = try? await ensureConnected() }
+    }
+
     /// Messages already on the phone.
     func cachedHeaders(_ folderId: String) async -> [Header] {
         let engine = engine
         return await Task.detached { engine.cachedHeaders(folderId: folderId) }.value
     }
 
-    /// Newest messages from the server.
-    func headers(_ folderId: String) async throws -> [Header] {
-        try await ready()
-        return try await engine.headers(folderId: folderId).headers
+    /// Newest messages from the server; with `account`, refused when the
+    /// app moved to another one meanwhile.
+    func headers(_ folderId: String, on account: String? = nil) async throws -> [Header] {
+        guard let account else {
+            try await ready()
+            return try await engine.headers(folderId: folderId).headers
+        }
+        try await ready(for: account)
+        return try await guarded { try await engine.headersForAccount(account: account, folderId: folderId).headers }
     }
 
     func search(_ folderId: String, _ query: String) async -> [Header] {
+        await readable()
         let engine = engine
         return await Task.detached { engine.search(folderId: folderId, query: query) }.value
     }
@@ -278,70 +403,71 @@ final class MailRepository {
     }
 
     func suggest(_ query: String) async -> [AddressSuggestion] {
+        await readable()
         let engine = engine
         return await Task.detached { engine.suggestAddresses(query: query) }.value
     }
 
     // MARK: actions
 
-    func setSeen(_ folderId: String, _ uids: [UInt32], _ seen: Bool) async throws {
-        try await ready()
-        try await engine.setSeenMany(folderId: folderId, uids: uids, seen: seen)
+    func setSeen(_ folderId: String, _ uids: [UInt32], _ seen: Bool, on account: String? = nil) async throws {
+        let account = try await ready(for: account ?? activeEmail)
+        try await guarded { try await engine.setSeenManyForAccount(account: account, folderId: folderId, uids: uids, seen: seen) }
         changes += 1
     }
 
-    func setFlagged(_ folderId: String, _ uids: [UInt32], _ flagged: Bool) async throws {
-        try await ready()
-        try await engine.setFlaggedMany(folderId: folderId, uids: uids, flagged: flagged)
+    func setFlagged(_ folderId: String, _ uids: [UInt32], _ flagged: Bool, on account: String? = nil) async throws {
+        let account = try await ready(for: account ?? activeEmail)
+        try await guarded { try await engine.setFlaggedManyForAccount(account: account, folderId: folderId, uids: uids, flagged: flagged) }
     }
 
     /// Archives messages; `quiet` when the screen already confirmed it (swipe).
-    func archive(_ folderId: String, _ uids: [UInt32], quiet: Bool = false) async throws {
-        try await ready()
-        _ = try await engine.archiveMany(folderId: folderId, uids: uids)
+    func archive(_ folderId: String, _ uids: [UInt32], quiet: Bool = false, on account: String? = nil) async throws {
+        let account = try await ready(for: account ?? activeEmail)
+        _ = try await guarded { try await engine.archiveManyForAccount(account: account, folderId: folderId, uids: uids) }
         changed(quiet ? "" : uids.count == 1 ? t("archived") : t("bulk_archived", ["n": "\(uids.count)"]))
     }
 
     /// Moves to the Trash, or deletes for good when already there; `quiet`
     /// when the screen already confirmed it (swipe).
-    func delete(_ folderId: String, _ uids: [UInt32], quiet: Bool = false) async throws {
-        try await ready()
+    func delete(_ folderId: String, _ uids: [UInt32], quiet: Bool = false, on account: String? = nil) async throws {
+        let account = try await ready(for: account ?? activeEmail)
         let n = "\(uids.count)"
         if deletesForever(folderId) {
-            try await engine.deleteForeverMany(folderId: folderId, uids: uids)
+            try await guarded { try await engine.deleteForeverManyForAccount(account: account, folderId: folderId, uids: uids) }
             changed(quiet ? "" : uids.count == 1 ? t("deleted_forever") : t("bulk_deleted_forever", ["n": n]))
         } else if let trash = folder(of: .trash) {
-            try await engine.moveMany(folderId: folderId, uids: uids, targetId: trash.id)
+            try await guarded { try await engine.moveManyForAccount(account: account, folderId: folderId, uids: uids, targetId: trash.id) }
             changed(quiet ? "" : uids.count == 1 ? t("moved_to_trash") : t("bulk_trashed", ["n": n]))
         }
     }
 
-    func move(_ folderId: String, _ uids: [UInt32], to target: String) async throws {
-        try await ready()
-        try await engine.moveMany(folderId: folderId, uids: uids, targetId: target)
+    func move(_ folderId: String, _ uids: [UInt32], to target: String, on account: String? = nil) async throws {
+        let account = try await ready(for: account ?? activeEmail)
+        try await guarded { try await engine.moveManyForAccount(account: account, folderId: folderId, uids: uids, targetId: target) }
         changed(uids.count == 1 ? t("moved_ok") : t("bulk_moved", ["n": "\(uids.count)"]))
     }
 
-    func setLabel(_ folderId: String, _ uids: [UInt32], _ label: String, _ on: Bool) async throws {
-        try await ready()
-        try await engine.setLabelMany(folderId: folderId, uids: uids, label: label, on: on)
+    func setLabel(_ folderId: String, _ uids: [UInt32], _ label: String, _ on: Bool, on account: String? = nil) async throws {
+        let account = try await ready(for: account ?? activeEmail)
+        try await guarded { try await engine.setLabelManyForAccount(account: account, folderId: folderId, uids: uids, label: label, on: on) }
     }
 
     /// Moves messages to Spam, or back to the inbox (`toSpam` false).
-    func spam(_ folderId: String, _ uids: [UInt32], toSpam: Bool) async throws {
-        try await ready()
+    func spam(_ folderId: String, _ uids: [UInt32], toSpam: Bool, on account: String? = nil) async throws {
+        let account = try await ready(for: account ?? activeEmail)
         if toSpam {
-            _ = try await engine.reportSpam(folderId: folderId, uids: uids)
+            _ = try await guarded { try await engine.reportSpamForAccount(account: account, folderId: folderId, uids: uids) }
         } else {
-            _ = try await engine.notSpam(folderId: folderId, uids: uids)
+            _ = try await guarded { try await engine.notSpamForAccount(account: account, folderId: folderId, uids: uids) }
         }
         changed(t(toSpam ? "spam_moved" : "inbox_moved", ["n": "\(uids.count)"]))
     }
 
     /// Sends; Markdown formatting typed by the user also goes out as HTML,
     /// as on desktop. A warning is shown when the copy in Sent failed.
-    func send(_ draft: Outgoing) async throws {
-        try await ready()
+    func send(_ draft: Outgoing, on account: String? = nil) async throws {
+        try await ready(for: account ?? activeEmail)
         var draft = draft
         draft.html = markdownToHtml(markdown: draft.body)
         let warning = try await engine.send(message: draft)
@@ -361,8 +487,9 @@ final class MailRepository {
 
     /// Applies the sender lists to a freshly loaded folder; returns the
     /// messages moved (to drop from the list).
-    func applySenderRules(_ folderId: String, _ headers: [Header]) async throws -> [UInt32] {
-        let moved = try await engine.applySenderRules(folderId: folderId, headers: headers)
+    func applySenderRules(_ folderId: String, _ headers: [Header], on account: String) async throws -> [UInt32] {
+        try await ready(for: account)
+        let moved = try await guarded { try await engine.applySenderRulesForAccount(account: account, folderId: folderId, headers: headers) }
         if !moved.isEmpty { notices.info(t("rules_moved", ["n": "\(moved.count)"])) }
         return moved
     }
@@ -370,9 +497,12 @@ final class MailRepository {
     // MARK: rules
 
     /// The inbox's new messages through the user's rules (each once).
-    func applyRules(_ folderId: String, _ headers: [Header]) async -> RulesOutcome? {
+    func applyRules(_ folderId: String, _ headers: [Header], on account: String) async -> RulesOutcome? {
         guard folderId == inboxId, !headers.isEmpty else { return nil }
-        guard let outcome = try? await engine.applyRules(folderId: folderId, headers: headers) else { return nil }
+        // Another account's rules must not run on these numbers (nor its
+        // "done up to" mark move to this account's newest message).
+        guard (try? await ready(for: account)) != nil else { return nil }
+        guard let outcome = try? await engine.applyRulesForAccount(account: account, folderId: folderId, headers: headers) else { return nil }
         let touched = Set(outcome.removed + outcome.read + outcome.starred)
         if !touched.isEmpty { notices.info(t("rules_applied", ["n": "\(touched.count)"])) }
         return outcome
@@ -404,6 +534,7 @@ final class MailRepository {
     // MARK: contacts and calendar
 
     func contacts(_ query: String) async -> [Contact] {
+        await readable()
         let engine = engine
         return await Task.detached { engine.contacts(query: query) }.value
     }
@@ -426,16 +557,19 @@ final class MailRepository {
     }
 
     func agenda(from: Int64, to: Int64) async -> [CalendarEvent] {
+        await readable()
         let engine = engine
         return await Task.detached { engine.agenda(from: from, to: to) }.value
     }
 
     func calendars() async -> [CalendarInfo] {
+        await readable()
         let engine = engine
         return await Task.detached { engine.calendars() }.value
     }
 
     func eventDraft(_ url: String) async -> EventDraft? {
+        await readable()
         let engine = engine
         return await Task.detached { engine.eventDraft(url: url) }.value
     }

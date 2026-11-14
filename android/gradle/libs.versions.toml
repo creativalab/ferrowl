@@ -11,6 +11,8 @@ lifecycle = "2.11.0"
 navigation = "2.10.2"
 hilt-navigation-compose = "1.4.0"
 datastore = "1.3.0"
+# Periodic new-mail check in the background (as iOS BGAppRefresh).
+work = "2.12.0"
 # Custom Tabs: sign-in pages (Microsoft) open in the user's browser over the app.
 browser = "1.10.0"
 # Sign in with Google on Android (Google Identity Services authorization).
@@ -36,6 +38,7 @@ androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-ru
 androidx-lifecycle-process = { module = "androidx.lifecycle:lifecycle-process", version.ref = "lifecycle" }
 androidx-navigation-compose = { module = "androidx.navigation:navigation-compose", version.ref = "navigation" }
 androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
+androidx-work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
 androidx-browser = { module = "androidx.browser:browser", version.ref = "browser" }
 play-services-auth = { module = "com.google.android.gms:play-services-auth", version.ref = "play-services-auth" }
 billing-ktx = { module = "com.android.billingclient:billing-ktx", version.ref = "billing" }

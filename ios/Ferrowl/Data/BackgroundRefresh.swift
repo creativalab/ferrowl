@@ -11,23 +11,31 @@ import UserNotifications
 /// The newest uid seen is kept per account, so a message is announced once.
 @MainActor
 enum BackgroundRefresh {
-    static let task = "com.ferrowl.app.refresh"
+    nonisolated static let task = "com.ferrowl.app.refresh"
 
     /// Registers the task; must run before the app finishes launching.
     static func register(_ app: AppModel) {
         BGTaskScheduler.shared.register(forTaskWithIdentifier: task, using: nil) { task in
             guard let task = task as? BGAppRefreshTask else { return }
+            // Told once: when the work ends, or at once when iOS says time
+            // is up (engine calls do not stop on cancel, and answering late
+            // gets the app killed and woken less often).
+            let finish = Once { ok in task.setTaskCompleted(success: ok) }
             let work = Task { @MainActor in
                 let ok = await check(app)
                 schedule()
-                task.setTaskCompleted(success: ok)
+                finish.call(ok)
             }
-            task.expirationHandler = { work.cancel() }
+            task.expirationHandler = {
+                work.cancel()
+                schedule()
+                finish.call(false)
+            }
         }
     }
 
     /// Asks iOS to wake the app again in about 15 minutes (at the earliest).
-    static func schedule() {
+    nonisolated static func schedule() {
         let request = BGAppRefreshTaskRequest(identifier: task)
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
         try? BGTaskScheduler.shared.submit(request)
@@ -46,6 +54,9 @@ enum BackgroundRefresh {
         guard app.prefs.notifications, !checking else { return true }
         checking = true
         defer { checking = false }
+        // Woken in the background, the screen's App Store check may not
+        // have run: Ferrowl Pro decides which accounts are checked.
+        await app.pro.ready()
         var ok = true
         for account in mail.accounts where app.mayUse(account.email) {
             guard !Task.isCancelled else { break }
@@ -55,9 +66,9 @@ enum BackgroundRefresh {
                 let unread: UInt32?
                 if active {
                     try await mail.ensureConnected()
-                    var inbox = try await mail.headers(mail.inboxId)
+                    var inbox = try await mail.headers(mail.inboxId, on: account.email)
                     // The user's rules first: what they move or mark is not announced.
-                    if let done = await mail.applyRules(mail.inboxId, inbox) {
+                    if let done = await mail.applyRules(mail.inboxId, inbox, on: account.email) {
                         inbox.removeAll { done.removed.contains($0.uid) || done.read.contains($0.uid) }
                     }
                     headers = inbox
@@ -133,5 +144,22 @@ enum BackgroundRefresh {
         content.userInfo = ["email": account, "uid": NSNumber(value: first.uid)]
         let request = UNNotificationRequest(identifier: "mail:\(account):\(first.uid)", content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
+    }
+}
+
+/// Calls its function the first time only (from any thread).
+final class Once: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    private let action: (Bool) -> Void
+
+    init(_ action: @escaping (Bool) -> Void) { self.action = action }
+
+    func call(_ value: Bool) {
+        lock.lock()
+        let first = !done
+        done = true
+        lock.unlock()
+        if first { action(value) }
     }
 }

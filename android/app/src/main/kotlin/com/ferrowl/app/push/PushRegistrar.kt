@@ -100,12 +100,18 @@ class PushRegistrar @Inject constructor(
             runCatching { client.deleteAccount(token, old) }
             store.clearLegacyAccount()
         }
+        // Removals that failed earlier (offline).
+        for (id in store.current().removing) {
+            if (remove(token, id)) store.setRemoving(id, add = false)
+        }
         val known = store.current().accounts
         // The server restarted meanwhile: give it the key again first.
         if (known.isNotEmpty()) client.unlock(token, key)
         for ((email, id) in known) {
             if (wanted.none { it.email.equals(email, ignoreCase = true) }) {
-                runCatching { client.deleteAccount(token, id) }
+                // Kept for later if the server cannot be reached: it would
+                // otherwise go on watching the account with its password.
+                if (!remove(token, id)) store.setRemoving(id, add = true)
                 store.removeAccount(email)
             }
         }
@@ -125,12 +131,26 @@ class PushRegistrar @Inject constructor(
             val s = store.current()
             val id = s.accounts[email.lowercase()]
             if (s.deviceToken != null && id != null) {
-                runCatching { client.deleteAccount(s.deviceToken, id) }
+                if (!remove(s.deviceToken, id)) store.setRemoving(id, add = true)
                 store.removeAccount(email)
             }
         }
         sync()
     }
+
+    /** Removes an account id from the server; false when it could not be reached. */
+    private suspend fun remove(token: String, id: String): Boolean = try {
+        client.deleteAccount(token, id)
+        true
+    } catch (e: PushException) {
+        // Already gone (or the phone with it): nothing left to remove.
+        e.status == 404 || e.status == 401
+    } catch (e: Exception) {
+        false
+    }
+
+    /** Mail of [email] up to [uid] was seen in the app: a push does not announce it again. */
+    suspend fun seen(email: String, uid: Long) = store.setLastNotified(email, uid)
 
     /** Firebase gave the phone a new token. */
     suspend fun tokenChanged(fcmToken: String) {

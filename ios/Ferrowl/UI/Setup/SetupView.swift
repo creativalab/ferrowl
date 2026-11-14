@@ -225,10 +225,17 @@ struct SetupView: View {
         Task {
             defer { busy = false }
             do {
-                // Set up again (maybe a new password): the push server gets the new settings.
-                await app.push.forget(account.email)
                 try await mail.setUp(account)
                 onDone()
+                // Set up again (maybe a new password): the push server gets
+                // the new settings, only once they work. The list of accounts
+                // may be the same, so the sync is asked here.
+                await app.push.forget(account.email)
+                do {
+                    try await app.push.sync(app)
+                } catch {
+                    notices.error(describePush(error))
+                }
             } catch {
                 notices.error(describe(error))
             }

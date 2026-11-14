@@ -83,6 +83,11 @@ enum WidgetData {
         save(accounts)
     }
 
+    /// Puts back what `load` returned (a widget button's action failed).
+    static func restore(_ accounts: [WidgetAccount]) {
+        save(accounts)
+    }
+
     /// The accounts on the phone, in their order: others are dropped.
     static func keep(_ emails: [String]) {
         let accounts = load()

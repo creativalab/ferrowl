@@ -2,6 +2,7 @@ package com.ferrowl.app.ui.mailbox
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ferrowl.app.data.AccountChanged
 import com.ferrowl.app.data.Billing
 import com.ferrowl.app.data.MailRepository
 import com.ferrowl.app.data.SettingsStore
@@ -17,7 +18,6 @@ import com.ferrowl.core.sortConversations
 import com.ferrowl.core.translate
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -107,6 +107,16 @@ class MailboxViewModel @Inject constructor(
 
     private var searchJob: Job? = null
 
+    /**
+     * The account whose messages the list shows. Actions go to it only: the
+     * engine may already be on another one (a switch, before the list
+     * starts over), whose messages have the same numbers. Main thread only.
+     */
+    private var listAccount: String? = null
+
+    /** The account to act on: the list's. */
+    private fun actingAccount(): String? = listAccount ?: repo.connectedAccount()
+
     init {
         viewModelScope.launch { settings.threaded.collect { on -> _state.update { it.copy(threaded = on) } } }
         viewModelScope.launch { settings.sort.collect { o -> _state.update { it.copy(sort = o) } } }
@@ -119,6 +129,7 @@ class MailboxViewModel @Inject constructor(
             }
             try {
                 repo.ensureConnected()
+                listAccount = repo.connectedAccount()
                 _state.update {
                     it.copy(folders = repo.folders.value, folderId = repo.inboxId(), tabs = repo.isGmail())
                 }
@@ -162,6 +173,7 @@ class MailboxViewModel @Inject constructor(
         // Another account became active: start over with its inbox.
         viewModelScope.launch {
             repo.switched.collect {
+                listAccount = repo.connectedAccount()
                 _state.update {
                     it.copy(
                         folders = repo.folders.value,
@@ -245,12 +257,16 @@ class MailboxViewModel @Inject constructor(
     suspend fun takeOpenRequest(): Pair<String, UInt?>? {
         val r = notificationOpen.pending.value ?: return null
         val s = _state.value
+        // Started from the notification: the accounts are not read yet, and
+        // the request waits for them (dropping it would lose the message).
+        if (s.accounts.isEmpty() || s.active.isBlank()) return null
         if (!r.email.equals(s.active, ignoreCase = true)) {
             if (s.accounts.any { it.equals(r.email, ignoreCase = true) }) switchAccount(r.email) else notificationOpen.done()
             return null
         }
         notificationOpen.done()
-        repo.ensureConnected()
+        // Offline: the inbox from the phone's copy, the message when it can be read.
+        runCatching { repo.ensureConnected() }
         openFolder(repo.inboxId())
         return repo.inboxId() to r.uid?.toUInt()
     }
@@ -384,18 +400,31 @@ class MailboxViewModel @Inject constructor(
         try {
             val cached = repo.cachedHeaders(id)
             if (cached.isNotEmpty()) _state.update { if (it.folderId == id) it.copy(messages = visible(cached, id)) else it }
-            var fresh = repo.headers(id)
+            // The account these messages are of; after every step the engine
+            // must still be on it (a switch meanwhile: nothing is applied).
+            val (account, headers) = repo.headersOf(id)
+            var fresh = headers
             // Sender lists: blocked mail leaves the inbox, allowed mail leaves Spam.
-            val moved = runCatching { repo.applySenderRules(id, fresh) }.getOrDefault(emptyList())
+            val moved = try {
+                repo.applySenderRules(id, fresh, account)
+            } catch (e: FerrowlException) {
+                emptyList()
+            }
             if (moved.isNotEmpty()) fresh = fresh.filter { it.uid !in moved }
             // The user's rules on the inbox's new messages.
-            repo.applyRules(id, fresh)?.let { done ->
+            repo.applyRules(id, fresh, account)?.let { done ->
                 fresh = fresh.filter { it.uid !in done.removed }.map {
                     it.copy(seen = it.seen || it.uid in done.read, flagged = it.flagged || it.uid in done.starred)
                 }
             }
+            if (!repo.isCurrent(account)) return
+            listAccount = account
             _state.update { if (it.folderId == id) it.copy(messages = visible(fresh, id)) else it }
+            // What a push compares with: mail seen here is not announced again.
+            if (id == repo.inboxId()) fresh.maxOfOrNull { it.uid }?.let { push.seen(account, it.toLong()) }
             loadUnread()
+        } catch (e: AccountChanged) {
+            // Another account is on screen now: its own fetch follows.
         } catch (e: FerrowlException) {
             if (!quiet) _state.update { it.copy(error = e.message) }
         }
@@ -464,37 +493,38 @@ class MailboxViewModel @Inject constructor(
 
     fun clearSelection() = _state.update { it.copy(selected = emptySet(), confirmDelete = false) }
 
-    fun markSelected(seen: Boolean) = bulk { folder, uids ->
+    fun markSelected(seen: Boolean) = bulk { folder, uids, account ->
         _state.update { s ->
             s.copy(messages = s.messages.map { if (it.uid in uids) it.copy(seen = seen) else it })
         }
-        repo.setSeen(folder, uids, seen)
+        repo.setSeen(folder, uids, seen, account)
     }
 
-    fun starSelected(on: Boolean) = bulk { folder, uids -> star(folder, uids, on) }
+    fun starSelected(on: Boolean) = bulk { folder, uids, account -> star(folder, uids, on, account) }
 
     /** The star of a list row (all its messages). */
     fun toggleStar(uids: List<UInt>, on: Boolean) {
         val folder = _state.value.folderId
+        val account = actingAccount()
         viewModelScope.launch {
             try {
-                star(folder, uids, on)
+                star(folder, uids, on, account)
             } catch (e: FerrowlException) {
-                star(folder, uids, !on, local = true)
+                star(folder, uids, !on, account, local = true)
                 _state.update { it.copy(error = e.message) }
             }
         }
     }
 
     /** Updates the list right away, then the server (unless [local]). */
-    private suspend fun star(folder: String, uids: List<UInt>, on: Boolean, local: Boolean = false) {
+    private suspend fun star(folder: String, uids: List<UInt>, on: Boolean, account: String?, local: Boolean = false) {
         _state.update { s ->
             s.copy(
                 messages = s.messages.map { if (it.uid in uids) it.copy(flagged = on) else it },
                 results = s.results.map { if (it.uid in uids) it.copy(flagged = on) else it },
             )
         }
-        if (!local) repo.setFlagged(folder, uids, on)
+        if (!local) repo.setFlagged(folder, uids, on, account)
     }
 
     /** Gmail: whether the folder's messages have labels. */
@@ -514,9 +544,10 @@ class MailboxViewModel @Inject constructor(
             }
         }
         apply(on)
+        val account = actingAccount()
         viewModelScope.launch {
             try {
-                repo.setLabel(s.folderId, uids, label, on)
+                repo.setLabel(s.folderId, uids, label, on, account)
             } catch (e: FerrowlException) {
                 apply(!on)
                 _state.update { it.copy(error = e.message) }
@@ -542,10 +573,10 @@ class MailboxViewModel @Inject constructor(
             val senders = s.shown.filter { it.uid in s.selected && it.fromAddress.isNotBlank() }.map { it.fromAddress }.toSet()
             viewModelScope.launch { senders.forEach { runCatching { repo.setSenderRule(it, true) } } }
         }
-        bulk { folder, uids -> repo.spam(folder, uids, toSpam) }
+        bulk { folder, uids, account -> repo.spam(folder, uids, toSpam, account) }
     }
 
-    fun archiveSelected() = bulk { folder, uids -> repo.archive(folder, uids) }
+    fun archiveSelected() = bulk { folder, uids, account -> repo.archive(folder, uids, account = account) }
 
     /** Whether deleting in the open folder is for good (the Trash): no swipe there. */
     val deletesForever: Boolean get() = repo.deletesForever(_state.value.folderId)
@@ -560,19 +591,16 @@ class MailboxViewModel @Inject constructor(
         val rows = _state.value.messages.filter { it.uid in uids }
         _state.update { s -> s.copy(messages = s.messages.filterNot { it.uid in uids }) }
         pendingDeletes.getOrPut(folder) { mutableSetOf() }.addAll(uids)
-        val job = viewModelScope.launch {
-            delay(UNDO_MS)
-            try {
-                repo.delete(folder, uids, quiet = true)
-                pendingDeletes[folder]?.removeAll(uids.toSet())
-            } catch (e: FerrowlException) {
-                pendingDeletes[folder]?.removeAll(uids.toSet())
-                _state.update { it.copy(error = e.message) }
-                refresh()
-            }
+        val account = actingAccount() ?: return
+        // Kept by the repository on this account: it still runs if this
+        // screen goes, and at once before another account is connected.
+        val job = repo.deleteLater(account, folder, uids, UNDO_MS) { failed ->
+            pendingDeletes[folder]?.removeAll(uids.toSet())
+            if (failed && repo.isCurrent(account)) refresh()
         }
         notices.withAction(translate("moved_to_trash"), translate("undo")) {
-            job.cancel()
+            // Already done (another account was connected meanwhile).
+            if (!repo.cancelLater(job)) return@withAction
             pendingDeletes[folder]?.removeAll(uids.toSet())
             _state.update { s ->
                 if (s.folderId != folder) s else s.copy(messages = (s.messages + rows).sortedByDescending { it.timestamp })
@@ -580,7 +608,7 @@ class MailboxViewModel @Inject constructor(
         }
     }
 
-    fun moveSelected(targetId: String) = bulk { folder, uids -> repo.move(folder, uids, targetId) }
+    fun moveSelected(targetId: String) = bulk { folder, uids, account -> repo.move(folder, uids, targetId, account) }
 
     /** Trash, or (in the Trash) ask first and then delete for good. */
     fun deleteSelected(confirmed: Boolean = false) {
@@ -589,17 +617,18 @@ class MailboxViewModel @Inject constructor(
             _state.update { it.copy(confirmDelete = true) }
             return
         }
-        bulk { folder, uids -> repo.delete(folder, uids) }
+        bulk { folder, uids, account -> repo.delete(folder, uids, account = account) }
     }
 
-    private fun bulk(action: suspend (folder: String, uids: List<UInt>) -> Unit) {
+    private fun bulk(action: suspend (folder: String, uids: List<UInt>, account: String?) -> Unit) {
         val s = _state.value
         val uids = s.selected.toList()
         if (uids.isEmpty()) return
+        val account = actingAccount()
         _state.update { it.copy(selected = emptySet(), confirmDelete = false) }
         viewModelScope.launch {
             try {
-                action(s.folderId, uids)
+                action(s.folderId, uids, account)
             } catch (e: FerrowlException) {
                 _state.update { it.copy(error = e.message) }
             }

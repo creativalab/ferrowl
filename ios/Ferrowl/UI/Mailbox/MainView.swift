@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 /// The mailbox: folders · message list · reader. Three columns on iPad, a
@@ -51,6 +52,9 @@ struct MainView: View {
             }
             #endif
         }
+        // A switch of account replaced this screen: its work still running
+        // (a refresh) must stop instead of touching the new account.
+        .onDisappear { model?.alive = false }
         // A notification was tapped (also before the mailbox was ready: the
         // request waits for it).
         .task(id: "\(app.pendingOpen?.email ?? "")|\(app.pendingOpen?.uid ?? 0)|\(model != nil)") {
@@ -58,7 +62,9 @@ struct MainView: View {
         }
         // A Focus that does not show the account in use: one it shows.
         .task(id: mail.focus) {
-            guard let first = mail.visibleAccounts.first,
+            // Not while a message is being written (switching closes it).
+            await mail.afterCompose()
+            guard !Task.isCancelled, let first = mail.visibleAccounts.first,
                   !mail.visibleAccounts.contains(where: { $0.email == mail.activeEmail }) else { return }
             try? await mail.switchTo(first.email)
         }
@@ -126,7 +132,11 @@ struct MainView: View {
     /// first (this screen then starts over and comes back here), then its
     /// inbox and the message.
     private func openFromNotification() async {
-        guard let pending = app.pendingOpen, let model else { return }
+        guard app.pendingOpen != nil, model != nil else { return }
+        // A message being written stays open: the request waits for it
+        // (switching account, or opening the message, would close it).
+        await mail.afterCompose()
+        guard !Task.isCancelled, let pending = app.pendingOpen, let model else { return }
         if pending.email.caseInsensitiveCompare(mail.activeEmail ?? "") != .orderedSame {
             guard app.mayUse(pending.email) else {
                 app.pendingOpen = nil
@@ -294,11 +304,25 @@ struct Sidebar: View {
         .toolbar { titleBar }
         .refreshable { await model.loadUnread() }
         .onAppear { expanded = Set(UserDefaults.standard.stringArray(forKey: expandedKey) ?? []) }
+        // Saved counts changed (mail read elsewhere, a background check):
+        // they are not observed, so the rows are drawn again.
+        .onReceive(NotificationCenter.default.publisher(for: Badge.changed).receive(on: DispatchQueue.main)) { _ in
+            countsChanged += 1
+        }
+        // The notification extension writes them from its own process.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { countsChanged += 1 }
+        }
     }
+
+    @Environment(\.scenePhase) private var scenePhase
+    /// Goes up when the saved counts may have changed (see `Badge.changed`).
+    @State private var countsChanged = 0
 
     /// An account's unread count: the open inbox's for the account in use,
     /// the last one saved (notifications, background checks) for the others.
     private func unreadCount(_ email: String) -> Int {
+        _ = countsChanged
         if email == mail.activeEmail, let n = model.unread[mail.inboxId], !Badge.isGmail(mail.activeAccount!) {
             return Int(n)
         }

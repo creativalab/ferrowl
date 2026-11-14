@@ -17,8 +17,8 @@ android {
         applicationId = "com.ferrowl.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 6
-        versionName = "0.4.11"
+        versionCode = 7
+        versionName = "0.4.12"
         // The ABIs the Rust engine is built for (see ffi/build-android.sh).
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
     }
@@ -55,6 +55,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.datastore.preferences)
+    implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.browser)
     implementation(libs.play.services.auth)
     implementation(libs.billing.ktx)

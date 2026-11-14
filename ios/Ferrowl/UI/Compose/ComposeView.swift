@@ -22,7 +22,12 @@ final class ComposeModel {
     var subject = ""
     var body = ""
     var showCc = false
-    private(set) var attachments: [File] = []
+    private(set) var attachments: [File] = [] {
+        didSet { if started { attachmentsAdded = true } }
+    }
+    /// The account the message goes out from (the one open when written).
+    private let account: String?
+    private var started = false
     private(set) var suggestions: [AddressSuggestion] = []
     private(set) var suggestFor: Field?
     private(set) var sending = false
@@ -35,6 +40,7 @@ final class ComposeModel {
     init(mail: MailRepository, request: ComposeRequest) {
         self.mail = mail
         let own = mail.activeEmail ?? ""
+        account = mail.activeEmail
         switch (request.kind, request.message) {
         case (.reply, let m?): draft = replyDraft(message: m, replyAll: false, ownAddress: own)
         case (.replyAll, let m?): draft = replyDraft(message: m, replyAll: true, ownAddress: own)
@@ -61,13 +67,19 @@ final class ComposeModel {
         }
         suggestFor = nil
         suggestions = []
+        attachmentsAdded = !request.files.isEmpty
+        started = true
     }
 
     var canSend: Bool { !sending && to.contains("@") }
 
     var edited: Bool {
         to != draft.to || cc != draft.cc || !bcc.isEmpty || subject != draft.subject || body != draft.body
+            || attachmentsAdded
     }
+
+    /// Files attached by the user (a forward's own ones do not count).
+    private var attachmentsAdded = false
 
     private func suggest(_ field: Field, _ text: String) {
         suggestTask?.cancel()
@@ -151,7 +163,7 @@ final class ComposeModel {
         out.subject = subject
         out.body = body
         out.attachments = attachments.map(\.path)
-        try await mail.send(out)
+        try await mail.send(out, on: account)
         discardFiles()
     }
 }
@@ -178,6 +190,16 @@ struct ComposeView: View {
         .interactiveDismissDisabled(model?.edited ?? false)
         .task {
             if model == nil { model = ComposeModel(mail: mail, request: request) }
+        }
+        // While something is written here, the app does not move to another
+        // account by itself (a notification, a Focus): that would close this
+        // sheet and lose the message.
+        .onChange(of: model?.edited ?? false, initial: true) { _, edited in mail.composing = edited }
+        .onDisappear {
+            mail.composing = false
+            // The copies of attached files are not needed any more (sent,
+            // discarded, or the sheet closed by the app).
+            model?.discardFiles()
         }
     }
 

@@ -48,6 +48,8 @@ class MessageViewModel @Inject constructor(
     val state: StateFlow<MessageState> = _state.asStateFlow()
     private var folderId = ""
     private var uid = 0u
+    /** The account the message was read from. */
+    private var account: String? = null
     private val _invite = MutableStateFlow(InviteState())
     val invite: StateFlow<InviteState> = _invite.asStateFlow()
 
@@ -87,6 +89,8 @@ class MessageViewModel @Inject constructor(
         viewModelScope.launch {
             _state.value = try {
                 val message = repo.message(folderId, uid)
+                // Its actions go to this account only (not to one switched to later).
+                account = repo.connectedAccount()
                 _insights.value = withContext(Dispatchers.Default) { mailInsights(message) }
                 MessageState.Shown(message)
             } catch (e: FerrowlException) {
@@ -141,11 +145,11 @@ class MessageViewModel @Inject constructor(
     /** True when Delete removes for good (the message is in the Trash). */
     val deletesForever: Boolean get() = repo.deletesForever(folderId)
 
-    fun archive() = act { repo.archive(folderId, uid) }
+    fun archive() = act { repo.archive(folderId, uid, account = account) }
 
-    fun delete() = act { repo.delete(folderId, uid) }
+    fun delete() = act { repo.delete(folderId, uid, account = account) }
 
-    fun markUnread() = act { repo.setSeen(folderId, uid, false) }
+    fun markUnread() = act { repo.setSeen(folderId, uid, false, account = account) }
 
     /** Whether the message is in Spam ("Not spam" instead of "Report spam"). */
     val inSpam: Boolean get() = repo.isSpam(folderId)
@@ -156,7 +160,7 @@ class MessageViewModel @Inject constructor(
         val from = (_state.value as? MessageState.Shown)?.message?.fromAddress.orEmpty()
         act {
             if (!toSpam && from.isNotBlank()) repo.setSenderRule(from, true)
-            repo.spam(folderId, listOf(uid), toSpam)
+            repo.spam(folderId, listOf(uid), toSpam, account = account)
         }
     }
 
@@ -166,7 +170,7 @@ class MessageViewModel @Inject constructor(
         if (from.isBlank()) return
         act {
             repo.setSenderRule(from, false)
-            if (!inSpam) repo.spam(folderId, listOf(uid), true)
+            if (!inSpam) repo.spam(folderId, listOf(uid), true, account = account)
         }
     }
 
@@ -176,7 +180,7 @@ class MessageViewModel @Inject constructor(
         _starred.value = on
         viewModelScope.launch {
             try {
-                repo.setFlagged(folderId, listOf(uid), on)
+                repo.setFlagged(folderId, listOf(uid), on, account = account)
             } catch (e: FerrowlException) {
                 _starred.value = !on
                 notices.error(e.message.orEmpty())

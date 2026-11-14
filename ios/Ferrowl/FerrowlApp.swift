@@ -32,6 +32,8 @@ final class AppModel {
     init() {
         // Shared with the notification extension (see SharedStorage).
         SharedStorage.migrate()
+        // Copies of attached files left by composers of an earlier run.
+        try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent("outgoing"))
         push = PushRegistrar()
         let support = SharedStorage.directory
         let data = SharedStorage.mail
@@ -53,14 +55,28 @@ final class AppModel {
             guard let self, case .open(let email, let folder, let uid) = parseLink(url: link),
                   let account = self.mail.accounts.first(where: { $0.email.caseInsensitiveCompare(email) == .orderedSame })
             else { return }
+            // It leaves the widget at once, and counts one less on the icon
+            // and in the sidebar too; all put back if the server says no.
+            let widget = WidgetData.load()
+            let count = Badge.count(for: account.email)
+            let listed = widget.contains { $0.recent.contains { $0.link == link } }
             WidgetData.removeMail(link: link)
-            // An engine of its own: the app's may be busy, or on another account.
-            let engine = Engine(dataDir: SharedStorage.mail.path, language: Language.code)
-            _ = try await engine.connect(account: account)
-            if archive {
-                _ = try await engine.archiveMany(folderId: folder, uids: [uid])
-            } else {
-                try await engine.setSeenMany(folderId: folder, uids: [uid], seen: true)
+            if listed { Badge.set(max(0, count - 1), for: account.email) }
+            Badge.show()
+            do {
+                // An engine of its own: the app's may be busy, or on another account.
+                let engine = Engine(dataDir: SharedStorage.mail.path, language: Language.code)
+                _ = try await engine.connect(account: account)
+                if archive {
+                    _ = try await engine.archiveMany(folderId: folder, uids: [uid])
+                } else {
+                    try await engine.setSeenMany(folderId: folder, uids: [uid], seen: true)
+                }
+            } catch {
+                if listed { Badge.set(count, for: account.email) }
+                WidgetData.restore(widget)
+                Badge.show()
+                throw error
             }
             self.mail.touch()
         }
@@ -175,6 +191,14 @@ struct FerrowlApp: App {
                 app.pro.start()
             case .background:
                 if app.prefs.notifications, app.mail.activeEmail != nil { BackgroundRefresh.schedule() }
+                // Deletes waiting for Undo are done now: iOS may stop the app
+                // before their notice is gone. A little time is asked for them.
+                let mail = app.mail
+                let task = UIApplication.shared.beginBackgroundTask()
+                Task {
+                    await mail.flushDeferred()
+                    UIApplication.shared.endBackgroundTask(task)
+                }
             default:
                 break
             }

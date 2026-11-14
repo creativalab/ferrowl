@@ -48,9 +48,19 @@ final class PushRegistrar {
         }
     }
 
+    /// Server account ids whose removal failed (offline): tried again at
+    /// every sync, or the server would keep watching them with their
+    /// passwords.
+    private var removing: [String] {
+        didSet { SharedStorage.defaults.set(removing, forKey: "push.removing") }
+    }
+
     private var apnsToken: String?
     private var waiting: CheckedContinuation<String, Error>?
-    private var running = false
+    /// The sync running, and whether it was asked again meanwhile (the
+    /// accounts or Pro changed): then it goes once more, nothing is dropped.
+    private var syncing: Task<Void, Error>?
+    private var syncAgain = false
 
     init() {
         // On by default: the phone registers with the first account; turning
@@ -60,6 +70,7 @@ final class PushRegistrar {
         asked = SharedStorage.defaults.bool(forKey: "push.asked")
         accounts = (SharedStorage.defaults.data(forKey: "push.accounts"))
             .flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
+        removing = SharedStorage.defaults.stringArray(forKey: "push.removing") ?? []
     }
 
     // MARK: Apple
@@ -115,6 +126,7 @@ final class PushRegistrar {
         Keychain.delete(Self.secrets, "device")
         Keychain.delete(Self.secrets, "key")
         accounts = [:]
+        removing = []
     }
 
     // MARK: registration
@@ -126,9 +138,25 @@ final class PushRegistrar {
 
     /// Brings the registration up to date (start, accounts or Pro changed).
     func sync(_ app: AppModel) async throws {
-        guard enabled, asked, !running else { return }
-        running = true
-        defer { running = false }
+        guard enabled, asked else { return }
+        if let running = syncing {
+            syncAgain = true
+            try await running.value
+            return
+        }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            repeat {
+                syncAgain = false
+                try await syncOnce(app)
+            } while syncAgain && enabled
+        }
+        syncing = task
+        defer { syncing = nil }
+        try await task.value
+    }
+
+    private func syncOnce(_ app: AppModel) async throws {
         let apple = try await appleToken()
         let body: [String: Any] = ["apns_token": apple, "apns_sandbox": Self.sandbox]
         var device = Keychain.get(Self.secrets, "device")
@@ -149,6 +177,7 @@ final class PushRegistrar {
                 // The server no longer knows this phone: register again.
                 device = nil
                 accounts = [:]
+                removing = []
             }
         }
         if device == nil {
@@ -170,12 +199,20 @@ final class PushRegistrar {
             }
             UserDefaults.standard.removeObject(forKey: "push.accounts")
         }
+        // Removals that failed earlier.
+        for id in removing {
+            if await remove(id, token: token) { removing.removeAll { $0 == id } }
+        }
         if !accounts.isEmpty {
             _ = try await call("POST", "/v1/unlock", token: token, body: ["key": key])
         }
         let wanted = Self.watched(app)
+        let onPhone = Set(app.mail.accounts.map { $0.email.lowercased() })
         for (email, id) in accounts where !wanted.contains(where: { $0.email.lowercased() == email }) {
-            _ = try? await call("DELETE", "/v1/accounts/\(id)", token: token, body: nil)
+            // Until the App Store answered, a subscriber's other accounts are
+            // kept (only accounts gone from the phone are removed).
+            if !app.pro.known, onPhone.contains(email) { continue }
+            if !(await remove(id, token: token)) { removing.append(id) }
             accounts[email] = nil
         }
         for account in wanted where accounts[account.email.lowercased()] == nil {
@@ -189,8 +226,21 @@ final class PushRegistrar {
     /// its new settings at the next sync.
     func forget(_ email: String) async {
         guard let id = accounts[email.lowercased()], let token = Keychain.get(Self.secrets, "device") else { return }
-        _ = try? await call("DELETE", "/v1/accounts/\(id)", token: token, body: nil)
+        if !(await remove(id, token: token)) { removing.append(id) }
         accounts[email.lowercased()] = nil
+    }
+
+    /// Removes an account id from the server; false when it could not be
+    /// reached (404: already gone, done).
+    private func remove(_ id: String, token: String) async -> Bool {
+        do {
+            _ = try await call("DELETE", "/v1/accounts/\(id)", token: token, body: nil)
+            return true
+        } catch PushError.status(let code, _) where code == 404 || code == 401 {
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// The address of an account id the server sent.

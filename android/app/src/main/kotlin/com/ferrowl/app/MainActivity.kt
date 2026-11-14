@@ -93,10 +93,22 @@ class MainActivity : ComponentActivity() {
         }
         // Some apps only put them in the clip data.
         val clips = intent.clipData?.let { c -> (0 until c.itemCount).mapNotNull { c.getItemAt(it).uri } }.orEmpty()
-        return (streams + clips).distinct()
+        return (streams + clips).distinct().filter(::isForeignContent)
     }
 
+    /**
+     * Only files another app hands over (content:// of its own provider).
+     * A file:// address, or one of Ferrowl's own provider, would be read
+     * with Ferrowl's rights: another app could have the mail cache attached
+     * to a message to an address it chose.
+     */
+    private fun isForeignContent(uri: Uri): Boolean =
+        uri.scheme.equals("content", ignoreCase = true) && uri.authority != "$packageName.files"
+
     private fun handle(intent: Intent?) {
+        // Opened again from Recents: the intent is the old one (a notification
+        // already opened, a share already turned into a message).
+        if (intent != null && intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
         // A tapped new-mail notification: open its message.
         intent?.getStringExtra(com.ferrowl.app.push.NotificationOpen.EXTRA_EMAIL)?.let { email ->
             val uid = intent.getLongExtra(com.ferrowl.app.push.NotificationOpen.EXTRA_UID, -1).takeIf { it >= 0 }

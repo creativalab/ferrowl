@@ -28,8 +28,15 @@ private enum Translations {
     }
 }
 
-/// The message of an engine failure (already in words for the user).
+/// An action was asked on one account but the app has moved to another
+/// meanwhile: it is not done (it would hit the other account's messages
+/// with the same numbers). Nothing to tell the user: that screen is gone.
+struct AccountChanged: Error {}
+
+/// The message of an engine failure (already in words for the user; empty
+/// for nothing to show, which notices skip).
 func describe(_ error: Error) -> String {
+    if error is AccountChanged { return "" }
     if let e = error as? FerrowlError, case .Failed(let message) = e {
         return message
     }

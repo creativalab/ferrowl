@@ -26,8 +26,11 @@ enum Bridge {
 
     /// The accounts an action works on: the one asked for, or every account
     /// Ferrowl may use (the first one without Pro).
-    static func accounts(_ wanted: AccountEntity?) throws -> [Account] {
+    static func accounts(_ wanted: AccountEntity?) async throws -> [Account] {
         let app = try app()
+        // A shortcut can start the app in the background, before it asked
+        // the App Store: Ferrowl Pro is known first.
+        await app.pro.ready()
         let usable = app.mail.accounts.filter { app.mayUse($0.email) }
         guard !usable.isEmpty else { throw BridgeError(message: t("intent_no_account")) }
         guard let wanted else { return usable }
@@ -37,9 +40,9 @@ enum Bridge {
     }
 
     /// The account to send from: the one asked for, or the one in use.
-    static func sender(_ wanted: AccountEntity?) throws -> Account {
+    static func sender(_ wanted: AccountEntity?) async throws -> Account {
         let app = try app()
-        let usable = try accounts(wanted)
+        let usable = try await accounts(wanted)
         if wanted == nil, let active = app.mail.activeAccount, usable.contains(where: { $0.email == active.email }) {
             return active
         }
@@ -103,6 +106,7 @@ struct AccountQuery: EntityQuery {
     @MainActor
     func suggestedEntities() async throws -> [AccountEntity] {
         guard let app = AppModel.shared else { return [] }
+        await app.pro.ready()
         return app.mail.accounts.filter { app.mayUse($0.email) }.map(AccountEntity.init)
     }
 }
@@ -170,7 +174,7 @@ struct UnreadMailIntent: AppIntent {
         let app = try Bridge.app()
         var found: [MailEntity] = []
         var total: UInt32 = 0
-        for a in try Bridge.accounts(account) {
+        for a in try await Bridge.accounts(account) {
             // From the server (on a connection of its own, the app's stays
             // as it is); POP3 accounts and failures: what the phone keeps.
             if let peek = try? await app.engine.peekInbox(account: a, after: 0, limit: 25) {
@@ -210,7 +214,7 @@ struct SearchMailIntent: AppIntent {
     func perform() async throws -> some IntentResult & ReturnsValue<[MailEntity]> & ProvidesDialog {
         let app = try Bridge.app()
         let engine = app.engine
-        let accounts = try Bridge.accounts(account)
+        let accounts = try await Bridge.accounts(account)
         let query = query
         // Inbox and Sent as stored on the phone (with the search syntax:
         // from:, has:attachment, is:unread…).
@@ -268,7 +272,7 @@ struct SendMailIntent: AppIntent {
             throw BridgeError(message: t("intent_needs_pro"))
         }
         guard to.contains("@") else { throw $to.needsValueError("intent_ask_to") }
-        let from = try Bridge.sender(account)
+        let from = try await Bridge.sender(account)
         let subject = subject ?? ""
         let body = body ?? ""
         // Always confirmed: the text may come from another app, or from
@@ -453,7 +457,7 @@ struct AgendaIntent: AppIntent {
         let last = Calendar.current.date(byAdding: .day, value: max(days, 1), to: first) ?? first
         let (from, to) = (Int64(first.timeIntervalSince1970), Int64(last.timeIntervalSince1970))
         let engine = app.engine
-        let accounts = try Bridge.accounts(account)
+        let accounts = try await Bridge.accounts(account)
         // What was synced from the calendars (CalDAV), on the phone.
         let found: [EventEntity] = await Task.detached {
             accounts.flatMap { engine.agendaFor(account: $0, from: from, to: to) }.map(EventEntity.init)
@@ -480,7 +484,7 @@ struct FindContactIntent: AppIntent {
     func perform() async throws -> some IntentResult & ReturnsValue<[ContactEntity]> & ProvidesDialog {
         let app = try Bridge.app()
         let engine = app.engine
-        let accounts = try Bridge.accounts(account)
+        let accounts = try await Bridge.accounts(account)
         let query = query
         let found: [ContactEntity] = await Task.detached {
             var seen = Set<String>()
@@ -523,7 +527,7 @@ struct NewEventIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let app = try Bridge.app()
-        let from = try Bridge.sender(account)
+        let from = try await Bridge.sender(account)
         let engine = app.engine
         guard let calendar = await Task.detached(operation: { engine.calendarsFor(account: from) }).value.first else {
             throw BridgeError(message: t("err_no_calendar"))
@@ -564,7 +568,7 @@ extension Bridge {
     static func each(_ items: [MailEntity],
                      _ action: @escaping (Engine, String, [UInt32]) async throws -> Void) async throws {
         let app = try app()
-        let accounts = try accounts(nil)
+        let accounts = try await accounts(nil)
         for (email, mine) in Dictionary(grouping: items, by: { $0.account.lowercased() }) {
             guard let account = accounts.first(where: { $0.email.lowercased() == email }) else {
                 throw BridgeError(message: t("intent_no_account"))
@@ -680,7 +684,7 @@ struct MailDetailsIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<MailDetails> {
         let app = try Bridge.app()
-        guard let account = try Bridge.accounts(nil).first(where: {
+        guard let account = try await Bridge.accounts(nil).first(where: {
             $0.email.caseInsensitiveCompare(message.account) == .orderedSame
         }) else { throw BridgeError(message: t("intent_no_account")) }
         // Read without marking it read: a shortcut looking is not the user reading.
