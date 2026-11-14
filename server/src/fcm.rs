@@ -128,7 +128,11 @@ pub struct Fcm {
     token_uri: String,
     /// OAuth access token and when it expires.
     access: Mutex<Option<(String, Instant)>>,
+    http: ureq::Agent,
 }
+
+/// Bounds every call to Google: a hung one would hold up a watcher.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 const SCOPE: &str = "https://www.googleapis.com/auth/firebase.messaging";
 
@@ -144,13 +148,18 @@ impl Fcm {
             client_email: sa.client_email,
             token_uri: sa.token_uri,
             access: Mutex::new(None),
+            http: ureq::Agent::config_builder()
+                .timeout_global(Some(HTTP_TIMEOUT))
+                .build()
+                .new_agent(),
         })
     }
 
     /// OAuth access token for FCM, cached until shortly before it expires.
     fn access_token(&self) -> Result<String> {
-        let mut cached = self.access.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some((token, until)) = cached.as_ref()
+        // Not locked during the request: the other watchers keep using the
+        // cached token meanwhile (two may refresh it at once, harmlessly).
+        if let Some((token, until)) = self.access.lock().unwrap_or_else(|p| p.into_inner()).as_ref()
             && Instant::now() < *until
         {
             return Ok(token.clone());
@@ -175,7 +184,9 @@ impl Fcm {
             access_token: String,
             expires_in: u64,
         }
-        let reply: TokenReply = ureq::post(&self.token_uri)
+        let reply: TokenReply = self
+            .http
+            .post(&self.token_uri)
             .send_form([
                 ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
                 ("assertion", jwt.as_str()),
@@ -183,7 +194,7 @@ impl Fcm {
             .body_mut()
             .read_json()?;
         let until = Instant::now() + Duration::from_secs(reply.expires_in.saturating_sub(300));
-        *cached = Some((reply.access_token.clone(), until));
+        *self.access.lock().unwrap_or_else(|p| p.into_inner()) = Some((reply.access_token.clone(), until));
         Ok(reply.access_token)
     }
 }
@@ -214,19 +225,52 @@ impl Notifier for Fcm {
             self.project_id
         );
         let body = message(fcm_token, account_id, event);
-        let result = ureq::post(&url)
+        let mut result = self
+            .http
+            .post(&url)
             .header("Authorization", &format!("Bearer {}", self.access_token()?))
             .config()
             .http_status_as_error(false)
             .build()
             .send_json(&body)?;
-        match result.status().as_u16() {
-            200 => Ok(Delivery::Sent),
-            // UNREGISTERED / INVALID_ARGUMENT for a dead token.
-            404 => Ok(Delivery::Unregistered),
-            code => Err(anyhow!("FCM answered {code}")),
+        let code = result.status().as_u16();
+        if code == 200 {
+            return Ok(Delivery::Sent);
+        }
+        let error = result.body_mut().read_to_string().unwrap_or_default();
+        if dead_token(code, &error) {
+            Ok(Delivery::Unregistered)
+        } else {
+            Err(anyhow!("FCM answered {code}"))
         }
     }
+}
+
+/// Whether FCM refused the message because of the token: 404 UNREGISTERED
+/// (the app was uninstalled, the token expired), or 400 INVALID_ARGUMENT
+/// pointing at the token field (not a token at all). Other 400s are about
+/// the message and keep the device.
+fn dead_token(code: u16, body: &str) -> bool {
+    if code == 404 {
+        return true;
+    }
+    let Ok(reply) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    let error = &reply["error"];
+    let details = error["details"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let fcm_code = |name: &str| details.iter().any(|d| d["errorCode"] == name);
+    if fcm_code("UNREGISTERED") {
+        return true;
+    }
+    let about_token = details.iter().any(|d| {
+        d["fieldViolations"]
+            .as_array()
+            .is_some_and(|v| v.iter().any(|f| f["field"] == "message.token"))
+    }) || error["message"]
+        .as_str()
+        .is_some_and(|m| m.to_lowercase().contains("registration token"));
+    code == 400 && error["status"] == "INVALID_ARGUMENT" && about_token
 }
 
 #[cfg(test)]
@@ -242,5 +286,20 @@ mod tests {
         let m = message("tok", "acc1", Event::NewMail);
         assert_eq!(m["message"]["data"]["type"], "new_mail");
         assert_eq!(m["message"]["android"]["priority"], "HIGH");
+    }
+
+    #[test]
+    fn recognizes_dead_tokens() {
+        let unregistered = r#"{"error":{"code":404,"message":"Requested entity was not found.","status":"NOT_FOUND","details":[{"@type":"type.googleapis.com/google.firebase.fcm.v1.FcmError","errorCode":"UNREGISTERED"}]}}"#;
+        assert!(dead_token(404, unregistered));
+        assert!(dead_token(404, ""));
+        let bad_token = r#"{"error":{"code":400,"message":"The registration token is not a valid FCM registration token","status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.firebase.fcm.v1.FcmError","errorCode":"INVALID_ARGUMENT"},{"@type":"type.googleapis.com/google.rpc.BadRequest","fieldViolations":[{"field":"message.token","description":"The registration token is not a valid FCM registration token"}]}]}}"#;
+        assert!(dead_token(400, bad_token));
+        // A bad message keeps the device.
+        let bad_message = r#"{"error":{"code":400,"message":"Invalid value at 'message.android.ttl'","status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.BadRequest","fieldViolations":[{"field":"message.android.ttl","description":"Invalid value"}]}]}}"#;
+        assert!(!dead_token(400, bad_message));
+        assert!(!dead_token(400, "not json"));
+        let busy = r#"{"error":{"code":503,"status":"UNAVAILABLE","details":[{"errorCode":"UNAVAILABLE"}]}}"#;
+        assert!(!dead_token(503, busy));
     }
 }

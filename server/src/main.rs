@@ -17,6 +17,7 @@
 //!
 //! A platform without credentials only logs its notifications (development).
 
+mod addr;
 mod api;
 mod apns;
 mod fcm;
