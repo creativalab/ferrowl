@@ -58,7 +58,8 @@ pub struct Job {
 }
 
 enum Command {
-    Render(Job, mpsc::Sender<Rendered>),
+    /// Paints a message; replies `None` when a newer request replaced it.
+    Render(Job, mpsc::Sender<Option<Rendered>>),
     /// Link at logical (x, y) of message `uid`.
     Hit(u32, f32, f32, mpsc::Sender<Option<String>>),
     /// Changes the text selection of message `uid` and paints it again.
@@ -94,11 +95,25 @@ fn send(cmd: Command) {
     let _ = worker().lock().unwrap_or_else(|p| p.into_inner()).send(cmd);
 }
 
+/// Why a message was not rendered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unrendered {
+    /// A newer request came first: only that one is painted.
+    Superseded,
+    /// The HTML could not be painted (the renderer gave up on it).
+    Failed,
+}
+
 /// Renders a message (blocking: call from a background task).
-pub fn render(job: Job) -> Option<Rendered> {
+pub fn render(job: Job) -> Result<Rendered, Unrendered> {
     let (tx, rx) = mpsc::channel();
     send(Command::Render(job, tx));
-    rx.recv().ok()
+    match rx.recv() {
+        Ok(Some(r)) => Ok(r),
+        Ok(None) => Err(Unrendered::Superseded),
+        // The worker dropped the reply: it panicked on this document.
+        Err(_) => Err(Unrendered::Failed),
+    }
 }
 
 /// The link under a point of the last rendered message (blocking).
@@ -169,6 +184,9 @@ fn handle(rx: &mpsc::Receiver<Command>, current: &mut Option<Loaded>, cmd: Comma
                 while let Ok(next) = rx.try_recv() {
                     match next {
                         Command::Render(j, r) => {
+                            // Told apart from a failure, so the caller
+                            // waits for the newer one instead of giving up.
+                            let _ = reply.send(None);
                             job = j;
                             reply = r;
                         }
@@ -190,7 +208,7 @@ fn handle(rx: &mpsc::Receiver<Command>, current: &mut Option<Loaded>, cmd: Comma
                     *current = Some(load(&job));
                 }
                 let loaded = current.as_mut().expect("loaded above");
-                let _ = reply.send(paint(loaded, job.width, job.scale));
+                let _ = reply.send(Some(paint(loaded, job.width, job.scale)));
             }
             Command::Hit(uid, x, y, reply) => {
                 let link = match &*current {
@@ -243,24 +261,26 @@ fn link_bare_addresses(html: &str) -> std::borrow::Cow<'_, str> {
     while i < html.len() {
         if html.as_bytes()[i] == b'<' {
             let end = if lower[i..].starts_with("<!--") {
-                lower[i..].find("-->").map(|e| i + e + 3)
+                lower[i..].find("-->").map(|e| i + e + 3).unwrap_or(html.len())
             } else {
-                lower[i..].find('>').map(|e| i + e + 1)
-            }
-            .unwrap_or(html.len());
-            let tag = &lower[i + 1..end.saturating_sub(1)];
+                tag_end(&lower, i)
+            };
+            // Without its `<` (and the `>`, if any, at the end).
+            let tag = &lower[i + 1..end];
             let closing = tag.starts_with('/');
             let name: String = tag
                 .trim_start_matches('/')
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric())
                 .collect();
+            // A trailing "/" does not close these (none is a void element):
+            // `<a href=https://x.example/>` still opens a link.
             if SKIP.contains(&name.as_str()) {
                 if closing {
                     if let Some(at) = skip.iter().rposition(|n| *n == name) {
                         skip.truncate(at);
                     }
-                } else if !tag.ends_with('/') {
+                } else {
                     skip.push(name.clone());
                 }
             }
@@ -273,7 +293,7 @@ fn link_bare_addresses(html: &str) -> std::borrow::Cow<'_, str> {
         let end = html[i..].find('<').map(|e| i + e).unwrap_or(html.len());
         if skip.is_empty() {
             pieces.push((i, stream.len(), end - i));
-            stream.push_str(&html[i..end]);
+            push_text(&mut stream, &html[i..end]);
         } else {
             stream.push('\n');
         }
@@ -305,6 +325,73 @@ fn link_bare_addresses(html: &str) -> std::borrow::Cow<'_, str> {
     }
     out.push_str(&html[last..]);
     std::borrow::Cow::Owned(out)
+}
+
+/// Where the tag starting at `start` (a `<`) ends: just past its `>`, or
+/// the end of the text. A `>` inside a quoted attribute value does not
+/// end it.
+fn tag_end(html: &str, start: usize) -> usize {
+    let bytes = html.as_bytes();
+    let mut i = start + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'>' => return i + 1,
+            b'=' => {
+                i += 1;
+                while bytes.get(i).is_some_and(|b| b.is_ascii_whitespace()) {
+                    i += 1;
+                }
+                if let Some(&q @ (b'"' | b'\'')) = bytes.get(i) {
+                    match html[i + 1..].find(q as char) {
+                        Some(e) => i += e + 2,
+                        None => return html.len(),
+                    }
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    html.len()
+}
+
+/// Adds shown text to the stream links are looked for in, at the same
+/// length (offsets map back to the source). Character references become
+/// spaces, so an address followed by `&nbsp;` or `&gt;` ends there; kept
+/// are `&amp;` (as in `?a=1&amp;b=2`, read right again inside the link's
+/// `href`) and numeric ones for characters a URL may hold.
+fn push_text(stream: &mut String, text: &str) {
+    let mut rest = text;
+    while let Some(at) = rest.find('&') {
+        stream.push_str(&rest[..at]);
+        rest = &rest[at..];
+        let len = rest[1..]
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '#'))
+            .filter(|&n| n > 0 && rest[1 + n..].starts_with(';'))
+            .map(|n| n + 2);
+        let Some(len) = len else {
+            // A bare "&" (`?a=1&b=2` written without escaping).
+            stream.push('&');
+            rest = &rest[1..];
+            continue;
+        };
+        let name = &rest[1..len - 1];
+        let code = name
+            .strip_prefix('#')
+            .and_then(|n| match n.strip_prefix(['x', 'X']) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                None => n.parse().ok(),
+            });
+        let url_char = code
+            .and_then(char::from_u32)
+            .is_some_and(|c| c.is_ascii_graphic() && !matches!(c, '<' | '>' | '"' | '\''));
+        if name.eq_ignore_ascii_case("amp") || url_char {
+            stream.push_str(&rest[..len]);
+        } else {
+            stream.extend(std::iter::repeat_n(' ', len));
+        }
+        rest = &rest[len..];
+    }
+    stream.push_str(rest);
 }
 
 /// Drops `<base>` tags that do not point to a web page: Blitz panics
@@ -778,6 +865,58 @@ mod tests {
     }
 
     #[test]
+    fn unclosed_tag_at_the_end_does_not_panic() {
+        for html in ["a <", "<", "https://a.example <", "<a href=\"x", "<!--"] {
+            let _ = link_bare_addresses(html);
+        }
+        let open = r#"<a href="https://a.example" style="color:#0b57d0;text-decoration:underline">"#;
+        assert_eq!(
+            link_bare_addresses("vedi https://a.example <"),
+            format!("vedi {open}https://a.example</a> <")
+        );
+    }
+
+    #[test]
+    fn addresses_end_at_character_references() {
+        let open = |u: &str| format!(r#"<a href="{u}" style="color:#0b57d0;text-decoration:underline">"#);
+        let a = open("https://a.example");
+        for (html, want) in [
+            (
+                "https://a.example&nbsp;to",
+                format!("{a}https://a.example</a>&nbsp;to"),
+            ),
+            (
+                "https://a.example&#160;to",
+                format!("{a}https://a.example</a>&#160;to"),
+            ),
+            (
+                "&lt;https://a.example&gt;",
+                format!("&lt;{a}https://a.example</a>&gt;"),
+            ),
+        ] {
+            assert_eq!(link_bare_addresses(html), want);
+        }
+        // `&amp;` belongs to the address; in the href it reads as "&".
+        let q = open("https://a.example/?a=1&amp;b=2");
+        assert_eq!(
+            link_bare_addresses("https://a.example/?a=1&amp;b=2 ok"),
+            format!("{q}https://a.example/?a=1&amp;b=2</a> ok")
+        );
+    }
+
+    #[test]
+    fn links_with_odd_tags_are_left_alone() {
+        // Unquoted href ending in "/": still an open link, not self-closed.
+        let html = "<a href=https://a.example/>https://a.example/</a>";
+        assert_eq!(link_bare_addresses(html), html);
+        // A ">" inside a quoted attribute does not end the tag.
+        let html = r#"<a title="1 > 0" href="https://a.example">https://a.example</a>"#;
+        assert_eq!(link_bare_addresses(html), html);
+        let html = r#"<p title='x>https://no.example'>testo</p>"#;
+        assert_eq!(link_bare_addresses(html), html);
+    }
+
+    #[test]
     fn plain_text_addresses_are_links() {
         let _turn = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
         // As in an Apple Support mail: the address split across spans.
@@ -828,9 +967,9 @@ mod tests {
             <link rel="stylesheet" href="/wss/fonts/?family=Myriad+Set+Pro&v=2"></head>
             <body>Hi</body></html>"#,
         ));
-        assert!(first.is_some(), "the odd <base> is dropped, so it renders");
+        assert!(first.is_ok(), "the odd <base> is dropped, so it renders");
         // Whatever happened to that one, the next message still renders.
-        assert!(render(job(22, "<html><body>Next</body></html>")).is_some());
+        assert!(render(job(22, "<html><body>Next</body></html>")).is_ok());
     }
 
     #[test]
