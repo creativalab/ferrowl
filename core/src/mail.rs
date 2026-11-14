@@ -916,11 +916,10 @@ pub fn header_from_raw(uid: u32, raw: &[u8], seen: bool) -> Header {
     }
 }
 
-/// Addresses typed in a To/Cc field ("Ada <ada@x.org>, bob@y.org") as
-/// (name, address) pairs.
-pub fn parse_recipients(field: &str) -> Vec<(String, String)> {
-    // Commas and semicolons separate addresses only outside quotes and
-    // angle brackets: "Rossi, Mario" <m@x.it> is one address.
+/// The addresses in a To/Cc field, trimmed, empty ones left out. Commas
+/// and semicolons separate them only outside quotes and angle brackets:
+/// "Rossi, Mario" <m@x.it> is one address.
+pub fn split_addresses(field: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let (mut start, mut quoted, mut angle, mut escaped) = (0, false, false, false);
     for (i, c) in field.char_indices() {
@@ -941,6 +940,15 @@ pub fn parse_recipients(field: &str) -> Vec<(String, String)> {
     parts
         .into_iter()
         .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Addresses typed in a To/Cc field ("Ada <ada@x.org>, bob@y.org") as
+/// (name, address) pairs.
+pub fn parse_recipients(field: &str) -> Vec<(String, String)> {
+    split_addresses(field)
+        .into_iter()
         .filter(|s| s.contains('@'))
         .map(|s| match (s.rfind('<'), s.rfind('>')) {
             (Some(a), Some(b)) if a < b => (
@@ -1441,9 +1449,8 @@ pub fn send(account: &Account, mail: &Outgoing) -> Result<Vec<u8>> {
         .subject(&mail.subject)
         .message_id(Some(new_message_id(&account.email)));
     let split = |s: &str| {
-        s.split([',', ';'])
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
+        split_addresses(s)
+            .into_iter()
             .map(str::to_string)
             .collect::<Vec<_>>()
     };
@@ -1689,7 +1696,7 @@ fn protect_with(
         let mut keys = vec![own.to_public_key()];
         let all = [&mail.to, &mail.cc, &mail.bcc]
             .iter()
-            .flat_map(|s| s.split([',', ';']))
+            .flat_map(|s| split_addresses(s))
             .map(bare_address)
             .filter(|a| !a.is_empty())
             .collect::<Vec<_>>();
@@ -2053,6 +2060,20 @@ mod tests {
                 ("Carl C".to_string(), "carl@z.org".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn sending_splits_addresses_outside_quotes() {
+        let field = "\"Rossi, Mario\" <m@x.it>; ugo@y.it,  ,";
+        let parts = split_addresses(field);
+        assert_eq!(parts, ["\"Rossi, Mario\" <m@x.it>", "ugo@y.it"]);
+        // Each part is one address for lettre (what send builds the
+        // message from) and for the PGP key lookup.
+        let first: lettre::message::Mailbox = parts[0].parse().unwrap();
+        assert_eq!(first.name.as_deref(), Some("Rossi, Mario"));
+        assert_eq!(first.email.to_string(), "m@x.it");
+        let bare: Vec<String> = parts.iter().map(|p| bare_address(p)).collect();
+        assert_eq!(bare, ["m@x.it", "ugo@y.it"]);
     }
 
     #[test]
