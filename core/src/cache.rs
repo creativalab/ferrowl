@@ -271,6 +271,12 @@ impl Cache {
                 "INSERT OR REPLACE INTO folders (account, folder, uidvalidity) VALUES (?1, ?2, ?3)",
                 params![account, folder, uidvalidity],
             )?;
+            // The rules' progress is an inbox UID too: kept, it would hide
+            // the renumbered mail until it passed the old newest UID.
+            // Forgotten, the next run starts again from the newest message.
+            if folder.eq_ignore_ascii_case("INBOX") {
+                conn.execute("DELETE FROM rules_done WHERE account = ?1", params![account])?;
+            }
         }
         Ok(())
     }
@@ -1260,6 +1266,22 @@ mod tests {
         assert_eq!(c.rules_done("a").unwrap(), None);
         c.set_rules_done("a", 42).unwrap();
         assert_eq!(c.rules_done("a").unwrap(), Some(42));
+    }
+
+    #[test]
+    fn new_inbox_uidvalidity_resets_rules_progress() {
+        let c = Cache::in_memory();
+        c.check_uidvalidity("a", "INBOX", 1).unwrap();
+        c.set_rules_done("a", 900).unwrap();
+        c.set_rules_done("b", 50).unwrap();
+        // Same validity, other folders: the progress stays.
+        c.check_uidvalidity("a", "INBOX", 1).unwrap();
+        c.check_uidvalidity("a", "Archive", 7).unwrap();
+        assert_eq!(c.rules_done("a").unwrap(), Some(900));
+        // The server renumbered the inbox: the old UIDs mean nothing.
+        c.check_uidvalidity("a", "INBOX", 2).unwrap();
+        assert_eq!(c.rules_done("a").unwrap(), None);
+        assert_eq!(c.rules_done("b").unwrap(), Some(50));
     }
 
     #[test]

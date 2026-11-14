@@ -3083,7 +3083,7 @@ impl App {
             }
             Message::MailRules(Ok(plan)) => {
                 if plan.is_empty() {
-                    return Task::none();
+                    return plan.error.map_or_else(Task::none, |e| self.toast(e, true));
                 }
                 // Show what the rules did without waiting for the next sync.
                 let inbox = self.folder_by_kind(FolderKind::Inbox).map(|f| f.name.clone());
@@ -3109,10 +3109,12 @@ impl App {
                     .collect();
                 n.sort_unstable();
                 n.dedup();
-                Task::batch([
-                    self.toast(tf("rules_applied", &[("n", &n.len().to_string())]), false),
-                    self.refresh_unseen(),
-                ])
+                // A failed action matters more than the count of the rest.
+                let toast = match plan.error {
+                    Some(e) => self.toast(e, true),
+                    None => self.toast(tf("rules_applied", &[("n", &n.len().to_string())]), false),
+                };
+                Task::batch([toast, self.refresh_unseen()])
             }
             Message::MailRules(Err(e)) => self.toast(e, true),
             Message::SenderInput(allow, text) => {

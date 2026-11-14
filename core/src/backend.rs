@@ -28,6 +28,8 @@ pub struct Backend {
     /// commands hold the lock for their whole run (seconds for the unread
     /// counts of every folder), and the apps ask this while drawing.
     gmail: Arc<AtomicBool>,
+    /// Held while the rules run (see [Backend::apply_rules]).
+    rules_running: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// Reloads the calendars from the server after a change (errors only
@@ -1178,13 +1180,18 @@ impl Backend {
     }
 
     /// Applies the rules to the inbox's new messages (each once; the first
-    /// run only remembers where the inbox is). Returns what was done.
+    /// run only remembers where the inbox is). Returns what was done, with
+    /// the first failure in `error` (the rest was still done).
     pub async fn apply_rules(
         &self,
         folder: String,
         headers: Vec<Header>,
         folders: Vec<Folder>,
     ) -> Res<crate::rules::Plan> {
+        // One run at a time: two refreshes close together would read the
+        // same progress and move the same messages twice. The second waits
+        // and then sees only what the first didn't handle.
+        let _running = self.rules_running.lock().await;
         let inbox = folders
             .iter()
             .any(|f| f.name == folder && f.kind == FolderKind::Inbox);
@@ -1204,23 +1211,48 @@ impl Backend {
             Some(done) if !rules.is_empty() => headers.into_iter().filter(|h| h.uid > done).collect(),
             _ => Vec::new(),
         };
-        let plan = crate::rules::plan(&rules, &fresh);
-        if !plan.mark_read.is_empty() {
-            self.set_seen_many(folder.clone(), plan.mark_read.clone(), true)
-                .await?;
+        let mut plan = crate::rules::plan(&rules, &fresh);
+        // Each action runs on its own: one that fails (a move to a deleted
+        // folder, a dropped connection) leaves its messages out of the plan
+        // but doesn't stop the others, and the messages still count as seen
+        // below, so the next refresh doesn't redo what worked (marking read
+        // again mail the user marked unread) or retry the failure forever.
+        let mut failed = None;
+        if !plan.mark_read.is_empty()
+            && let Err(e) = self
+                .set_seen_many(folder.clone(), plan.mark_read.clone(), true)
+                .await
+        {
+            plan.mark_read.clear();
+            failed.get_or_insert(e);
         }
-        if !plan.star.is_empty() {
-            self.set_flagged_many(folder.clone(), plan.star.clone(), true)
-                .await?;
+        if !plan.star.is_empty()
+            && let Err(e) = self
+                .set_flagged_many(folder.clone(), plan.star.clone(), true)
+                .await
+        {
+            plan.star.clear();
+            failed.get_or_insert(e);
         }
-        if !plan.archive.is_empty() {
-            self.archive_many(folder.clone(), plan.archive.clone(), folders.clone())
-                .await?;
+        if !plan.archive.is_empty()
+            && let Err(e) = self
+                .archive_many(folder.clone(), plan.archive.clone(), folders.clone())
+                .await
+        {
+            plan.archive.clear();
+            failed.get_or_insert(e);
         }
-        for (target, uids) in &plan.moves {
-            self.move_many(folder.clone(), uids.clone(), target.clone())
-                .await?;
+        let mut moved = Vec::new();
+        for (target, uids) in std::mem::take(&mut plan.moves) {
+            match self.move_many(folder.clone(), uids.clone(), target.clone()).await {
+                Ok(()) => moved.push((target, uids)),
+                Err(e) => {
+                    failed.get_or_insert(e);
+                }
+            }
         }
+        plan.moves = moved;
+        plan.error = failed;
         if done.is_none_or(|d| newest > d) {
             let _ = c.set_rules_done(&key, newest);
         }
