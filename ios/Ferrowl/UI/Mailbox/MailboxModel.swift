@@ -45,6 +45,21 @@ final class MailboxModel {
 
     private var searchTask: Task<Void, Never>?
     private var started = false
+    /// The folder being fetched from the server, and whether another fetch
+    /// was asked meanwhile: fetches never overlap (each applies the rules,
+    /// which must not run twice on the same new messages).
+    private var fetching: String?
+    private var fetchAgain = false
+    /// Deleted with Undo but not yet on the server (it is asked when the
+    /// notice is gone), per folder: lists loaded meanwhile from the local
+    /// copy or the server must not show them again.
+    private var pendingDeletes: [String: Set<UInt32>] = [:]
+
+    /// `list` without the messages of `folder` waiting to be deleted.
+    private func visible(_ list: [Header], in folder: String) -> [Header] {
+        guard let gone = pendingDeletes[folder], !gone.isEmpty else { return list }
+        return list.filter { !gone.contains($0.uid) }
+    }
 
     init(mail: MailRepository, prefs: Preferences, notices: Notices) {
         self.mail = mail
@@ -102,7 +117,7 @@ final class MailboxModel {
         let early = await mail.cachedInbox()
         if !early.isEmpty, folderId.isEmpty {
             folderId = "INBOX"
-            messages = early
+            messages = visible(early, in: "INBOX")
         }
         do {
             try await mail.ensureConnected()
@@ -131,20 +146,53 @@ final class MailboxModel {
     /// The server has news for the account (a push while the app is open):
     /// the inbox, if open, is fetched again; elsewhere only the counts.
     func serverChanged() async {
-        if folderId == mail.inboxId, query.trimmingCharacters(in: .whitespaces).isEmpty {
-            await refresh()
-        } else {
+        await update(onlyInbox: true)
+    }
+
+    /// The app came back to the screen: the open folder from the server
+    /// (during a search, only the counts).
+    func returned() async {
+        guard started else { return }
+        await update(onlyInbox: false)
+    }
+
+    /// Something changed without the user asking (a push, the app back on
+    /// screen): the open folder again, quietly (no error notice when
+    /// offline), or only the counts during a search or in another folder.
+    private func update(onlyInbox: Bool) async {
+        let searching = !query.trimmingCharacters(in: .whitespaces).isEmpty
+        if searching || (onlyInbox && folderId != mail.inboxId) {
             await loadUnread()
+        } else {
+            await refresh(quiet: true)
         }
     }
 
-    func refresh() async {
+    func refresh(quiet: Bool = false) async {
         let id = folderId
         guard !id.isEmpty else { return }
+        if fetching == id {
+            fetchAgain = true
+            return
+        }
+        fetching = id
+        defer {
+            if fetching == id { fetching = nil }
+        }
         refreshing = true
         defer { if folderId == id { refreshing = false } }
+        await fetch(id, quiet: quiet)
+        // Asked again while fetching (a push during the fetch): once more.
+        while fetchAgain, folderId == id {
+            fetchAgain = false
+            await fetch(id, quiet: true)
+        }
+        fetchAgain = false
+    }
+
+    private func fetch(_ id: String, quiet: Bool) async {
         let cached = await mail.cachedHeaders(id)
-        if !cached.isEmpty, folderId == id { messages = cached }
+        if !cached.isEmpty, folderId == id { messages = visible(cached, in: id) }
         do {
             var fresh = try await mail.headers(id)
             // Sender lists: blocked mail leaves the inbox, allowed mail leaves Spam.
@@ -160,7 +208,7 @@ final class MailboxModel {
                 }
             }
             guard folderId == id else { return }
-            messages = fresh
+            messages = visible(fresh, in: id)
             if id == mail.inboxId, let email = mail.activeEmail {
                 // What the background check compares with.
                 BackgroundRefresh.notifyNew(fresh, account: email, announce: false)
@@ -169,7 +217,7 @@ final class MailboxModel {
             }
             await loadUnread()
         } catch {
-            notices.error(describe(error))
+            if !quiet { notices.error(describe(error)) }
         }
     }
 
@@ -178,7 +226,7 @@ final class MailboxModel {
         let id = folderId
         guard !id.isEmpty else { return }
         let cached = await mail.cachedHeaders(id)
-        if folderId == id { messages = cached }
+        if folderId == id { messages = visible(cached, in: id) }
         await loadUnread()
     }
 
@@ -213,7 +261,7 @@ final class MailboxModel {
             guard !Task.isCancelled else { return }
             let found = await mail.search(id, text)
             guard !Task.isCancelled else { return }
-            results = found
+            results = visible(found, in: id)
         }
     }
 
@@ -307,18 +355,22 @@ final class MailboxModel {
         messages.removeAll { uids.contains($0.uid) }
         results.removeAll { uids.contains($0.uid) }
         if open?.id == row.id { open = nil }
+        pendingDeletes[folder, default: []].formUnion(uids)
         let job = Task {
             try? await Task.sleep(for: Notices.duration)
             guard !Task.isCancelled else { return }
             do {
                 try await mail.delete(folder, Array(uids), quiet: true)
+                pendingDeletes[folder]?.subtract(uids)
             } catch {
+                pendingDeletes[folder]?.subtract(uids)
                 notices.error(describe(error))
                 await refresh()
             }
         }
         notices.withAction(t("moved_to_trash"), t("undo")) { [weak self] in
             job.cancel()
+            self?.pendingDeletes[folder]?.subtract(uids)
             guard let self, self.folderId == folder else { return }
             self.messages = (self.messages + removed).sorted { $0.timestamp > $1.timestamp }
         }

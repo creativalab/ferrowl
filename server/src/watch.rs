@@ -2,9 +2,9 @@
 //!
 //! When the inbox gets new unread messages (an unread message above the
 //! previous UIDNEXT) the phone is notified. When unread messages are read
-//! or removed elsewhere, the phone is told silently, a few seconds later
-//! (several in a row make one message), so it can take back their
-//! notifications. Mail already read when it arrives wakes nobody. Connection errors
+//! or removed elsewhere, or read ones are marked unread again, the phone is
+//! told silently, a few seconds later (several in a row make one message),
+//! so it can take back their notifications and update its unread count. Mail already read when it arrives wakes nobody. Connection errors
 //! are retried with a growing pause.
 
 use crate::fcm::{Delivery, Event, Notifier};
@@ -24,7 +24,7 @@ const RETRY_MIN: Duration = Duration::from_secs(30);
 const RETRY_MAX: Duration = Duration::from_secs(15 * 60);
 /// Mail read elsewhere is reported once nothing more was read for this long
 /// (reading several messages in a row makes one message to the phone)...
-const READ_QUIET: Duration = Duration::from_secs(10);
+const READ_QUIET: Duration = Duration::from_secs(4);
 /// ...or at the latest this long after the first one.
 const READ_MAX_DELAY: Duration = Duration::from_secs(60);
 
@@ -221,7 +221,9 @@ fn unseen_set(session: &mut mail::ImapSession) -> Option<HashSet<u32>> {
 struct Change {
     /// A new message arrived unread: notify.
     arrived: bool,
-    /// An unread message was read or removed: take back notifications.
+    /// An unread message was read or removed, or a read one was marked
+    /// unread again: take back notifications, update the counts (sent as
+    /// the "read" push, which the apps answer by counting again).
     read: bool,
 }
 
@@ -245,8 +247,19 @@ fn compare(
         Some(next) => after.iter().any(|u| *u >= next && !before.contains(u)),
         None => grew,
     };
-    let read = before.iter().any(|u| !after.contains(u));
-    Change { arrived, read }
+    let removed = before.iter().any(|u| !after.contains(u));
+    // Unread again: not new (or the inbox did not grow without UIDNEXT).
+    let unread_again = after.iter().any(|u| {
+        !before.contains(u)
+            && match uid_next {
+                Some(next) => *u < next,
+                None => !grew,
+            }
+    });
+    Change {
+        arrived,
+        read: removed || unread_again,
+    }
 }
 
 /// Tells the device. Returns false when the device no longer exists.
@@ -341,13 +354,22 @@ mod tests {
     }
 
     #[test]
-    fn marked_unread_again_is_not_news() {
+    fn marked_unread_again_is_not_news_but_updates_counts() {
         let c = compare(Some(&set(&[5])), Some(&set(&[3, 5])), Some(10), false);
         assert_eq!(
             c,
             Change {
                 arrived: false,
-                read: false
+                read: true
+            }
+        );
+        // Without UIDNEXT: an inbox that did not grow.
+        let c = compare(Some(&set(&[5])), Some(&set(&[3, 5])), None, false);
+        assert_eq!(
+            c,
+            Change {
+                arrived: false,
+                read: true
             }
         );
     }
