@@ -62,6 +62,10 @@ pub struct Invitation {
 /// Reads the calendar part of a message. `None` if it is not an
 /// invitation, a cancellation or a reply.
 pub fn read(ics: &str) -> Option<Invitation> {
+    ical::no_panic(|| read_calendar(ics)).flatten()
+}
+
+fn read_calendar(ics: &str) -> Option<Invitation> {
     let cal = ical::parse(ics);
     if !matches!(cal.method.as_str(), "REQUEST" | "CANCEL" | "REPLY") {
         return None;
@@ -359,6 +363,17 @@ BEGIN:VALARM\r\nTRIGGER:-PT15M\r\nDESCRIPTION:Promemoria\r\nEND:VALARM\r\nEND:VE
             read("BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:x\nDTSTART:20260101T000000Z\nEND:VEVENT\nEND:VCALENDAR")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn absurd_values_do_not_panic() {
+        let huge = REQUEST
+            .replace("DTEND;TZID=Europe/Rome:20261110T110000\r\n", "DURATION:P100000000D\r\n");
+        let inv = read(&huge).unwrap();
+        // The duration is ignored: the invitation is an instant.
+        assert_eq!(inv.when.end, inv.when.start);
+        let rare = REQUEST.replace("SEQUENCE:2\r\n", "RRULE:FREQ=WEEKLY;INTERVAL=4000000000\r\n");
+        assert!(read(&rare).is_some());
     }
 
     #[test]

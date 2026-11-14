@@ -83,7 +83,11 @@ impl Draft {
         };
         let (start, end) = if ev.all_day() {
             // DTEND is exclusive: the form shows the last day.
-            let last = (ev.end.local - Duration::days(1)).max(ev.start.local);
+            let last = ev
+                .end
+                .local
+                .checked_sub_days(chrono::Days::new(1))
+                .map_or(ev.start.local, |l| l.max(ev.start.local));
             (ev.start.local, last)
         } else {
             (local(ev.start.timestamp()), local(ev.end.timestamp()))
@@ -141,7 +145,8 @@ fn local_zone() -> Option<Tz> {
 fn time_lines(d: &Draft, tz: Option<Tz>) -> (String, String) {
     if d.all_day {
         let first = d.start.date();
-        let after = d.end.date().max(first) + Duration::days(1);
+        let last = d.end.date().max(first);
+        let after = last.checked_add_days(chrono::Days::new(1)).unwrap_or(last);
         return (
             format!("DTSTART;VALUE=DATE:{}", first.format("%Y%m%d")),
             format!("DTEND;VALUE=DATE:{}", after.format("%Y%m%d")),

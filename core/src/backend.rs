@@ -333,7 +333,7 @@ impl Backend {
     /// The form for a stored event (by item URL).
     pub fn event_draft(account: &Account, url: &str) -> Option<crate::events::Draft> {
         let (_, _, ics) = cache::get()?.event(&cache::account_key(account), url).ok()??;
-        crate::events::Draft::from_ics(&ics)
+        crate::ical::no_panic(|| crate::events::Draft::from_ics(&ics)).flatten()
     }
 
     /// Saves an event: changes the stored one at `url`, or creates a new
