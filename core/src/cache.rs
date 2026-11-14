@@ -219,6 +219,10 @@ impl Cache {
                 "category",
                 "ALTER TABLE messages ADD COLUMN category INTEGER NOT NULL DEFAULT 0",
             ),
+            (
+                "from_addr",
+                "ALTER TABLE messages ADD COLUMN from_addr TEXT NOT NULL DEFAULT ''",
+            ),
         ] {
             if !has_column(&conn, "messages", column)? {
                 conn.execute_batch(ddl)?;
@@ -235,6 +239,16 @@ impl Cache {
                  DELETE FROM messages WHERE (account, folder) IN
                      (SELECT DISTINCT account, folder FROM messages WHERE ts = 0);
                  PRAGMA user_version = 1;",
+            )?;
+        }
+        // 2: the sender's address was not stored, so lists read from the
+        // cache could not be matched by blocked/allowed senders and `from:`
+        // rules; download everything once more to fill it in.
+        if version < 2 {
+            conn.execute_batch(
+                "DELETE FROM folders;
+                 DELETE FROM messages;
+                 PRAGMA user_version = 2;",
             )?;
         }
         Ok(Cache {
@@ -301,8 +315,8 @@ impl Cache {
         }
         {
             let mut stmt = tx.prepare_cached(
-                "INSERT INTO messages (account, folder, uid, sender, subject, preview, ts, seen, attach, body, msgid, parents, counted, flagged, size, labels, category)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, ?13, ?14, ?15, ?16)
+                "INSERT INTO messages (account, folder, uid, sender, subject, preview, ts, seen, attach, body, msgid, parents, counted, flagged, size, labels, category, from_addr)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, ?13, ?14, ?15, ?16, ?17)
                  ON CONFLICT (account, folder, uid) DO UPDATE SET
                     counted = 1,
                     seen = excluded.seen,
@@ -313,6 +327,7 @@ impl Cache {
                     msgid = excluded.msgid,
                     parents = excluded.parents,
                     sender = excluded.sender,
+                    from_addr = excluded.from_addr,
                     subject = excluded.subject,
                     preview = excluded.preview,
                     attach = excluded.attach,
@@ -335,7 +350,8 @@ impl Cache {
                     h.flagged,
                     h.size,
                     h.labels.join("\n"),
-                    h.category.code()
+                    h.category.code(),
+                    h.from_address
                 ])?;
             }
         }
@@ -451,7 +467,7 @@ impl Cache {
     pub fn headers(&self, account: &str, folder: &str, limit: u32) -> Result<Vec<Header>> {
         let conn = self.lock();
         let mut stmt = conn.prepare_cached(
-            "SELECT uid, sender, subject, preview, ts, seen, attach, msgid, parents, flagged, size, labels, category FROM messages
+            "SELECT uid, sender, subject, preview, ts, seen, attach, msgid, parents, flagged, size, labels, category, from_addr FROM messages
              WHERE account = ?1 AND folder = ?2 ORDER BY ts DESC, uid DESC LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![account, folder, limit], row_to_header)?;
@@ -1051,7 +1067,7 @@ impl Cache {
         };
         let conn = self.lock();
         let mut stmt = conn.prepare_cached(
-            "SELECT m.uid, m.sender, m.subject, m.preview, m.ts, m.seen, m.attach, m.msgid, m.parents, m.flagged, m.size, m.labels, m.category
+            "SELECT m.uid, m.sender, m.subject, m.preview, m.ts, m.seen, m.attach, m.msgid, m.parents, m.flagged, m.size, m.labels, m.category, m.from_addr
              FROM messages_fts f JOIN messages m ON m.id = f.rowid
              WHERE messages_fts MATCH ?3 AND m.account = ?1 AND m.folder = ?2
              ORDER BY m.ts DESC LIMIT ?4",
@@ -1086,6 +1102,7 @@ fn row_to_header(r: &rusqlite::Row<'_>) -> rusqlite::Result<Header> {
             .map(str::to_owned)
             .collect(),
         category: crate::mail::Category::from_code(r.get(12)?),
+        from_address: r.get(13)?,
         ..Default::default()
     })
 }
@@ -1213,26 +1230,35 @@ mod tests {
     }
 
     #[test]
-    fn undated_folders_are_dropped_once() {
+    fn caches_without_sender_addresses_are_dropped_once() {
         let path = std::env::temp_dir().join(format!("ferrowl-cache-test-{}.sqlite", std::process::id()));
         let _ = std::fs::remove_file(&path);
+        let mut from_mario = h(1, "x", "dated", "");
+        from_mario.from_address = "mario@z.it".into();
         {
             let c = Cache::open(&path).unwrap();
-            let mut undated = h(2, "x", "no date", "");
-            undated.timestamp = 0;
-            c.store_headers("a", "INBOX", &[h(1, "x", "dated", ""), undated], "")
-                .unwrap();
-            c.store_headers("a", "Sent", &[h(3, "x", "dated", "")], "")
+            c.store_headers("a", "INBOX", std::slice::from_ref(&from_mario), "")
                 .unwrap();
             c.conn
                 .lock()
                 .unwrap()
-                .execute_batch("PRAGMA user_version = 0")
+                .execute_batch("PRAGMA user_version = 1")
                 .unwrap();
         }
+        {
+            let c = Cache::open(&path).unwrap();
+            assert!(c.headers("a", "INBOX", 10).unwrap().is_empty());
+            c.store_headers("a", "INBOX", &[from_mario], "").unwrap();
+        }
+        // Read back from the cache, the sender's address is still there
+        // (blocked senders and `from:` rules match on it).
         let c = Cache::open(&path).unwrap();
-        assert!(c.headers("a", "INBOX", 10).unwrap().is_empty());
-        assert_eq!(c.headers("a", "Sent", 10).unwrap().len(), 1);
+        let cached = c.headers("a", "INBOX", 10).unwrap();
+        assert_eq!(cached[0].from_address, "mario@z.it");
+        assert_eq!(
+            c.search("a", "INBOX", &["dated".into()], 10).unwrap()[0].from_address,
+            "mario@z.it"
+        );
         drop(c);
         let _ = std::fs::remove_file(&path);
     }

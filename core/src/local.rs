@@ -136,6 +136,23 @@ impl Store {
                 conn.execute_batch(ddl)?;
             }
         }
+        // The sender's address (for blocked/allowed senders and `from:`
+        // rules), read once from the stored messages when the column is new.
+        if !crate::cache::has_column(&conn, "local_messages", "from_addr")? {
+            conn.execute_batch("ALTER TABLE local_messages ADD COLUMN from_addr TEXT NOT NULL DEFAULT ''")?;
+            let rows: Vec<(u32, Vec<u8>)> = {
+                let mut stmt = conn.prepare("SELECT id, raw FROM local_messages")?;
+                let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                rows.collect::<rusqlite::Result<_>>()?
+            };
+            for (id, raw) in rows {
+                let h = crate::mail::header_from_raw(0, &raw, false);
+                conn.execute(
+                    "UPDATE local_messages SET from_addr = ?2 WHERE id = ?1",
+                    params![id, h.from_address],
+                )?;
+            }
+        }
         Ok(Store {
             conn: Mutex::new(conn),
         })
@@ -194,7 +211,7 @@ impl Store {
     pub fn headers(&self, account: &str, folder: &str, limit: u32) -> Result<Vec<Header>> {
         let conn = self.lock();
         let mut stmt = conn.prepare_cached(
-            "SELECT id, sender, subject, preview, ts, seen, attach, msgid, parents, flagged, CASE WHEN size > 0 THEN size ELSE length(raw) END FROM local_messages
+            "SELECT id, sender, subject, preview, ts, seen, attach, msgid, parents, flagged, CASE WHEN size > 0 THEN size ELSE length(raw) END, from_addr FROM local_messages
              WHERE account = ?1 AND folder = ?2 ORDER BY ts DESC, id DESC LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![account, folder, limit], row_to_header)?;
@@ -205,7 +222,7 @@ impl Store {
     pub fn search(&self, account: &str, folder: &str, words: &[String], limit: u32) -> Result<Vec<Header>> {
         let conn = self.lock();
         let mut sql = String::from(
-            "SELECT id, sender, subject, preview, ts, seen, attach, msgid, parents, flagged, CASE WHEN size > 0 THEN size ELSE length(raw) END FROM local_messages
+            "SELECT id, sender, subject, preview, ts, seen, attach, msgid, parents, flagged, CASE WHEN size > 0 THEN size ELSE length(raw) END, from_addr FROM local_messages
              WHERE account = ?1 AND folder = ?2",
         );
         let patterns: Vec<String> = words
@@ -288,8 +305,8 @@ fn insert(conn: &Connection, account: &str, folder: &str, raw: &[u8], seen: bool
     // Messages without a Date header sort as "now".
     let ts = if h.timestamp > 0 { h.timestamp } else { now() };
     conn.execute(
-        "INSERT INTO local_messages (account, folder, sender, subject, preview, ts, seen, attach, text, raw, msgid, parents, size)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        "INSERT INTO local_messages (account, folder, sender, subject, preview, ts, seen, attach, text, raw, msgid, parents, size, from_addr)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             account,
             folder,
@@ -303,7 +320,8 @@ fn insert(conn: &Connection, account: &str, folder: &str, raw: &[u8], seen: bool
             raw,
             h.message_id,
             h.parents.join(" "),
-            h.size
+            h.size,
+            h.from_address
         ],
     )?;
     u32::try_from(conn.last_insert_rowid()).context("local mailbox is full")
@@ -327,6 +345,7 @@ fn row_to_header(r: &rusqlite::Row<'_>) -> rusqlite::Result<Header> {
             .collect(),
         flagged: r.get(9)?,
         size: r.get(10)?,
+        from_address: r.get(11)?,
         ..Default::default()
     })
 }
@@ -347,6 +366,7 @@ mod tests {
         let list = s.headers("acc", INBOX, 10).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].subject, "Engines");
+        assert_eq!(list[0].from_address, "ada@example.org");
         assert_eq!(
             s.search("acc", INBOX, &["analytical".into()], 10).unwrap().len(),
             1
@@ -368,5 +388,19 @@ mod tests {
         assert!(s.downloaded("acc").unwrap().contains_key("uidl-1"));
         s.forget_downloaded("acc", &["uidl-1".into()]).unwrap();
         assert!(s.downloaded("acc").unwrap().is_empty());
+    }
+
+    #[test]
+    fn sender_addresses_are_filled_in_for_older_mailboxes() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO local_messages (account, folder, sender, subject, preview, ts, seen, attach, text, raw)
+             VALUES ('acc', ?1, 'Ada', 'Engines', '', 1, 0, 0, '', ?2)",
+            params![INBOX, RAW],
+        )
+        .unwrap();
+        let s = Store::with_connection(conn).unwrap();
+        assert_eq!(s.headers("acc", INBOX, 10).unwrap()[0].from_address, "ada@example.org");
     }
 }
