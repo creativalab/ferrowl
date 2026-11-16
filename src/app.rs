@@ -670,6 +670,8 @@ pub struct App {
     pub body: text_editor::Content,
     /// Hidden copy of `body` used to find the link under the mouse.
     pub body_probe: text_editor::Content,
+    /// The open message's subject, selectable to copy it.
+    pub subject: text_editor::Content,
     /// The mouse is over a link of the plain-text body (hand cursor).
     pub body_link_hover: bool,
     /// The open message's HTML, rendered into image tiles.
@@ -999,6 +1001,7 @@ pub enum Message {
     MenuAction(u32, CtxAction),
     OpenLink(String),
     BodyAction(text_editor::Action),
+    SubjectAction(text_editor::Action),
     /// The mouse moved over the plain-text body (position in it).
     BodyHover(iced::Point),
     BodyLeave,
@@ -1195,6 +1198,7 @@ impl App {
             message: None,
             body: text_editor::Content::new(),
             body_probe: text_editor::Content::new(),
+            subject: text_editor::Content::new(),
             body_link_hover: false,
             html_render: None,
             html_rendering: false,
@@ -3708,6 +3712,7 @@ impl App {
                 }
                 self.body = text_editor::Content::with_text(&msg.body);
                 self.body_probe = text_editor::Content::with_text(&msg.body);
+                self.subject = text_editor::Content::with_text(&msg.subject);
                 self.body_link_hover = false;
                 self.invite = None;
                 let invite = self.load_invite(&msg);
@@ -4111,6 +4116,13 @@ impl App {
                     {
                         return self.update(Message::OpenLink(url));
                     }
+                }
+                Task::none()
+            }
+            Message::SubjectAction(action) => {
+                // Read-only, like the body: select and copy.
+                if !action.is_edit() {
+                    self.subject.perform(action);
                 }
                 Task::none()
             }

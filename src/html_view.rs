@@ -679,13 +679,13 @@ fn load(job: &Job) -> Loaded {
     // sniffing off and is harmless to the HTML parser.
     let html = format!("<!---->{}", link_bare_addresses(&without_odd_base(&job.html)));
     let mut doc = HtmlDocument::from_html(&html, config);
-    doc.resolve(0.0);
+    resolve(&mut doc);
     // Wait for images/stylesheets (bounded), then lay out again.
     let deadline = Instant::now() + FETCH_DEADLINE;
     while pending.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(15));
     }
-    doc.resolve(0.0);
+    resolve(&mut doc);
     Loaded {
         uid: job.uid,
         allow_remote: job.allow_remote,
@@ -694,6 +694,80 @@ fn load(job: &Job) -> Loaded {
         blocked_remote: blocked.load(Ordering::SeqCst) > 0,
         painted: None,
     }
+}
+
+/// Lays the document out, keeping its table parts in the table.
+///
+/// Blitz's table layout only takes cells (and rows, row groups) as the
+/// table's content: a `td` a style sheet turns into a block is dropped with
+/// everything in it. Many newsletters do exactly that below ~620 px to
+/// stack their columns on phones (`.stack .column { display: block }`), and
+/// the reader pane is often that narrow, so their pictures and text
+/// vanished. Such parts are put back into the table (columns side by side,
+/// shrunk to fit like any wide mail) and the document laid out again.
+fn resolve(doc: &mut HtmlDocument) {
+    doc.resolve(0.0);
+    // A row turned into a block hides its cells' state until it is fixed:
+    // a few rounds cover nested cases; real mail needs one.
+    for _ in 0..4 {
+        let parts = detached_table_parts(doc);
+        if parts.is_empty() {
+            return;
+        }
+        let mut mutator = doc.mutate();
+        for (id, style) in parts {
+            let name = blitz_dom::QualName::new(None, blitz_dom::ns!(), blitz_dom::local_name!("style"));
+            mutator.set_attribute(id, name, &style);
+        }
+        drop(mutator);
+        doc.resolve(0.0);
+    }
+}
+
+/// Table parts (inside a table, row group or row) laid out as anything but
+/// a table part or nothing, with the style attribute that brings each back.
+fn detached_table_parts(doc: &HtmlDocument) -> Vec<(blitz_dom::NodeId, String)> {
+    use style::values::specified::box_::{DisplayInside, DisplayOutside};
+    let tree = doc.tree();
+    let display = |id| {
+        tree.get(id)
+            .and_then(|n: &blitz_dom::Node| n.primary_styles().map(|s| s.clone_display()))
+    };
+    tree.iter()
+        .filter_map(|(id, node)| {
+            let el = node.element_data()?;
+            let wanted = match el.name.local.as_ref() {
+                "td" | "th" => "table-cell",
+                "tr" => "table-row",
+                "tbody" | "thead" | "tfoot" => "table-row-group",
+                _ => return None,
+            };
+            let parent = display(node.parent?)?;
+            if !matches!(
+                parent.inside(),
+                DisplayInside::Table
+                    | DisplayInside::TableRowGroup
+                    | DisplayInside::TableHeaderGroup
+                    | DisplayInside::TableFooterGroup
+                    | DisplayInside::TableRow
+            ) {
+                return None;
+            }
+            let own = display(id)?;
+            if own.outside() == DisplayOutside::None
+                || !matches!(
+                    own.inside(),
+                    DisplayInside::Flow | DisplayInside::FlowRoot | DisplayInside::Flex | DisplayInside::Grid
+                )
+            {
+                return None;
+            }
+            // `!important` in the style attribute outranks the sheet's
+            // rule, `!important` or not.
+            let old = el.attr(blitz_dom::local_name!("style")).unwrap_or_default();
+            Some((id, format!("{old};display:{wanted} !important")))
+        })
+        .collect()
 }
 
 /// Lays the loaded message out at `width` and paints it into tiles.
@@ -710,7 +784,7 @@ fn paint(loaded: &mut Loaded, width: u32, scale: f32) -> Rendered {
             ColorScheme::Light,
         ));
         doc.set_viewport_scroll(blitz_dom::Point { x: 0.0, y: 0.0 });
-        doc.resolve(0.0);
+        resolve(doc);
         physical_w
     };
     let mut physical_w = layout(doc, width);
@@ -745,7 +819,7 @@ fn paint(loaded: &mut Loaded, width: u32, scale: f32) -> Rendered {
             ColorScheme::Light,
         ));
         doc.set_viewport_scroll(blitz_dom::Point { x: 0.0, y: 0.0 });
-        doc.resolve(0.0);
+        resolve(doc);
         physical_h = (height as f32 * scale).ceil() as u32;
     }
     // Still over (very long and wide even at scale 1): the end is cut.
@@ -783,7 +857,7 @@ fn tiles(loaded: &mut Loaded, painted: Painted) -> Rendered {
     while y < physical_h {
         let h = TILE.min(physical_h - y);
         doc.set_viewport(Viewport::new(physical_w, h, scale, ColorScheme::Light));
-        doc.resolve(0.0);
+        resolve(doc);
         doc.set_viewport_scroll(blitz_dom::Point {
             x: 0.0,
             y: y as f64 / scale as f64,
@@ -798,7 +872,7 @@ fn tiles(loaded: &mut Loaded, painted: Painted) -> Rendered {
     }
     // Full-height, unscrolled viewport so hit testing works anywhere.
     doc.set_viewport(Viewport::new(physical_w, physical_h, scale, ColorScheme::Light));
-    doc.resolve(0.0);
+    resolve(doc);
     doc.set_viewport_scroll(blitz_dom::Point { x: 0.0, y: 0.0 });
 
     Rendered {
@@ -1115,6 +1189,29 @@ mod tests {
         let r = render(job(400)).unwrap();
         assert_eq!(r.width, 400);
         assert!(total(r) > 2000.0);
+    }
+
+    #[test]
+    fn cells_turned_into_blocks_stay_in_the_table() {
+        let _turn = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        // The phone layout of many newsletters: cells become blocks (here
+        // even with `!important`), cells meant for phones only stay hidden.
+        let html = r#"<style>.stack { display: block !important }</style>
+            <table width="600"><tr>
+            <td class="stack"><div style="height:300px">picture</div></td>
+            <td style="display:none"><div style="height:900px">hidden</div></td>
+            </tr></table>"#;
+        let r = render(Job {
+            uid: 12,
+            html: html.into(),
+            width: 600,
+            scale: 1.0,
+            allow_remote: false,
+            inline: HashMap::new(),
+        })
+        .unwrap();
+        let height: f32 = r.tiles.iter().map(|(_, h)| h).sum();
+        assert!((300.0..900.0).contains(&height), "height {height}");
     }
 
     /// Renders `$FERROWL_HTML` and writes its tiles next to it (manual check).
