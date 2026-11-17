@@ -359,7 +359,10 @@ internal fun fitToScreen(html: String, dark: DarkPage? = null): String {
     val followsDark = dark != null && !hasOwnColors(html)
     val page = if (followsDark) "color-scheme:dark;background:transparent;color:${dark!!.text}" else "background:#fff;color:#1F1B18"
     val links = if (followsDark) "a{color:${dark!!.link}}" else ""
+    // http: pictures are asked over https (Android blocks plain http, and
+    // it would show the network which mail is read).
     val head = "<meta name=\"viewport\" content=\"width=device-width\">" +
+        "<meta http-equiv=\"Content-Security-Policy\" content=\"upgrade-insecure-requests\">" +
         "<style>" +
         "html{$page}" +
         "body{margin:12px;overflow-wrap:anywhere}" +
