@@ -1,5 +1,6 @@
 package com.ferrowl.app.push
 
+import com.ferrowl.app.demo.Demo
 import android.util.Base64
 import com.ferrowl.app.data.AccountStore
 import com.ferrowl.app.data.Billing
@@ -39,10 +40,11 @@ class PushRegistrar @Inject constructor(
     private val lock = Mutex()
 
     /** Whether the first-launch question is still to be asked. */
-    suspend fun needsAsking(): Boolean = !store.current().asked
+    suspend fun needsAsking(): Boolean = !Demo.on && !store.current().asked
 
     /** Turns notifications on. Throws with a message to show if it fails. */
     suspend fun enable() {
+        if (Demo.on) return
         val all = accounts.accounts.first()
         val first = all.firstOrNull() ?: return
         if (watched(all).isEmpty()) {
@@ -60,6 +62,7 @@ class PushRegistrar @Inject constructor(
 
     /** Turns notifications off and removes everything from the server. */
     suspend fun disable() = lock.withLock {
+        if (Demo.on) return@withLock
         val s = store.current()
         store.setEnabled(false)
         s.deviceToken?.let { runCatching { client.forget(it) } }
@@ -76,6 +79,8 @@ class PushRegistrar @Inject constructor(
 
     /** Brings the registration up to date (app start, accounts changed). */
     suspend fun sync(): Unit = lock.withLock {
+        // Demo mode: the push server is never told anything.
+        if (Demo.on) return
         // Nothing goes to the server before the user said yes.
         if (!store.current().enabled || !store.current().asked) return
         val wanted = watched(accounts.accounts.first())
@@ -127,6 +132,7 @@ class PushRegistrar @Inject constructor(
 
     /** An account was set up again (maybe a new password): the server gets its new settings. */
     suspend fun accountSaved(email: String) {
+        if (Demo.on) return
         lock.withLock {
             val s = store.current()
             val id = s.accounts[email.lowercase()]
@@ -150,10 +156,13 @@ class PushRegistrar @Inject constructor(
     }
 
     /** Mail of [email] up to [uid] was seen in the app: a push does not announce it again. */
-    suspend fun seen(email: String, uid: Long) = store.setLastNotified(email, uid)
+    suspend fun seen(email: String, uid: Long) {
+        if (!Demo.on) store.setLastNotified(email, uid)
+    }
 
     /** Firebase gave the phone a new token. */
     suspend fun tokenChanged(fcmToken: String) {
+        if (Demo.on) return
         val s = store.current()
         if (s.enabled && s.deviceToken != null) runCatching { client.updateToken(s.deviceToken, fcmToken) }
     }

@@ -3,3 +3,6 @@
 # Apple push keys (APNs): only on the push server, never in the repository.
 *.p8
 .DS_Store
+
+# Raw Google Play captures (store/tools/capture_android.sh): large, made again at will.
+/store/android/*/raw/

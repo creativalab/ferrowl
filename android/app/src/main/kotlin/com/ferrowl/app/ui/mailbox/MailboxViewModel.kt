@@ -117,6 +117,15 @@ class MailboxViewModel @Inject constructor(
     /** The account to act on: the list's. */
     private fun actingAccount(): String? = listAccount ?: repo.connectedAccount()
 
+    /**
+     * Deleted with Undo but not yet on the server (it is asked when the
+     * notice is gone), per folder: lists loaded meanwhile from the local
+     * copy or the server must not show them again. Main thread only.
+     * Declared before `init`: its first steps can run at once, while the
+     * object is being built (a local copy read quickly).
+     */
+    private val pendingDeletes = mutableMapOf<String, MutableSet<UInt>>()
+
     init {
         viewModelScope.launch { settings.threaded.collect { on -> _state.update { it.copy(threaded = on) } } }
         viewModelScope.launch { settings.sort.collect { o -> _state.update { it.copy(sort = o) } } }
@@ -361,13 +370,6 @@ class MailboxViewModel @Inject constructor(
      */
     private var fetching: String? = null
     private var fetchAgain = false
-
-    /**
-     * Deleted with Undo but not yet on the server (it is asked when the
-     * notice is gone), per folder: lists loaded meanwhile from the local
-     * copy or the server must not show them again. Main thread only.
-     */
-    private val pendingDeletes = mutableMapOf<String, MutableSet<UInt>>()
 
     /** [list] without the messages of [folder] waiting to be deleted. */
     private fun visible(list: List<Header>, folder: String): List<Header> {

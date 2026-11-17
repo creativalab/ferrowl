@@ -29,6 +29,18 @@ android {
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
+        // The demo mode for the Google Play screenshots (made-up mail, see
+        // com.ferrowl.app.demo.Demo): a debug build installed beside the
+        // real app, with no push (Firebase) and no Google Play Billing.
+        create("demo") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".demo"
+            matchingFallbacks += listOf("debug")
+            buildConfigField("boolean", "DEMO", "true")
+        }
+        configureEach {
+            if (name != "demo") buildConfigField("boolean", "DEMO", "false")
+        }
     }
 
     buildFeatures {
@@ -129,3 +141,10 @@ androidComponents {
         variant.sources.res?.addGeneratedSourceDirectory(generateStrings, GenerateStrings::outputDir)
     }
 }
+
+// The demo build has its own application id, which google-services.json
+// does not list: Firebase stays off there (it never registers for push).
+tasks.configureEach {
+    if (name == "processDemoGoogleServices") enabled = false
+}
+

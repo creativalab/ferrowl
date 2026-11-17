@@ -7,10 +7,12 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.ferrowl.app.demo.Demo
 import com.ferrowl.core.Account
 import com.ferrowl.core.OAuthProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -32,14 +34,23 @@ class AccountStore @Inject constructor(
     @ApplicationContext private val context: Context,
     private val secrets: SecretBox,
 ) {
+    /** Demo mode: the sample account in use (the saved accounts are not even read). */
+    private val demoActive = MutableStateFlow(if (Demo.on) Demo.accounts.first().email else "")
+
     /** Every account, in the order they were added. */
-    val accounts: Flow<List<Account>> = context.dataStore.data.map { prefs -> read(prefs).list }
+    val accounts: Flow<List<Account>> =
+        if (Demo.on) demoActive.map { Demo.accounts } else context.dataStore.data.map { prefs -> read(prefs).list }
 
     /** The active account, or null before the first setup. */
-    val account: Flow<Account?> = context.dataStore.data.map { prefs -> read(prefs).active }
+    val account: Flow<Account?> = if (Demo.on) {
+        demoActive.map { email -> Demo.accounts.first { it.email == email } }
+    } else {
+        context.dataStore.data.map { prefs -> read(prefs).active }
+    }
 
     /** Adds the account, or replaces the one with the same address; it becomes active. */
     suspend fun save(account: Account) {
+        if (Demo.on) return
         context.dataStore.edit { prefs ->
             val list = read(prefs).list.filterNot { it.email.equals(account.email, ignoreCase = true) } + account
             write(prefs, list, account.email)
@@ -48,6 +59,7 @@ class AccountStore @Inject constructor(
 
     /** Changes an account's settings in place (its order and the active one stay). */
     suspend fun update(account: Account) {
+        if (Demo.on) return
         context.dataStore.edit { prefs ->
             val current = read(prefs)
             val list = current.list.map { if (it.email.equals(account.email, ignoreCase = true)) account else it }
@@ -57,6 +69,10 @@ class AccountStore @Inject constructor(
 
     /** Makes the account with this address the active one. */
     suspend fun setActive(email: String) {
+        if (Demo.on) {
+            demoActive.value = Demo.accounts.firstOrNull { it.email.equals(email, ignoreCase = true) }?.email ?: return
+            return
+        }
         context.dataStore.edit { prefs ->
             val list = read(prefs).list
             if (list.any { it.email.equals(email, ignoreCase = true) }) write(prefs, list, email)
@@ -65,6 +81,7 @@ class AccountStore @Inject constructor(
 
     /** Removes an account; the first remaining one becomes active. Returns the new active one. */
     suspend fun remove(email: String): Account? {
+        if (Demo.on) return Demo.accounts.first()
         var active: Account? = null
         context.dataStore.edit { prefs ->
             val current = read(prefs)
@@ -77,6 +94,7 @@ class AccountStore @Inject constructor(
     }
 
     suspend fun clear() {
+        if (Demo.on) return
         context.dataStore.edit {
             it.remove(KEY)
             it.remove(LIST)

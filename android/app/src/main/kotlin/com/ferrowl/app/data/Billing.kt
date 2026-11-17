@@ -75,6 +75,8 @@ class Billing @Inject constructor(
      * the front and when the offer is shown. Safe to call often.
      */
     fun start() {
+        // Demo mode: Google Play is not asked (debug builds count as Pro).
+        if (com.ferrowl.app.demo.Demo.on) return
         if (client.isReady) {
             refresh()
             return
