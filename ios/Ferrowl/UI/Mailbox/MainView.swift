@@ -42,7 +42,14 @@ struct MainView: View {
         }
         .task {
             if model == nil {
-                model = MailboxModel(mail: mail, prefs: prefs, notices: notices)
+                let mailbox = MailboxModel(mail: mail, prefs: prefs, notices: notices)
+                // Opened from a notification of this account: its message
+                // goes through the connection before the list.
+                if let pending = app.pendingOpen, let uid = pending.uid,
+                   pending.email.caseInsensitiveCompare(mail.activeEmail ?? "") == .orderedSame {
+                    mailbox.loadsFirst(uid)
+                }
+                model = mailbox
             }
             await model?.start()
             #if DEBUG
@@ -129,8 +136,8 @@ struct MainView: View {
     }
 
     /// Opens the message of a tapped notification: switches to its account
-    /// first (this screen then starts over and comes back here), then its
-    /// inbox and the message.
+    /// first (this screen then starts over and comes back here), then opens
+    /// the message straight away; the inbox list fills in behind it.
     private func openFromNotification() async {
         guard app.pendingOpen != nil, model != nil else { return }
         // A message being written stays open: the request waits for it
@@ -147,18 +154,18 @@ struct MainView: View {
         }
         app.pendingOpen = nil
         sheet = nil
-        await model.start()
-        if model.folderId != mail.inboxId { model.openFolder(mail.inboxId) }
+        // The inbox (a new mailbox, still starting, comes to it by itself).
+        if !model.folderId.isEmpty, model.folderId != mail.inboxId { model.openFolder(mail.inboxId) }
         guard let uid = pending.uid else {
             column = .content
             return
         }
-        if model.header(uid) == nil { await model.refresh() }
-        guard let header = model.header(uid) else {
-            column = .content
-            return
-        }
-        model.open = Row(conversation: Conversation(latest: header, uids: [uid], unread: header.seen ? 0 : 1))
+        // At once, without waiting for the list from the server: the
+        // message as saved on the phone if there, else the reader loads it.
+        var listed = model.header(uid)
+        if listed == nil { listed = await mail.cachedInbox().first { $0.uid == uid } }
+        guard !Task.isCancelled else { return }
+        model.openFirst(uid, listed: listed)
     }
 
     private func split(_ model: MailboxModel) -> some View {
@@ -271,6 +278,10 @@ struct Sidebar: View {
                             }
                         } label: {
                             FolderRow(folder: folder, depth: node.depth, unread: unread(node))
+                                // The whole row taps, not only its text (a
+                                // plain button only takes what it draws).
+                                .frame(maxWidth: .infinity, minHeight: 32)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         if node.hasChildren {

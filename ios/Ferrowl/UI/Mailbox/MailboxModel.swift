@@ -41,7 +41,14 @@ final class MailboxModel {
     var selecting = false
     var selected: Set<UInt32> = []
     /// The open row (shown in the detail column).
-    var open: Row?
+    var open: Row? {
+        // Another message opened meanwhile: the list waits no more.
+        didSet { if let open, open.id != openingFirst { openingFirst = nil } }
+    }
+    /// A message opened from a notification: it loads before the list is
+    /// fetched from the server (both go through the one connection, and
+    /// the list with its rules takes a while).
+    private var openingFirst: UInt32?
 
     private var searchTask: Task<Void, Never>?
     private var started = false
@@ -115,6 +122,29 @@ final class MailboxModel {
     }
 
     func header(_ uid: UInt32) -> Header? { messages.first { $0.uid == uid } ?? results.first { $0.uid == uid } }
+
+    /// Opens a message of the inbox at once, also one not listed yet (a
+    /// notification of new mail): the reader loads it by its number.
+    func openFirst(_ uid: UInt32, listed: Header?) {
+        let header = listed ?? Header(uid: uid, from: "", subject: "", preview: "", timestamp: 0, seen: false,
+                                      hasAttachment: false, messageId: "", parents: [])
+        openingFirst = uid
+        open = Row(conversation: Conversation(latest: header, uids: [uid], unread: header.seen ? 0 : 1))
+    }
+
+    /// A notification's message is about to open: the list's first fetch
+    /// from the server waits for it (set before the mailbox starts).
+    func loadsFirst(_ uid: UInt32) { openingFirst = uid }
+
+    /// Waits (a few seconds at most) for the message opened from a
+    /// notification to load.
+    private func afterOpening() async {
+        let end = ContinuousClock.now + .seconds(8)
+        while openingFirst != nil, ContinuousClock.now < end, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        openingFirst = nil
+    }
 
     // MARK: loading
 
@@ -209,7 +239,9 @@ final class MailboxModel {
         let cached = await mail.cachedHeaders(id)
         guard current else { return }
         if !cached.isEmpty, folderId == id { messages = visible(cached, in: id) }
+        await afterOpening()
         do {
+            guard current else { return }
             var fresh = try await mail.headers(id, on: account)
             guard current else { return }
             // Sender lists: blocked mail leaves the inbox, allowed mail leaves Spam.
@@ -458,5 +490,8 @@ final class MailboxModel {
     }
 
     /// A message was opened: it is read now.
-    func opened(_ uids: [UInt32]) { update(uids) { $0.seen = true } }
+    func opened(_ uids: [UInt32]) {
+        if let first = openingFirst, uids.contains(first) { openingFirst = nil }
+        update(uids) { $0.seen = true }
+    }
 }

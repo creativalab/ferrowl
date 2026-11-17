@@ -67,6 +67,7 @@ struct HTMLView: UIViewRepresentable {
             }.value
             // Still the page to show (not replaced meanwhile).
             guard coordinator.key == key else { return }
+            coordinator.page = page
             view.loadHTMLString(page, baseURL: nil)
         }
     }
@@ -132,6 +133,8 @@ struct HTMLView: UIViewRepresentable {
         var parent: HTMLView
         /// What the page on screen (or being built) shows.
         var key: Key?
+        /// The page last loaded, to load again if WebKit loses it.
+        var page: String?
 
         struct Key: Equatable {
             let html: String
@@ -181,6 +184,14 @@ struct HTMLView: UIViewRepresentable {
                     self?.parent.rendered = true
                 }
             }
+        }
+
+        // In the background iOS may end WebKit's content process to free
+        // memory: the page is gone and the message would come back blank.
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            guard let page else { return }
+            parent.rendered = false
+            webView.loadHTMLString(page, baseURL: nil)
         }
 
         // A page that fails to load still ends the spinner.

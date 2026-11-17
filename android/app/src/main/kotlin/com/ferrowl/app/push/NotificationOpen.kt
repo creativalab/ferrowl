@@ -3,6 +3,8 @@ package com.ferrowl.app.push
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -24,6 +26,27 @@ class NotificationOpen @Inject constructor() {
 
     fun done() {
         _pending.value = null
+    }
+
+    /**
+     * The message of a tapped notification, until it has loaded: the inbox's
+     * fetch from the server waits for it (both go through the one
+     * connection, and the list with its rules takes a while).
+     */
+    private val opening = MutableStateFlow<Long?>(null)
+
+    fun opening(uid: Long?) {
+        opening.value = uid
+    }
+
+    fun loaded(uid: Long) {
+        opening.compareAndSet(uid, null)
+    }
+
+    /** Waits (a few seconds at most) for the notification's message to load. */
+    suspend fun afterOpening() {
+        withTimeoutOrNull(8_000) { opening.first { it == null } }
+        opening.value = null
     }
 
     companion object {
