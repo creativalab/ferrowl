@@ -1,0 +1,1 @@
+posta,casella,client,cifrata,sicura,crittografia,openpgp,pop3,pec,notifiche,calendario,open source

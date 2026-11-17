@@ -1,0 +1,29 @@
+Ferrowl ist die E-Mail-App fürs iPhone, die dich nicht trackt. Sie funktioniert mit jedem IMAP- oder POP3-Postfach (Gmail, Outlook, iCloud, dem Anbieter deiner Firma oder deinem eigenen Server), und nur dein iPhone lädt deine Nachrichten herunter: keine Werbung, kein Profiling, offener Quellcode.
+
+LESEN, OHNE BEOBACHTET ZU WERDEN
+• Sauber dargestellte HTML-Nachrichten, ohne JavaScript
+• Externe Bilder lassen sich abschalten, damit Absender nie erfahren, wann du ihre Nachricht öffnest
+• Signieren und Verschlüsseln mit OpenPGP, signierte und verschlüsselte Nachrichten sind klar gekennzeichnet
+• Absender und ganze Domains blockieren oder zulassen
+
+SCHNELLER ERLEDIGT
+• Archivieren, verschieben, als Spam melden oder löschen im Handumdrehen – und mit einem Tippen rückgängig machen
+• Alle bereits geladenen Mails durchsuchen, auch offline
+• Automatische Regeln für eingehende Nachrichten
+• Sofortige Benachrichtigungen bei neuen Mails
+• Widget, Kurzbefehle und iPhone-Suche
+
+ALLES AN EINEM ORT
+• Mehrere Postfächer in einer App, jeweils mit der Zahl der ungelesenen Nachrichten
+• Kalender und Kontakte (CalDAV und CardDAV), auf Einladungen antwortest du direkt in der Nachricht
+• Schreiben mit Anhängen, Cc und Bcc
+• 6 Farbschemata und 10 Sprachen
+
+PRIVATSPHÄRE ZUERST
+Keine Werbung, kein Tracking, kein Verkauf von Daten. Passwörter und Schlüssel bleiben im Schlüsselbund deines iPhone. Wenn du sofortige Benachrichtigungen einschaltest, prüft der Ferrowl-Server dein Postfach und schickt deinem Telefon nur ein Signal; deine Kontoeinstellungen bleiben verschlüsselt, mit einem Schlüssel, der dein iPhone nie verlässt. Ferrowl ist Open Source: Der Code ist öffentlich und jeder kann ihn prüfen.
+
+FERROWL PRO
+Dein erstes E-Mail-Konto ist kostenlos, für immer. Mit Ferrowl Pro, einem Jahresabo, kannst du weitere Konten hinzufügen. Das Abo verlängert sich automatisch, und du kannst es jederzeit in den App Store-Einstellungen verwalten oder kündigen.
+
+Nutzungsbedingungen (EULA): https://www.apple.com/legal/internet-services/itunes/dev/stdeula/
+Datenschutz: https://ferrowl.com/privacy/
