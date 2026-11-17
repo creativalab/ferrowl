@@ -3,6 +3,7 @@ package com.ferrowl.app.ui.message
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ferrowl.app.data.MailRepository
+import com.ferrowl.app.push.NotificationOpen
 import com.ferrowl.app.ui.notice.Notices
 import com.ferrowl.core.EventDraft
 import com.ferrowl.core.FerrowlException
@@ -43,6 +44,7 @@ data class InviteState(
 class MessageViewModel @Inject constructor(
     private val repo: MailRepository,
     private val notices: Notices,
+    private val notificationOpen: NotificationOpen,
 ) : ViewModel() {
     private val _state = MutableStateFlow<MessageState>(MessageState.Loading)
     val state: StateFlow<MessageState> = _state.asStateFlow()
@@ -95,6 +97,9 @@ class MessageViewModel @Inject constructor(
                 MessageState.Shown(message)
             } catch (e: FerrowlException) {
                 MessageState.Failed(e.message ?: "")
+            } finally {
+                // The inbox list may now use the connection.
+                notificationOpen.loaded(uid.toLong())
             }
             refreshInvite()
         }

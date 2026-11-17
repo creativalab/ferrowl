@@ -260,8 +260,16 @@ class MailboxViewModel @Inject constructor(
         // Started from the notification: the accounts are not read yet, and
         // the request waits for them (dropping it would lose the message).
         if (s.accounts.isEmpty() || s.active.isBlank()) return null
+        // Its message loads before the inbox list (set before switching,
+        // which starts fetching the list).
+        notificationOpen.opening(r.uid)
         if (!r.email.equals(s.active, ignoreCase = true)) {
-            if (s.accounts.any { it.equals(r.email, ignoreCase = true) }) switchAccount(r.email) else notificationOpen.done()
+            if (s.accounts.any { it.equals(r.email, ignoreCase = true) }) {
+                switchAccount(r.email)
+            } else {
+                notificationOpen.done()
+                notificationOpen.opening(null)
+            }
             return null
         }
         notificationOpen.done()
@@ -400,6 +408,7 @@ class MailboxViewModel @Inject constructor(
         try {
             val cached = repo.cachedHeaders(id)
             if (cached.isNotEmpty()) _state.update { if (it.folderId == id) it.copy(messages = visible(cached, id)) else it }
+            notificationOpen.afterOpening()
             // The account these messages are of; after every step the engine
             // must still be on it (a switch meanwhile: nothing is applied).
             val (account, headers) = repo.headersOf(id)

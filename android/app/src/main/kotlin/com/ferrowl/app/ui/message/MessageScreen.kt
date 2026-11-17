@@ -3,6 +3,7 @@ package com.ferrowl.app.ui.message
 import android.content.Intent
 import android.util.Patterns
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -41,6 +42,8 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -274,7 +277,10 @@ private fun HtmlView(html: String) {
     val colors = MaterialTheme.colorScheme
     val dark = colors.surface.luminance() < 0.5f
     val page = fitToScreen(html, if (dark) DarkPage(cssColor(colors.onSurface), cssColor(colors.primary)) else null)
-    AndroidView(
+    // A WebView whose renderer is gone cannot be used again: a new one
+    // takes its place (and loads the page anew).
+    var renderer by remember { mutableIntStateOf(0) }
+    key(renderer) { AndroidView(
         factory = { context ->
             WebView(context).apply {
                 settings.javaScriptEnabled = false
@@ -314,6 +320,13 @@ private fun HtmlView(html: String) {
                             null
                         }
                     }
+
+                    // In the background Android may end the renderer to free
+                    // memory. Unhandled, that would close the whole app.
+                    override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                        renderer++
+                        return true
+                    }
                 }
             }
         },
@@ -326,8 +339,10 @@ private fun HtmlView(html: String) {
                 view.loadDataWithBaseURL(null, page, "text/html", "UTF-8", null)
             }
         },
+        // Taken off screen first by Compose, then let go of.
+        onRelease = { it.destroy() },
         modifier = Modifier.fillMaxSize(),
-    )
+    ) }
 }
 
 /**
