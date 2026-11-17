@@ -66,7 +66,7 @@ pub struct EventForm {
     pub error: Option<String>,
     pub saving: bool,
     /// The open date picker: which date it sets and the month it shows.
-    pub picker: Option<(EventField, chrono::NaiveDate)>,
+    pub picker: Option<(EventField, jiff::civil::Date)>,
 }
 
 impl EventForm {
@@ -78,10 +78,10 @@ impl EventForm {
             location: d.location.clone(),
             notes: text_editor::Content::with_text(&d.description),
             all_day: d.all_day,
-            start_date: d.start.format("%Y-%m-%d").to_string(),
-            start_time: d.start.format("%H:%M").to_string(),
-            end_date: d.end.format("%Y-%m-%d").to_string(),
-            end_time: d.end.format("%H:%M").to_string(),
+            start_date: d.start.strftime("%Y-%m-%d").to_string(),
+            start_time: d.start.strftime("%H:%M").to_string(),
+            end_date: d.end.strftime("%Y-%m-%d").to_string(),
+            end_time: d.end.strftime("%H:%M").to_string(),
             repeat: d.repeat,
             error: None,
             saving: false,
@@ -92,13 +92,13 @@ impl EventForm {
     /// The form as a draft, if dates and times are readable.
     pub fn draft(&self) -> Option<ferrowl_core::events::Draft> {
         let at = |date: &str, time: &str| {
-            let d = chrono::NaiveDate::parse_from_str(date.trim(), "%Y-%m-%d").ok()?;
+            let d = jiff::civil::Date::strptime("%Y-%m-%d", date.trim()).ok()?;
             let t = if self.all_day {
-                chrono::NaiveTime::MIN
+                jiff::civil::Time::midnight()
             } else {
-                chrono::NaiveTime::parse_from_str(time.trim(), "%H:%M").ok()?
+                jiff::civil::Time::strptime("%H:%M", time.trim()).ok()?
             };
-            Some(d.and_time(t))
+            Some(d.to_datetime(t))
         };
         Some(ferrowl_core::events::Draft {
             summary: self.summary.clone(),
@@ -761,7 +761,7 @@ pub struct App {
     pub generation: u64,
     pub testing: bool,
     pub test_result: Option<Res<String>>,
-    pub last_sync: Option<chrono::DateTime<chrono::Local>>,
+    pub last_sync: Option<jiff::Zoned>,
     pub toast: Option<Toast>,
     toast_seq: u64,
     dev_shots: u32,
@@ -773,7 +773,7 @@ pub struct App {
     pub contact_selected: Option<usize>,
     pub contacts_sync: SyncState,
     /// First day of the month shown in the calendar.
-    pub cal_month: chrono::NaiveDate,
+    pub cal_month: jiff::civil::Date,
     /// That month's events.
     pub agenda: Vec<ferrowl_core::backend::AgendaEntry>,
     pub agenda_selected: Option<usize>,
@@ -1093,7 +1093,7 @@ pub enum Message {
     /// Copy a tracking number or code from an insight card.
     CopyInsight(String),
     /// Put a bill's due date (day, number, amount) in the calendar.
-    AddDue(chrono::NaiveDate, String, String),
+    AddDue(jiff::civil::Date, String, String),
     DueAdded(Res<String>),
     InviteRemoved(Res<String>),
     NewEvent,
@@ -1106,7 +1106,7 @@ pub enum Message {
     EventPicker(EventField),
     /// Show the picker's previous (-1) or next (1) month.
     EventPickerMonth(i32),
-    EventPickDate(chrono::NaiveDate),
+    EventPickDate(jiff::civil::Date),
     EventRepeat(ferrowl_core::events::Repeat),
     EventCalendar(String),
     SaveEvent,
@@ -1319,7 +1319,7 @@ impl App {
                 app.pane = Pane::Calendar;
                 if let Some(m) = std::env::var("FERROWL_DEV_MONTH")
                     .ok()
-                    .and_then(|m| chrono::NaiveDate::parse_from_str(&format!("{m}-01"), "%Y-%m-%d").ok())
+                    .and_then(|m| jiff::civil::Date::strptime("%Y-%m-%d", format!("{m}-01")).ok())
                 {
                     app.cal_month = m;
                 }
@@ -3008,7 +3008,7 @@ impl App {
                 };
                 self.merge_headers(headers, floor);
                 self.clamp_page();
-                self.last_sync = Some(chrono::Local::now());
+                self.last_sync = Some(jiff::Timestamp::now().to_zoned(ferrowl_core::ical::local_zone()));
                 let search = self.run_search();
                 let index = if self.indexed.insert(folder.clone()) {
                     self.index_step(folder.clone(), first_seq, INDEX_FIRST_PAUSE)
@@ -4786,8 +4786,8 @@ impl App {
                 let draft = ferrowl_core::events::Draft {
                     summary: tf("insight_due_title", &[("what", &what)]),
                     all_day: true,
-                    start: day.and_hms_opt(9, 0, 0).unwrap_or_default(),
-                    end: day.and_hms_opt(10, 0, 0).unwrap_or_default(),
+                    start: day.at(9, 0, 0, 0),
+                    end: day.at(10, 0, 0, 0),
                     location: String::new(),
                     description: String::new(),
                     repeat: ferrowl_core::events::Repeat::Never,
@@ -4896,21 +4896,17 @@ impl App {
                         } else {
                             &f.start_date
                         };
-                        let day = chrono::NaiveDate::parse_from_str(typed, "%Y-%m-%d")
+                        let day = jiff::civil::Date::strptime("%Y-%m-%d", typed)
                             .unwrap_or_else(|_| ferrowl_core::ical::today());
-                        Some((field, chrono::Datelike::with_day(&day, 1).unwrap_or(day)))
+                        Some((field, day.first_of_month()))
                     };
                 }
                 Task::none()
             }
             Message::EventPickerMonth(delta) => {
                 if let Some((_, month)) = self.event_form.as_mut().and_then(|f| f.picker.as_mut()) {
-                    let moved = if delta < 0 {
-                        month.checked_sub_months(chrono::Months::new(1))
-                    } else {
-                        month.checked_add_months(chrono::Months::new(1))
-                    };
-                    if let Some(m) = moved {
+                    let moved = month.checked_add(jiff::Span::new().months(if delta < 0 { -1 } else { 1 }));
+                    if let Ok(m) = moved {
                         *month = m;
                     }
                 }
@@ -4920,14 +4916,14 @@ impl App {
                 if let Some(f) = self.event_form.as_mut()
                     && let Some((field, _)) = f.picker.take()
                 {
-                    let parse = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok();
-                    let iso = |d: chrono::NaiveDate| d.format("%Y-%m-%d").to_string();
+                    let parse = |s: &str| jiff::civil::Date::strptime("%Y-%m-%d", s).ok();
+                    let iso = |d: jiff::civil::Date| d.strftime("%Y-%m-%d").to_string();
                     if field == EventField::EndDate {
                         f.end_date = iso(day);
                     } else {
                         // Moving the start moves the end too, keeping the length.
                         if let (Some(old), Some(end)) = (parse(&f.start_date), parse(&f.end_date)) {
-                            f.end_date = iso(end + (day - old));
+                            f.end_date = iso(end.checked_add(day.duration_since(old)).unwrap_or(end));
                         }
                         f.start_date = iso(day);
                     }
@@ -5681,16 +5677,17 @@ fn quit<T>() -> Task<T> {
 }
 
 /// First day of the month of `d`.
-fn month_start(d: chrono::NaiveDate) -> chrono::NaiveDate {
-    use chrono::Datelike;
-    d.with_day(1).unwrap_or(d)
+fn month_start(d: jiff::civil::Date) -> jiff::civil::Date {
+    d.first_of_month()
 }
 
 /// First day of the month `delta` months after `d`'s.
-pub fn shift_month(d: chrono::NaiveDate, delta: i32) -> chrono::NaiveDate {
-    use chrono::Datelike;
-    let total = d.year() * 12 + d.month0() as i32 + delta;
-    chrono::NaiveDate::from_ymd_opt(total.div_euclid(12), total.rem_euclid(12) as u32 + 1, 1).unwrap_or(d)
+pub fn shift_month(d: jiff::civil::Date, delta: i32) -> jiff::civil::Date {
+    let total = i32::from(d.year()) * 12 + i32::from(d.month()) - 1 + delta;
+    i16::try_from(total.div_euclid(12))
+        .ok()
+        .and_then(|y| jiff::civil::Date::new(y, total.rem_euclid(12) as i8 + 1, 1).ok())
+        .unwrap_or(d)
 }
 
 /// Up to five inbox messages on this computer a rule's condition picks.

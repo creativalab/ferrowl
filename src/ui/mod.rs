@@ -12,7 +12,6 @@ pub mod settings;
 use crate::app::Message;
 use crate::i18n::{t, tf};
 use crate::theme::Palette;
-use chrono::{Datelike, Local, TimeZone};
 use iced::widget::{button, container, svg, text, text_input};
 use iced::{Background, Border, Color, Element, Font, Length, Shadow, Theme, Vector, border, font};
 
@@ -511,15 +510,16 @@ pub fn trunc(s: &str, max: usize) -> String {
     }
 }
 
-fn local(ts: i64) -> Option<chrono::DateTime<Local>> {
+fn local(ts: i64) -> Option<jiff::Zoned> {
     if ts == 0 {
         return None;
     }
-    Local.timestamp_opt(ts, 0).single()
+    let ts = jiff::Timestamp::from_second(ts).ok()?;
+    Some(ts.to_zoned(ferrowl_core::ical::local_zone()))
 }
 
-fn month(m0: u32, short: bool) -> &'static str {
-    let key = format!("{}_{}", if short { "mon" } else { "month" }, m0 + 1);
+fn month(m: i8, short: bool) -> &'static str {
+    let key = format!("{}_{m}", if short { "mon" } else { "month" });
     t(&key)
 }
 
@@ -528,22 +528,19 @@ pub fn short_date(ts: i64) -> String {
     let Some(d) = local(ts) else {
         return String::new();
     };
-    let today = Local::now().date_naive();
-    let day = d.date_naive();
+    let today = ferrowl_core::ical::today();
+    let day = d.date();
     if day == today {
-        d.format("%H:%M").to_string()
-    } else if Some(day) == today.pred_opt() {
+        d.strftime("%H:%M").to_string()
+    } else if Some(day) == today.yesterday().ok() {
         t("short_yesterday").to_string()
     } else if day.year() == today.year() {
         tf(
             "short_this_year",
-            &[
-                ("day", &day.day().to_string()),
-                ("mon", month(day.month0(), true)),
-            ],
+            &[("day", &day.day().to_string()), ("mon", month(day.month(), true))],
         )
     } else {
-        d.format(t("short_other_fmt")).to_string()
+        d.strftime(t("short_other_fmt")).to_string()
     }
 }
 
@@ -552,15 +549,15 @@ pub fn long_date(ts: i64) -> String {
     let Some(d) = local(ts) else {
         return String::new();
     };
-    let today = Local::now().date_naive();
-    let day = d.date_naive();
-    let time = d.format("%H:%M").to_string();
+    let today = ferrowl_core::ical::today();
+    let day = d.date();
+    let time = d.strftime("%H:%M").to_string();
     let dd = day.day().to_string();
     let yy = day.year().to_string();
-    let mm = month(day.month0(), false);
+    let mm = month(day.month(), false);
     if day == today {
         tf("date_today", &[("time", &time)])
-    } else if Some(day) == today.pred_opt() {
+    } else if Some(day) == today.yesterday().ok() {
         tf("date_yesterday", &[("time", &time)])
     } else if day.year() == today.year() {
         tf("date_this_year", &[("day", &dd), ("month", mm), ("time", &time)])

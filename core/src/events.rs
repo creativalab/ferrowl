@@ -6,11 +6,10 @@
 //! the fields the form shows; everything else in the stored object
 //! (attendees, alarms, changed occurrences, unknown properties) is kept.
 
-use crate::ical::{self, Freq, Zone};
-use chrono::{
-    DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, Offset, TimeZone, Timelike, Utc,
-};
-use chrono_tz::Tz;
+use crate::ical::{self, AddDays, Freq, Zone};
+use jiff::civil::{Date, DateTime};
+use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Timestamp};
 
 /// How often the event repeats (the choices offered by the form).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -34,29 +33,29 @@ pub struct Draft {
     pub location: String,
     pub description: String,
     pub all_day: bool,
-    pub start: NaiveDateTime,
-    pub end: NaiveDateTime,
+    pub start: DateTime,
+    pub end: DateTime,
     pub repeat: Repeat,
 }
 
 impl Draft {
     /// A one-hour event starting at the next full hour of `day` (or of
     /// now, for today).
-    pub fn new_on(day: NaiveDate) -> Draft {
-        let now = Local::now().naive_local();
+    pub fn new_on(day: Date) -> Draft {
+        let now = ical::local(Timestamp::now().as_second()).datetime();
         let hour = if day == now.date() {
             (now.hour() + 1).min(23)
         } else {
             9
         };
-        let start = day.and_hms_opt(hour, 0, 0).unwrap_or_default();
+        let start = day.at(hour, 0, 0, 0);
         Draft {
             summary: String::new(),
             location: String::new(),
             description: String::new(),
             all_day: false,
             start,
-            end: start + Duration::hours(1),
+            end: start.checked_add(SignedDuration::from_hours(1)).unwrap_or(start),
             repeat: Repeat::Never,
         }
     }
@@ -75,18 +74,13 @@ impl Draft {
     pub fn from_ics(ics: &str) -> Option<Draft> {
         let cal = ical::parse(ics);
         let ev = cal.events.iter().find(|e| e.recurrence_id.is_none())?;
-        let local = |ts: i64| {
-            DateTime::<Utc>::from_timestamp(ts, 0)
-                .unwrap_or_default()
-                .with_timezone(&Local)
-                .naive_local()
-        };
+        let local = |ts: i64| ical::local(ts).datetime();
         let (start, end) = if ev.all_day() {
             // DTEND is exclusive: the form shows the last day.
             let last = ev
                 .end
                 .local
-                .checked_sub_days(chrono::Days::new(1))
+                .add_days(-1)
                 .map_or(ev.start.local, |l| l.max(ev.start.local));
             (ev.start.local, last)
         } else {
@@ -116,7 +110,7 @@ impl Draft {
 }
 
 /// A rule that is just "every day/week/month/year" from the start.
-fn is_plain(r: &ical::Rule, start: NaiveDate) -> bool {
+fn is_plain(r: &ical::Rule, start: Date) -> bool {
     r.interval == 1
         && r.count.is_none()
         && r.until.is_none()
@@ -137,30 +131,39 @@ fn rrule(repeat: Repeat) -> Option<&'static str> {
 }
 
 /// The user's time zone, if the system names one the database knows.
-fn local_zone() -> Option<Tz> {
-    iana_time_zone::get_timezone().ok()?.parse().ok()
+fn local_zone() -> Option<TimeZone> {
+    jiff::tz::db().get(&iana_time_zone::get_timezone().ok()?).ok()
+}
+
+/// A zone's IANA name ("Europe/Rome"), for TZID.
+fn zone_name(tz: &TimeZone) -> &str {
+    tz.iana_name().unwrap_or("UTC")
 }
 
 /// DTSTART/DTEND lines for the draft's times.
-fn time_lines(d: &Draft, tz: Option<Tz>) -> (String, String) {
+fn time_lines(d: &Draft, tz: Option<&TimeZone>) -> (String, String) {
     if d.all_day {
         let first = d.start.date();
         let last = d.end.date().max(first);
-        let after = last.checked_add_days(chrono::Days::new(1)).unwrap_or(last);
+        let after = last.add_days(1).unwrap_or(last);
         return (
-            format!("DTSTART;VALUE=DATE:{}", first.format("%Y%m%d")),
-            format!("DTEND;VALUE=DATE:{}", after.format("%Y%m%d")),
+            format!("DTSTART;VALUE=DATE:{}", first.strftime("%Y%m%d")),
+            format!("DTEND;VALUE=DATE:{}", after.strftime("%Y%m%d")),
         );
     }
     let end = d.end.max(d.start);
     match tz {
         Some(tz) => (
-            format!("DTSTART;TZID={}:{}", tz.name(), d.start.format("%Y%m%dT%H%M%S")),
-            format!("DTEND;TZID={}:{}", tz.name(), end.format("%Y%m%dT%H%M%S")),
+            format!(
+                "DTSTART;TZID={}:{}",
+                zone_name(tz),
+                d.start.strftime("%Y%m%dT%H%M%S")
+            ),
+            format!("DTEND;TZID={}:{}", zone_name(tz), end.strftime("%Y%m%dT%H%M%S")),
         ),
         None => {
             // Unknown zone name: exact instants in UTC.
-            let utc = |t: NaiveDateTime| {
+            let utc = |t: DateTime| {
                 ical::When {
                     local: t,
                     zone: Zone::Floating,
@@ -169,9 +172,9 @@ fn time_lines(d: &Draft, tz: Option<Tz>) -> (String, String) {
                 .timestamp()
             };
             let fmt = |ts: i64| {
-                DateTime::<Utc>::from_timestamp(ts, 0)
-                    .unwrap_or_default()
-                    .format("%Y%m%dT%H%M%SZ")
+                Timestamp::from_second(ts)
+                    .unwrap_or(Timestamp::UNIX_EPOCH)
+                    .strftime("%Y%m%dT%H%M%SZ")
                     .to_string()
             };
             (
@@ -184,30 +187,40 @@ fn time_lines(d: &Draft, tz: Option<Tz>) -> (String, String) {
 
 /// A VTIMEZONE for `tz` around `year`: standard and daylight time with
 /// their yearly change rules (or just the offset, without DST).
-fn vtimezone(tz: Tz, year: i32) -> Vec<String> {
-    let offset_at = |t: NaiveDateTime| tz.offset_from_utc_datetime(&t).fix().local_minus_utc();
+fn vtimezone(tz: &TimeZone, year: i32) -> Vec<String> {
+    let offset_at = |t: DateTime| {
+        jiff::tz::Offset::UTC
+            .to_timestamp(t)
+            .map_or(0, |ts| tz.to_offset(ts).seconds())
+    };
     let fmt_off = |secs: i32| {
         let sign = if secs < 0 { '-' } else { '+' };
         let m = secs.abs() / 60;
         format!("{sign}{:02}{:02}", m / 60, m % 60)
     };
     // Find the offset changes in the year, hour by hour (UTC).
-    let mut changes: Vec<(NaiveDateTime, i32, i32)> = Vec::new();
-    let Some(mut t) = NaiveDate::from_ymd_opt(year, 1, 1).and_then(|d| d.and_hms_opt(0, 0, 0)) else {
+    let mut changes: Vec<(DateTime, i32, i32)> = Vec::new();
+    let Some(mut t) = ical::ymd(year, 1, 1).map(|d| d.to_datetime(jiff::civil::Time::midnight())) else {
         return Vec::new();
     };
-    let end = t + Duration::days(366);
+    let end = t.add_days(366).unwrap_or(DateTime::MAX);
     let mut prev = offset_at(t);
     while t < end {
-        t += Duration::hours(1);
+        let Ok(next) = t.checked_add(SignedDuration::from_hours(1)) else {
+            break;
+        };
+        t = next;
         let now = offset_at(t);
         if now != prev {
             // Local wall-clock time of the change, in the old offset.
-            changes.push((t + Duration::seconds(prev as i64), prev, now));
+            let local = t
+                .checked_add(SignedDuration::from_secs(i64::from(prev)))
+                .unwrap_or(t);
+            changes.push((local, prev, now));
             prev = now;
         }
     }
-    let mut out = vec!["BEGIN:VTIMEZONE".to_owned(), format!("TZID:{}", tz.name())];
+    let mut out = vec!["BEGIN:VTIMEZONE".to_owned(), format!("TZID:{}", zone_name(tz))];
     if changes.is_empty() {
         let off = fmt_off(prev);
         out.extend([
@@ -221,17 +234,17 @@ fn vtimezone(tz: Tz, year: i32) -> Vec<String> {
         for (local, from, to) in changes.into_iter().take(2) {
             let kind = if to > from { "DAYLIGHT" } else { "STANDARD" };
             let day = local.date();
-            let last_week = day.day() + 7 > crate::ical::days_in_month(day.year(), day.month());
+            let last_week = day.day() + 7 > day.days_in_month();
             let nth = if last_week {
                 -1
             } else {
                 ((day.day() - 1) / 7 + 1) as i32
             };
             let wd =
-                ["MO", "TU", "WE", "TH", "FR", "SA", "SU"][day.weekday().num_days_from_monday() as usize];
+                ["MO", "TU", "WE", "TH", "FR", "SA", "SU"][day.weekday().to_monday_zero_offset() as usize];
             out.extend([
                 format!("BEGIN:{kind}"),
-                format!("DTSTART:{}", local.format("%Y%m%dT%H%M%S")),
+                format!("DTSTART:{}", local.strftime("%Y%m%dT%H%M%S")),
                 format!("RRULE:FREQ=YEARLY;BYMONTH={};BYDAY={nth}{wd}", day.month()),
                 format!("TZOFFSETFROM:{}", fmt_off(from)),
                 format!("TZOFFSETTO:{}", fmt_off(to)),
@@ -252,21 +265,21 @@ fn escape(s: &str) -> String {
 }
 
 fn stamp() -> String {
-    Utc::now().format("%Y%m%dT%H%M%SZ").to_string()
+    Timestamp::now().strftime("%Y%m%dT%H%M%SZ").to_string()
 }
 
 /// A new event, as a calendar object. Returns (UID, text).
 pub fn create(d: &Draft) -> (String, String) {
     let uid = format!("{}@ferrowl", uuid_like());
     let tz = if d.all_day { None } else { local_zone() };
-    let (start, end) = time_lines(d, tz);
+    let (start, end) = time_lines(d, tz.as_ref());
     let mut lines = vec![
         "BEGIN:VCALENDAR".to_owned(),
         "VERSION:2.0".to_owned(),
         "PRODID:-//Ferrowl//Ferrowl//EN".to_owned(),
     ];
-    if let Some(tz) = tz {
-        lines.extend(vtimezone(tz, d.start.year()));
+    if let Some(tz) = &tz {
+        lines.extend(vtimezone(tz, i32::from(d.start.year())));
     }
     lines.extend([
         "BEGIN:VEVENT".to_owned(),
@@ -305,7 +318,7 @@ pub fn update(ics: &str, d: &Draft) -> String {
         "SEQUENCE",
     ];
     let tz = if d.all_day { None } else { local_zone() };
-    let (start, end) = time_lines(d, tz);
+    let (start, end) = time_lines(d, tz.as_ref());
     let mut out: Vec<String> = Vec::new();
     let mut depth: Vec<String> = Vec::new();
     let mut sequence = 0u32;
@@ -327,7 +340,11 @@ pub fn update(ics: &str, d: &Draft) -> String {
                 master = true;
             }
             "BEGIN" => {
-                if what == "VTIMEZONE" && tz.is_some_and(|z| ics.contains(&format!("TZID:{}", z.name()))) {
+                if what == "VTIMEZONE"
+                    && tz
+                        .as_ref()
+                        .is_some_and(|z| ics.contains(&format!("TZID:{}", zone_name(z))))
+                {
                     has_tz = true;
                 }
                 depth.push(what);
@@ -402,7 +419,7 @@ pub fn update(ics: &str, d: &Draft) -> String {
             .iter()
             .position(|l| l == "BEGIN:VEVENT")
             .unwrap_or(lines.len());
-        lines.splice(at..at, vtimezone(tz, d.start.year()));
+        lines.splice(at..at, vtimezone(&tz, i32::from(d.start.year())));
     }
     finish(&lines)
 }
@@ -484,7 +501,7 @@ mod tests {
     use super::*;
 
     fn draft(start: &str, end: &str) -> Draft {
-        let p = |s: &str| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").unwrap();
+        let p = |s: &str| DateTime::strptime("%Y-%m-%d %H:%M", s).unwrap();
         Draft {
             summary: "Cena, amici".into(),
             location: "Alba".into(),
@@ -521,14 +538,15 @@ mod tests {
 
     #[test]
     fn rome_vtimezone_has_both_rules() {
-        let v = vtimezone(chrono_tz::Europe::Rome, 2026).join("\n");
+        let zone = |name: &str| jiff::tz::db().get(name).unwrap();
+        let v = vtimezone(&zone("Europe/Rome"), 2026).join("\n");
         assert!(
             v.contains("BEGIN:DAYLIGHT") && v.contains("BYMONTH=3;BYDAY=-1SU"),
             "{v}"
         );
         assert!(v.contains("BEGIN:STANDARD") && v.contains("BYMONTH=10;BYDAY=-1SU"));
         assert!(v.contains("TZOFFSETTO:+0200") && v.contains("TZOFFSETTO:+0100"));
-        let tokyo = vtimezone(chrono_tz::Asia::Tokyo, 2026).join("\n");
+        let tokyo = vtimezone(&zone("Asia/Tokyo"), 2026).join("\n");
         assert!(tokyo.contains("TZOFFSETTO:+0900") && !tokyo.contains("DAYLIGHT"));
     }
 

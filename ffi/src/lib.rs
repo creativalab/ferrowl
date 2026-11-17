@@ -679,8 +679,8 @@ impl From<events::Draft> for EventDraft {
             location: d.location,
             description: d.description,
             all_day: d.all_day,
-            start: d.start.format("%Y-%m-%dT%H:%M").to_string(),
-            end: d.end.format("%Y-%m-%dT%H:%M").to_string(),
+            start: d.start.strftime("%Y-%m-%dT%H:%M").to_string(),
+            end: d.end.strftime("%Y-%m-%dT%H:%M").to_string(),
             repeat: match d.repeat {
                 events::Repeat::Never => Repeat::Never,
                 events::Repeat::Daily => Repeat::Daily,
@@ -695,7 +695,7 @@ impl From<events::Draft> for EventDraft {
 
 impl EventDraft {
     fn into_core(self) -> Option<events::Draft> {
-        let at = |s: &str| chrono::NaiveDateTime::parse_from_str(s.trim(), "%Y-%m-%dT%H:%M").ok();
+        let at = |s: &str| jiff::civil::DateTime::strptime("%Y-%m-%dT%H:%M", s.trim()).ok();
         Some(events::Draft {
             summary: self.summary,
             location: self.location,
@@ -718,8 +718,7 @@ impl EventDraft {
 /// A one-hour event on `day` ("YYYY-MM-DD"), the form's starting point.
 #[uniffi::export]
 pub fn new_event_draft(day: String) -> EventDraft {
-    let day =
-        chrono::NaiveDate::parse_from_str(&day, "%Y-%m-%d").unwrap_or_else(|_| ferrowl_core::ical::today());
+    let day = jiff::civil::Date::strptime("%Y-%m-%d", &day).unwrap_or_else(|_| ferrowl_core::ical::today());
     events::Draft::new_on(day).into()
 }
 
@@ -1238,17 +1237,17 @@ pub fn translate(key: String) -> String {
 
 /// Full date in the engine's language, e.g. "2 novembre 2026, 09:42".
 fn full_date(ts: i64) -> String {
-    use chrono::{Datelike, Local, TimeZone};
-    let Some(d) = Local.timestamp_opt(ts, 0).single() else {
+    let Ok(d) = jiff::Timestamp::from_second(ts) else {
         return String::new();
     };
+    let d = d.to_zoned(ferrowl_core::ical::local_zone());
     i18n::tf(
         "date_other",
         &[
             ("day", &d.day().to_string()),
             ("month", i18n::t(&format!("month_{}", d.month()))),
             ("year", &d.year().to_string()),
-            ("time", &d.format("%H:%M").to_string()),
+            ("time", &d.strftime("%H:%M").to_string()),
         ],
     )
 }

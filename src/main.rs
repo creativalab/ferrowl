@@ -72,7 +72,7 @@ fn install_crash_handler() {
         let report = format!(
             "Ferrowl {} — {}\nthread: {}\n{info}\n\n{}\n",
             env!("CARGO_PKG_VERSION"),
-            chrono::Local::now().to_rfc3339(),
+            jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%.f%:z"),
             std::thread::current().name().unwrap_or("?"),
             std::backtrace::Backtrace::force_capture()
         );

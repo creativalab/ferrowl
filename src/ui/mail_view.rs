@@ -231,7 +231,8 @@ fn sidebar<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
         Conn::Online => (
             theme::hex("#3C9462"),
             app.last_sync
-                .map(|d| tf("status_synced", &[("time", &d.format("%H:%M").to_string())]))
+                .as_ref()
+                .map(|d| tf("status_synced", &[("time", &d.strftime("%H:%M").to_string())]))
                 .unwrap_or_else(|| t("account_connected").into()),
         ),
         Conn::Connecting => (p.field, t("status_connecting").into()),
