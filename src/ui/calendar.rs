@@ -5,12 +5,12 @@
 use super::*;
 use crate::app::{App, EventField, EventForm, SyncState};
 use crate::i18n::t;
-use chrono::{Datelike, NaiveDate};
 use ferrowl_core::backend::AgendaEntry;
 use ferrowl_core::events::Repeat;
-use ferrowl_core::ical::{self, day_label, month_label};
+use ferrowl_core::ical::{self, AddDays, day_label, month_label};
 use iced::widget::{Column, column, scrollable, space};
 use iced::{Alignment, Length::Fill, Padding};
+use jiff::civil::Date;
 
 /// Calendar color from the server ("#RRGGBB" or "#RRGGBBAA"), else the
 /// theme's accent.
@@ -31,33 +31,33 @@ fn time_range(e: &AgendaEntry) -> String {
     }
     let (s, end) = (ical::local(o.start), ical::local(o.end));
     if o.end <= o.start {
-        s.format("%H:%M").to_string()
-    } else if s.date_naive() == end.date_naive() {
-        format!("{} – {}", s.format("%H:%M"), end.format("%H:%M"))
+        s.strftime("%H:%M").to_string()
+    } else if s.date() == end.date() {
+        format!("{} – {}", s.strftime("%H:%M"), end.strftime("%H:%M"))
     } else {
         format!(
             "{} – {} {}",
-            s.format("%H:%M"),
-            day_label(end.date_naive()),
-            end.format("%H:%M")
+            s.strftime("%H:%M"),
+            day_label(end.date()),
+            end.strftime("%H:%M")
         )
     }
 }
 
 /// The days of the shown month an occurrence appears on (multi-day events
 /// are listed on each day).
-fn days_of(e: &AgendaEntry, month: NaiveDate) -> Vec<NaiveDate> {
+fn days_of(e: &AgendaEntry, month: Date) -> Vec<Date> {
     let o = &e.occurrence;
     let (first, last) = match (o.first_day, o.last_day) {
         (Some(f), Some(l)) => (f, l),
         // Timed: from the start day to the day of the last second.
         _ => (
-            ical::local(o.start).date_naive(),
-            ical::local((o.end - 1).max(o.start)).date_naive(),
+            ical::local(o.start).date(),
+            ical::local((o.end - 1).max(o.start)).date(),
         ),
     };
     first
-        .iter_days()
+        .series(jiff::Span::new().days(1))
         .take_while(|d| *d <= last)
         .filter(|d| d.year() == month.year() && d.month() == month.month())
         .take(31)
@@ -133,7 +133,7 @@ pub fn list<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
 
     // Day headings with that day's events under them.
     let today = ical::today();
-    let mut days: std::collections::BTreeMap<NaiveDate, Vec<usize>> = Default::default();
+    let mut days: std::collections::BTreeMap<Date, Vec<usize>> = Default::default();
     for (i, e) in app.agenda.iter().enumerate() {
         for d in days_of(e, app.cal_month) {
             days.entry(d).or_default().push(i);
@@ -249,7 +249,7 @@ pub fn detail<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
 
     let day = match o.first_day {
         Some(d) => d,
-        None => ical::local(o.start).date_naive(),
+        None => ical::local(o.start).date(),
     };
     let mut when = day_label(day);
     if let Some(last) = o.last_day.filter(|l| *l != day) {
@@ -392,12 +392,12 @@ impl std::fmt::Display for CalendarChoice {
 }
 
 /// "Martedì 15 dicembre 2026": the date on the event form's date buttons.
-fn date_label(d: NaiveDate) -> String {
+fn date_label(d: Date) -> String {
     format!("{} {}", day_label(d), d.year())
 }
 
 /// A month of days to pick one from: the event form's date picker.
-fn date_picker<'a>(month: NaiveDate, chosen: Option<NaiveDate>, p: Palette) -> Element<'a, Message> {
+fn date_picker<'a>(month: Date, chosen: Option<Date>, p: Palette) -> Element<'a, Message> {
     const CELL: f32 = 36.0;
     let (back, forward) = if crate::i18n::is_rtl() {
         (icons::CHEVRON_RIGHT, icons::CHEVRON_LEFT)
@@ -423,13 +423,14 @@ fn date_picker<'a>(month: NaiveDate, chosen: Option<NaiveDate>, p: Palette) -> E
     ])
     .width(7.0 * CELL + 6.0 * 2.0)
     .align_y(Alignment::Center);
-    let first = month.with_day(1).unwrap_or(month);
-    let lead = (first.weekday().num_days_from_monday() + 7 - ical::week_start().num_days_from_monday()) % 7;
-    let grid_start = first - chrono::Duration::days(lead as i64);
+    let first = month.first_of_month();
+    let lead = (first.weekday().to_monday_zero_offset() + 7 - ical::week_start().to_monday_zero_offset()) % 7;
+    let plus = |d: Date, n: i64| d.add_days(n).unwrap_or(d);
+    let grid_start = plus(first, -i64::from(lead));
     let names = dir_row(
         (0..7)
             .map(|i| {
-                let d = grid_start + chrono::Duration::days(i);
+                let d = plus(grid_start, i);
                 container(text(ical::weekday_short(d)).size(11).color(p.muted))
                     .center_x(CELL)
                     .into()
@@ -440,13 +441,13 @@ fn date_picker<'a>(month: NaiveDate, chosen: Option<NaiveDate>, p: Palette) -> E
     let today = ical::today();
     let mut weeks = Column::new().spacing(2).push(names);
     for w in 0..6 {
-        let week_first = grid_start + chrono::Duration::days(w * 7);
+        let week_first = plus(grid_start, w * 7);
         if w > 0 && week_first.month() != first.month() {
             break;
         }
         let days: Vec<Element<'a, Message>> = (0..7)
             .map(|i| {
-                let d = week_first + chrono::Duration::days(i);
+                let d = plus(week_first, i);
                 let picked = chosen == Some(d);
                 let is_today = d == today;
                 let color = if picked {
@@ -507,7 +508,7 @@ fn form<'a>(app: &'a App, f: &'a EventForm, p: Palette) -> Element<'a, Message> 
     };
     let when = |date: &'a str, time: &'a str, df: EventField, tf_: EventField| -> Element<'a, Message> {
         let open = f.picker.is_some_and(|(field, _)| field == df);
-        let shown = NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        let shown = Date::strptime("%Y-%m-%d", date)
             .map(date_label)
             .unwrap_or_else(|_| date.to_string());
         let date_btn = button(
@@ -535,7 +536,7 @@ fn form<'a>(app: &'a App, f: &'a EventForm, p: Palette) -> Element<'a, Message> 
         let row: Element<'a, Message> = dir_row(r).spacing(8).into();
         match f.picker.filter(|(field, _)| *field == df) {
             Some((_, month)) => {
-                let chosen = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok();
+                let chosen = Date::strptime("%Y-%m-%d", date).ok();
                 column![row, date_picker(month, chosen, p)].spacing(6).into()
             }
             None => row,

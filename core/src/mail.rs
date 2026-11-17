@@ -2577,7 +2577,10 @@ To: me@example.org, Bob <bob@example.org>\r\nCc: carl@example.org\r\nSubject: Or
         let body = "Ciao,\n\nquesta è una **mail di prova** inviata da _Ferrowl_.\n\n- testo formattato (HTML + testo)\n- un allegato\n- copia salvata in Inviati\n\nFerrowl";
         let out = Outgoing {
             to: acc.email.clone(),
-            subject: format!("Ferrowl: mail di prova {}", chrono::Local::now().format("%H:%M")),
+            subject: format!(
+                "Ferrowl: mail di prova {}",
+                crate::ical::local(jiff::Timestamp::now().as_second()).strftime("%H:%M")
+            ),
             body: body.into(),
             html: Some(crate::markdown::to_html_document(body)),
             attachments: vec![att],

@@ -163,7 +163,7 @@ pub fn reply_ics(ics: &str, own: &str, own_name: &str, reply: Reply) -> String {
         "PRODID:-//Ferrowl//Ferrowl//EN".to_owned(),
         "METHOD:REPLY".to_owned(),
     ];
-    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+    let stamp = jiff::Timestamp::now().strftime("%Y%m%dT%H%M%SZ").to_string();
     let mut depth: Vec<String> = Vec::new();
     let mut event: Vec<String> = Vec::new();
     for raw in crate::vcard::unfold(ics) {
@@ -329,7 +329,7 @@ pub(crate) fn item_url(calendar: &str, uid: &str) -> String {
         .take(120)
         .collect();
     if name.trim_matches(['-', '.']).is_empty() {
-        name = format!("ferrowl-{}", chrono::Utc::now().timestamp_millis());
+        name = format!("ferrowl-{}", jiff::Timestamp::now().as_millisecond());
     }
     let base = if calendar.ends_with('/') {
         calendar.to_owned()

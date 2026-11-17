@@ -22,7 +22,7 @@ pub fn view<'a>(app: &'a App, uid: u32, p: Palette) -> Option<Element<'a, Messag
 
     // When: day (or days) and time.
     let o = &inv.when;
-    let first = o.first_day.unwrap_or_else(|| ical::local(o.start).date_naive());
+    let first = o.first_day.unwrap_or_else(|| ical::local(o.start).date());
     let mut when = day_label(first);
     if let Some(last) = o.last_day.filter(|l| *l != first) {
         when = format!("{when} – {}", day_label(last));
@@ -31,7 +31,7 @@ pub fn view<'a>(app: &'a App, uid: u32, p: Palette) -> Option<Element<'a, Messag
         when = format!("{when} · {}", t("all_day"));
     } else {
         let (s, e) = (ical::local(o.start), ical::local(o.end));
-        when = format!("{when} · {} – {}", s.format("%H:%M"), e.format("%H:%M"));
+        when = format!("{when} · {} – {}", s.strftime("%H:%M"), e.strftime("%H:%M"));
     }
 
     let line = |ic: &'static str, value: String| -> Element<'a, Message> {

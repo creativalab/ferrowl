@@ -23,7 +23,7 @@ blitz-traits = "0.3.0-beta.4"
 stylo = "0.22"
 # Blitz's font stack: to give HTML mail the app's own font.
 parley = { version = "0.12", default-features = false }
-chrono = "0.4.45"
+jiff = "0.2.46"
 dirs = "7.0.0"
 hayro = "0.8"
 iced = { version = "0.14", features = ["tokio", "svg", "image", "advanced", "markdown"] }
