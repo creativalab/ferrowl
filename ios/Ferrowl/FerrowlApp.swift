@@ -30,6 +30,19 @@ final class AppModel {
     private(set) static var shared: AppModel?
 
     init() {
+        #if DEBUG
+        // Demo mode (screenshots): an engine on an empty temporary folder,
+        // the sample accounts, and none of the shared files, Keychain,
+        // notifications or widget actions.
+        if Demo.isOn {
+            push = PushRegistrar()
+            engine = Engine(dataDir: Demo.directory.path, language: Language.code)
+            side = Engine(dataDir: Demo.directory.path, language: Language.code)
+            mail = MailRepository(engine: engine, notices: notices, directory: Demo.directory)
+            Self.shared = self
+            return
+        }
+        #endif
         // Shared with the notification extension (see SharedStorage).
         SharedStorage.migrate()
         // Copies of attached files left by composers of an earlier run.
@@ -191,6 +204,9 @@ struct FerrowlApp: App {
                 // Ferrowl Pro may have been bought or cancelled elsewhere meanwhile.
                 app.pro.start()
             case .background:
+                #if DEBUG
+                if Demo.isOn { break }
+                #endif
                 if app.prefs.notifications, app.mail.activeEmail != nil { BackgroundRefresh.schedule() }
                 // Deletes waiting for Undo are done now: iOS may stop the app
                 // before their notice is gone. A little time is asked for them.

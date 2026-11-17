@@ -21,7 +21,13 @@ final class Notices {
     private var hide: Task<Void, Never>?
 
     /// How long a notice stays (also the time to press Undo).
-    static let duration: Duration = .seconds(6)
+    static let duration: Duration = {
+        #if DEBUG
+        // Demo mode: an "Undo" stays for its screenshot.
+        if Demo.isOn { return .seconds(600) }
+        #endif
+        return .seconds(6)
+    }()
 
     func info(_ text: String) { show(Notice(text: text, isError: false, actionLabel: nil, action: nil)) }
 

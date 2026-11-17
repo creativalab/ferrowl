@@ -9,39 +9,52 @@ final class Preferences {
 
     /// Lists grouped into conversations (the default) or one row per message.
     var threaded: Bool {
-        didSet { defaults.set(threaded, forKey: "threaded") }
+        didSet { save(threaded, "threaded") }
     }
 
     /// Order of message lists (newest first by default).
     var sort: SortOrder {
-        didSet { defaults.set(Self.name(of: sort), forKey: "sort") }
+        didSet { save(Self.name(of: sort), "sort") }
     }
 
     /// Color theme id from `design/themes.json`, or "auto" (Ruggine, Notte
     /// when the phone is in dark mode).
     var theme: String {
-        didSet { defaults.set(theme, forKey: "theme") }
+        didSet { save(theme, "theme") }
     }
 
     /// Remote images in HTML mail (they tell senders the message was opened).
     var remoteImages: Bool {
-        didSet { defaults.set(remoteImages, forKey: "remoteImages") }
+        didSet { save(remoteImages, "remoteImages") }
     }
 
     /// New-mail notifications from the background refresh.
     var notifications: Bool {
-        didSet { defaults.set(notifications, forKey: "notifications") }
+        didSet { save(notifications, "notifications") }
     }
 
     /// The inbox's messages in the iPhone's search (Spotlight).
     var spotlight: Bool {
         didSet {
-            defaults.set(spotlight, forKey: "spotlight")
+            save(spotlight, "spotlight")
             if !spotlight { SpotlightIndex.removeAll() }
         }
     }
 
     init() {
+        #if DEBUG
+        // Demo mode: fixed settings (light theme, remote images blocked),
+        // never saved; the user's own are not read.
+        if Demo.isOn {
+            threaded = true
+            sort = .newest
+            theme = "ruggine"
+            remoteImages = false
+            notifications = false
+            spotlight = false
+            return
+        }
+        #endif
         defaults.register(defaults: ["threaded": true, "remoteImages": true, "notifications": true, "spotlight": true])
         threaded = defaults.bool(forKey: "threaded")
         sort = Self.order(named: defaults.string(forKey: "sort")) ?? .newest
@@ -49,6 +62,13 @@ final class Preferences {
         remoteImages = defaults.bool(forKey: "remoteImages")
         notifications = defaults.bool(forKey: "notifications")
         spotlight = defaults.bool(forKey: "spotlight")
+    }
+
+    private func save(_ value: Any, _ key: String) {
+        #if DEBUG
+        if Demo.isOn { return }
+        #endif
+        defaults.set(value, forKey: key)
     }
 
     static let orders: [SortOrder] = [.newest, .oldest, .largest, .smallest, .senderAz, .senderZa, .subjectAz]

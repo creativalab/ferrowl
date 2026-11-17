@@ -21,6 +21,9 @@ enum TraceLog {
     }()
 
     static func note(_ text: String) {
+        #if DEBUG
+        if Demo.isOn { return }
+        #endif
         let line = "\(clock.string(from: Date())) \(text)\n"
         queue.async {
             var data = (try? Data(contentsOf: url)) ?? Data()

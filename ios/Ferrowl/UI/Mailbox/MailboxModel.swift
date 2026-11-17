@@ -295,6 +295,10 @@ final class MailboxModel {
         guard current else { return }
         if let counts = try? await mail.unread(), current {
             unread = counts
+            #if DEBUG
+            // Demo mode: the app icon's number and the widget stay as they are.
+            if Demo.isOn { return }
+            #endif
             // The number on the app icon (Gmail: from the inbox's messages,
             // so only when the inbox is the open folder).
             if let account = mail.activeAccount {

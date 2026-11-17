@@ -68,6 +68,10 @@ final class ProStore {
     }
 
     func start() {
+        // Demo mode: the App Store is not asked (nor its answer saved).
+        #if DEBUG
+        if Demo.isOn { return }
+        #endif
         if updates == nil {
             updates = Task { [weak self] in
                 for await result in Transaction.updates {
@@ -80,6 +84,9 @@ final class ProStore {
     }
 
     func refresh() async {
+        #if DEBUG
+        if Demo.isOn { return }
+        #endif
         // The subscriptions first: they are kept on the phone and answer at
         // once, while the product's price needs the network.
         var active = false

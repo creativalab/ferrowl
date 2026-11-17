@@ -63,6 +63,15 @@ final class MailRepository {
         self.engine = engine
         self.notices = notices
         store = AccountStore(directory: directory)
+        #if DEBUG
+        // Demo mode: made-up accounts; the saved ones are not even read.
+        if Demo.isOn {
+            accounts = Demo.accounts
+            activeEmail = Demo.accounts.first?.email
+            focus = nil
+            return
+        }
+        #endif
         let saved = store.load()
         accounts = saved.accounts
         activeEmail = saved.active
@@ -73,6 +82,9 @@ final class MailRepository {
     }
 
     private func persist() {
+        #if DEBUG
+        if Demo.isOn { return }
+        #endif
         store.save(AccountStore.Snapshot(accounts: accounts, active: activeEmail))
         WidgetData.keep(accounts.map(\.email))
     }
@@ -86,6 +98,9 @@ final class MailRepository {
 
     /// Connects and, if it works, saves the account (it becomes active).
     func setUp(_ account: Account) async throws {
+        #if DEBUG
+        if Demo.isOn { throw AccountChanged() }
+        #endif
         await flushDeferred()
         // After any connection in progress (see `switchTo`).
         while let task = connecting { _ = try? await task.value }
@@ -105,6 +120,15 @@ final class MailRepository {
     /// Makes another account the active one and connects it.
     func switchTo(_ email: String) async throws {
         guard let account = accounts.first(where: { $0.email.caseInsensitiveCompare(email) == .orderedSame }) else { return }
+        #if DEBUG
+        if Demo.isOn {
+            folders = Demo.folders
+            connected = account.email
+            activeEmail = account.email
+            switches += 1
+            return
+        }
+        #endif
         switching = account.email
         defer { switching = nil }
         TraceLog.note("switch \(account.email): start (deferred \(deferred.count), running \(running.count))")
@@ -137,6 +161,9 @@ final class MailRepository {
     /// the active one again (saved before connecting, so a failed
     /// connection is retried with the right account).
     func backToFirst() async {
+        #if DEBUG
+        if Demo.isOn { return }
+        #endif
         guard let first = accounts.first, first.email != activeEmail else { return }
         await flushDeferred()
         guard first.email != activeEmail else { return }
@@ -150,6 +177,9 @@ final class MailRepository {
     /// Removes an account from the phone (its sign-in and cached mail too);
     /// another one, if any, becomes active. Returns false when none is left.
     func removeAccount(_ email: String) async -> Bool {
+        #if DEBUG
+        if Demo.isOn { return true }
+        #endif
         guard let removed = accounts.first(where: { $0.email.caseInsensitiveCompare(email) == .orderedSame }) else {
             return !accounts.isEmpty
         }
@@ -187,6 +217,9 @@ final class MailRepository {
     /// in use connects again, so its address book and calendars follow the
     /// new servers (the engine keeps the settings it was connected with).
     func update(_ account: Account) async {
+        #if DEBUG
+        if Demo.isOn { return }
+        #endif
         guard let i = accounts.firstIndex(where: { $0.email == account.email }) else { return }
         let old = accounts[i]
         accounts[i] = account
@@ -213,6 +246,14 @@ final class MailRepository {
     /// wait for the same connection).
     @discardableResult
     func ensureConnected() async throws -> Bool {
+        #if DEBUG
+        // Demo mode: never connected, the sample folders instead.
+        if Demo.isOn {
+            folders = Demo.folders
+            connected = activeEmail
+            return true
+        }
+        #endif
         while true {
             if !folders.isEmpty, connected == activeEmail { return true }
             // Another connection (a switch of account) first, then check again.
@@ -239,6 +280,10 @@ final class MailRepository {
     /// Before an action on the server: the list can be on screen before the
     /// connection is made (it comes from the phone's copy), so wait for it.
     private func ready() async throws {
+        #if DEBUG
+        // Demo mode: nothing goes to a server (refused without a word).
+        if Demo.isOn { throw AccountChanged() }
+        #endif
         if folders.isEmpty || connected != activeEmail { try await ensureConnected() }
     }
 
@@ -247,6 +292,9 @@ final class MailRepository {
     /// would be changed (or deleted) in the other mailbox.
     @discardableResult
     private func ready(for account: String?) async throws -> String {
+        #if DEBUG
+        if Demo.isOn { throw AccountChanged() }
+        #endif
         guard let account, isCurrent(account) else { throw AccountChanged() }
         try await ready()
         guard isCurrent(account), connected?.caseInsensitiveCompare(account) == .orderedSame else { throw AccountChanged() }
@@ -331,6 +379,9 @@ final class MailRepository {
     /// Sent, and contacts and calendars come from CardDAV/CalDAV. Most
     /// accounts have no such server, so failures are not shown here.
     private func afterConnect() {
+        #if DEBUG
+        if Demo.isOn { return }
+        #endif
         let engine = engine
         let sent = folder(of: .sent)?.id
         Task.detached {
@@ -372,6 +423,9 @@ final class MailRepository {
 
     /// The active account's inbox as saved on the phone, before connecting.
     func cachedInbox() async -> [Header] {
+        #if DEBUG
+        if Demo.isOn { return Demo.inbox }
+        #endif
         guard let account = activeAccount else { return [] }
         let engine = engine
         return await Task.detached { engine.cachedInbox(account: account) }.value
@@ -387,6 +441,9 @@ final class MailRepository {
 
     /// Messages already on the phone.
     func cachedHeaders(_ folderId: String) async -> [Header] {
+        #if DEBUG
+        if Demo.isOn { return Demo.headers(folderId) }
+        #endif
         let engine = engine
         return await Task.detached { engine.cachedHeaders(folderId: folderId) }.value
     }
@@ -394,6 +451,9 @@ final class MailRepository {
     /// Newest messages from the server; with `account`, refused when the
     /// app moved to another one meanwhile.
     func headers(_ folderId: String, on account: String? = nil) async throws -> [Header] {
+        #if DEBUG
+        if Demo.isOn { return Demo.headers(folderId) }
+        #endif
         guard let account else {
             try await ready()
             return try await engine.headers(folderId: folderId).headers
@@ -403,6 +463,9 @@ final class MailRepository {
     }
 
     func search(_ folderId: String, _ query: String) async -> [Header] {
+        #if DEBUG
+        if Demo.isOn { return Demo.search(folderId, query) }
+        #endif
         await readable()
         let engine = engine
         return await Task.detached { engine.search(folderId: folderId, query: query) }.value
@@ -410,11 +473,17 @@ final class MailRepository {
 
     /// Unread count of every folder.
     func unread() async throws -> [String: UInt32] {
+        #if DEBUG
+        if Demo.isOn { return Demo.unread }
+        #endif
         try await ready()
         return try await engine.unread(folderIds: folders.filter(\.selectable).map(\.id))
     }
 
     func message(_ folderId: String, _ uid: UInt32) async throws -> Message {
+        #if DEBUG
+        if Demo.isOn { return try Demo.message(uid) }
+        #endif
         try await ready()
         return try await engine.message(folderId: folderId, uid: uid)
     }
@@ -574,6 +643,9 @@ final class MailRepository {
     }
 
     func agenda(from: Int64, to: Int64) async -> [CalendarEvent] {
+        #if DEBUG
+        if Demo.isOn { return Demo.agenda(from: from, to: to) }
+        #endif
         await readable()
         let engine = engine
         return await Task.detached { engine.agenda(from: from, to: to) }.value
