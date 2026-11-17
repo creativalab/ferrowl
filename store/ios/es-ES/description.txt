@@ -1,0 +1,29 @@
+Ferrowl es el correo para iPhone que no te rastrea. Funciona con cualquier buzón IMAP o POP3 (Gmail, Outlook, iCloud, el proveedor de tu empresa o tu propio servidor) y solo tu iPhone descarga tus mensajes: sin publicidad, sin perfiles, código abierto.
+
+LEE SIN QUE TE ESPÍEN
+• Mensajes HTML con un diseño limpio, sin JavaScript
+• Imágenes remotas desactivables: quien te escribe no sabe cuándo abres su mensaje
+• Firma y cifrado OpenPGP, con los mensajes firmados o cifrados bien indicados
+• Bloquea o permite remitentes y dominios enteros
+
+GANA TIEMPO
+• Archiva, mueve, marca como spam o elimina en un instante, y deshaz con un toque
+• Busca en todo el correo ya descargado, incluso sin conexión
+• Reglas automáticas para los mensajes entrantes
+• Notificaciones instantáneas del correo nuevo
+• Widget, Atajos y búsqueda del iPhone
+
+TODO EN UN SITIO
+• Varios buzones en la misma app, con los no leídos de cada uno
+• Calendario y contactos (CalDAV y CardDAV), con invitaciones que respondes directamente en el mensaje
+• Escribe con archivos adjuntos, CC y CCO
+• 6 temas de color y 10 idiomas
+
+LA PRIVACIDAD, LO PRIMERO
+Sin publicidad, sin rastreo, sin venta de datos. Las contraseñas y las claves se quedan en el Llavero del iPhone. Si activas las notificaciones instantáneas, el servidor de Ferrowl revisa tu buzón y al teléfono solo le envía un aviso; los ajustes de la cuenta siguen cifrados con una clave que nunca sale de tu iPhone. Ferrowl es de código abierto: el código es público y cualquiera puede verificarlo.
+
+FERROWL PRO
+La primera cuenta de correo es gratis, para siempre. Con Ferrowl Pro, una suscripción anual, puedes añadir más cuentas. La suscripción se renueva automáticamente y puedes gestionarla o cancelarla cuando quieras en los ajustes del App Store.
+
+Términos de uso (EULA): https://www.apple.com/legal/internet-services/itunes/dev/stdeula/
+Privacidad: https://ferrowl.com/privacy/

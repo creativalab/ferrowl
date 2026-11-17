@@ -36,12 +36,18 @@ enum BackgroundRefresh {
 
     /// Asks iOS to wake the app again in about 15 minutes (at the earliest).
     nonisolated static func schedule() {
+        #if DEBUG
+        if Demo.isOn { return }
+        #endif
         let request = BGAppRefreshTaskRequest(identifier: task)
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
         try? BGTaskScheduler.shared.submit(request)
     }
 
     static func askPermission() {
+        #if DEBUG
+        if Demo.isOn { return }
+        #endif
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
 
@@ -50,6 +56,10 @@ enum BackgroundRefresh {
     /// reached. With the app open (`foreground`) the active account is not
     /// announced: its list is on screen.
     static func check(_ app: AppModel, foreground: Bool = false) async -> Bool {
+        // Demo mode: no server is checked, nothing is announced.
+        #if DEBUG
+        if Demo.isOn { return true }
+        #endif
         let mail = app.mail
         guard app.prefs.notifications, !checking else { return true }
         checking = true
@@ -118,6 +128,9 @@ enum BackgroundRefresh {
     /// Remembers the newest message of the inbox (and announces the unread
     /// ones newer than the last time when `announce`).
     static func notifyNew(_ headers: [Header], account: String, announce: Bool, quiet: Set<UInt32> = []) {
+        #if DEBUG
+        if Demo.isOn { return }
+        #endif
         let key = "lastUid:\(account.lowercased())"
         let defaults = SharedStorage.defaults
         let last = UInt32(defaults.integer(forKey: key))

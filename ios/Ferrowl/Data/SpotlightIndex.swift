@@ -10,6 +10,9 @@ enum SpotlightIndex {
 
     /// Replaces an account's messages in the index with these.
     static func index(_ headers: [Header], account: String) {
+        #if DEBUG
+        if Demo.isOn { return }
+        #endif
         let domain = account.lowercased()
         let items = headers.prefix(limit).map { h in
             let attributes = CSSearchableItemAttributeSet(contentType: .emailMessage)
@@ -32,10 +35,16 @@ enum SpotlightIndex {
 
     /// An account removed (or the setting turned off): its messages leave.
     static func remove(account: String) {
+        #if DEBUG
+        if Demo.isOn { return }
+        #endif
         CSSearchableIndex.default().deleteSearchableItems(withDomainIdentifiers: [account.lowercased()]) { _ in }
     }
 
     static func removeAll() {
+        #if DEBUG
+        if Demo.isOn { return }
+        #endif
         CSSearchableIndex.default().deleteAllSearchableItems { _ in }
     }
 }

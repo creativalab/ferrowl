@@ -1,0 +1,29 @@
+Ferrowl is the email app for iPhone that does not track you. It works with any IMAP or POP3 mailbox (Gmail, Outlook, iCloud, your company's provider or your own server), and only your iPhone downloads your messages: no ads, no profiling, open source code.
+
+READ WITHOUT BEING WATCHED
+• Clean HTML messages, with no JavaScript
+• Remote images can be turned off, so senders never know when you open their message
+• OpenPGP signing and encryption, with signed and encrypted messages clearly marked
+• Block or allow senders and whole domains
+
+GET THROUGH IT FASTER
+• Archive, move, report spam or delete in a moment, and undo with one tap
+• Search all the mail already on your iPhone, even offline
+• Automatic rules for incoming messages
+• Instant notifications of new mail
+• Widget, Shortcuts and iPhone search
+
+ALL IN ONE PLACE
+• Several mailboxes in one app, with each one's unread count
+• Calendar and contacts (CalDAV and CardDAV), with invitations you answer right in the message
+• Write with attachments, Cc and Bcc
+• 6 color themes and 10 languages
+
+PRIVACY FIRST
+No ads, no tracking, no selling of data. Passwords and keys stay in your iPhone's Keychain. If you turn on instant notifications, the Ferrowl server checks your mailbox and sends your phone only a signal; your account settings stay encrypted with a key that never leaves your iPhone. Ferrowl is open source: the code is public and anyone can check it.
+
+FERROWL PRO
+Your first email account is free, forever. With Ferrowl Pro, a yearly subscription, you can add more accounts. The subscription renews automatically and you can manage or cancel it at any time in your App Store settings.
+
+Terms of Use (EULA): https://www.apple.com/legal/internet-services/itunes/dev/stdeula/
+Privacy: https://ferrowl.com/privacy/

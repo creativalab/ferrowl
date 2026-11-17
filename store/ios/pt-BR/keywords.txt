@@ -1,0 +1,1 @@
+correio,criptografado,seguro,criptografia,openpgp,pop3,notificações,calendário,código aberto

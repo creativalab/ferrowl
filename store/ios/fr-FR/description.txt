@@ -1,0 +1,29 @@
+Ferrowl est la messagerie pour iPhone qui ne vous piste pas. Elle fonctionne avec n'importe quelle boîte IMAP ou POP3 (Gmail, Outlook, iCloud, le fournisseur de votre entreprise ou votre propre serveur) et seul votre iPhone télécharge vos messages : pas de publicité, pas de profilage, code open source.
+
+LISEZ SANS ÊTRE ESPIONNÉ
+• Messages HTML à la mise en page soignée, sans JavaScript
+• Images distantes désactivables : l'expéditeur ne sait pas quand vous ouvrez son message
+• Signature et chiffrement OpenPGP, avec les messages signés ou chiffrés clairement indiqués
+• Bloquez ou autorisez des expéditeurs et des domaines entiers
+
+ALLEZ PLUS VITE
+• Archivez, déplacez, signalez comme spam ou supprimez en un instant, et annulez d'un toucher
+• Recherchez dans tout le courrier déjà téléchargé, même hors ligne
+• Règles automatiques pour les messages entrants
+• Notifications instantanées des nouveaux messages
+• Widget, Raccourcis et recherche de l'iPhone
+
+TOUT AU MÊME ENDROIT
+• Plusieurs boîtes dans la même app, avec le nombre de non lus pour chacune
+• Agenda et contacts (CalDAV et CardDAV), avec des invitations auxquelles vous répondez directement dans le message
+• Écrivez avec pièces jointes, Cc et Cci
+• 6 thèmes de couleur et 10 langues
+
+LA CONFIDENTIALITÉ D'ABORD
+Pas de publicité, pas de pistage, pas de vente de données. Les mots de passe et les clés restent dans le trousseau de l'iPhone. Si vous activez les notifications instantanées, le serveur de Ferrowl vérifie votre boîte et n'envoie à votre téléphone qu'un simple signal ; les réglages du compte restent chiffrés avec une clé qui ne quitte jamais votre iPhone. Ferrowl est open source : le code est public et chacun peut le vérifier.
+
+FERROWL PRO
+Le premier compte de messagerie est gratuit, pour toujours. Avec Ferrowl Pro, un abonnement annuel, vous pouvez ajouter d'autres comptes. L'abonnement se renouvelle automatiquement ; vous pouvez le gérer ou le résilier à tout moment dans les réglages de l'App Store.
+
+Conditions d'utilisation (EULA) : https://www.apple.com/legal/internet-services/itunes/dev/stdeula/
+Confidentialité : https://ferrowl.com/privacy/

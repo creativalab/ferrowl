@@ -71,6 +71,10 @@ final class PushRegistrar {
         accounts = (SharedStorage.defaults.data(forKey: "push.accounts"))
             .flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
         removing = SharedStorage.defaults.stringArray(forKey: "push.removing") ?? []
+        #if DEBUG
+        // Demo mode: no question about notifications (nothing is saved).
+        if Demo.isOn { asked = true }
+        #endif
     }
 
     // MARK: Apple
@@ -100,6 +104,9 @@ final class PushRegistrar {
 
     /// Turns instant notifications on. Throws with a message to show.
     func enable(_ app: AppModel) async throws {
+        #if DEBUG
+        if Demo.isOn { return }
+        #endif
         let watched = Self.watched(app)
         if watched.isEmpty {
             throw FerrowlError.Failed(message: t(app.mail.accounts.first?.protocol == .pop3 ? "push_pop3" : "push_oauth"))
@@ -118,6 +125,9 @@ final class PushRegistrar {
 
     /// Turns them off and removes everything from the server.
     func disable() async {
+        #if DEBUG
+        if Demo.isOn { return }
+        #endif
         asked = true
         enabled = false
         if let token = Keychain.get(Self.secrets, "device") {
@@ -138,6 +148,9 @@ final class PushRegistrar {
 
     /// Brings the registration up to date (start, accounts or Pro changed).
     func sync(_ app: AppModel) async throws {
+        #if DEBUG
+        if Demo.isOn { return }
+        #endif
         guard enabled, asked else { return }
         if let running = syncing {
             syncAgain = true
@@ -225,6 +238,9 @@ final class PushRegistrar {
     /// An account was set up again (maybe a new password): the server gets
     /// its new settings at the next sync.
     func forget(_ email: String) async {
+        #if DEBUG
+        if Demo.isOn { return }
+        #endif
         guard let id = accounts[email.lowercased()], let token = Keychain.get(Self.secrets, "device") else { return }
         if !(await remove(id, token: token)) { removing.append(id) }
         accounts[email.lowercased()] = nil
@@ -323,6 +339,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // The completion-handler form: the async one hands the dictionary
         // (not Sendable) across actors, an error with Swift 6. Only plain
         // strings go on from here.
+        #if DEBUG
+        if Demo.isOn { return done(.noData) }
+        #endif
         let type = info["type"] as? String
         let pushId = info["account"] as? String
         Task { done(await received(type: type, pushId: pushId)) }

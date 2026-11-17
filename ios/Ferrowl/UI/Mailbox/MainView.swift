@@ -53,6 +53,7 @@ struct MainView: View {
             }
             await model?.start()
             #if DEBUG
+            if let model, Demo.isOn { await Demo.stage(model, column: $column, sheet: $sheet) }
             if let model {
                 await PerfProbe.showcase(model)
                 await PerfProbe.autotest(model)
@@ -341,6 +342,9 @@ struct Sidebar: View {
     /// the last one saved (notifications, background checks) for the others.
     private func unreadCount(_ email: String) -> Int {
         _ = countsChanged
+        #if DEBUG
+        if Demo.isOn, email != mail.activeEmail { return Demo.inboxUnread(email) }
+        #endif
         if email == mail.activeEmail, let n = model.unread[mail.inboxId], !Badge.isGmail(mail.activeAccount!) {
             return Int(n)
         }
@@ -356,6 +360,9 @@ struct Sidebar: View {
         withAnimation(.snappy) {
             if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
         }
+        #if DEBUG
+        if Demo.isOn { return }
+        #endif
         UserDefaults.standard.set(Array(expanded), forKey: expandedKey)
     }
 

@@ -1,0 +1,29 @@
+Ferrowl é o app de e-mail para iPhone que não rastreia você. Funciona com qualquer caixa IMAP ou POP3 (Gmail, Outlook, iCloud, o provedor da sua empresa ou o seu próprio servidor), e só o seu iPhone baixa as suas mensagens: sem anúncios, sem criação de perfil, código aberto.
+
+LEIA SEM SER ESPIONADO
+• Mensagens HTML com layout limpo, sem JavaScript
+• Imagens remotas podem ser desativadas: quem escreve para você não sabe quando você abre a mensagem
+• Assinatura e criptografia OpenPGP, com mensagens assinadas ou criptografadas bem sinalizadas
+• Bloqueie ou permita remetentes e domínios inteiros
+
+RESOLVA MAIS RÁPIDO
+• Arquive, mova, denuncie spam ou exclua num instante, e desfaça com um toque
+• Pesquise em todos os e-mails já baixados, mesmo off-line
+• Regras automáticas para as mensagens recebidas
+• Notificações instantâneas de novos e-mails
+• Widget, Atalhos e busca do iPhone
+
+TUDO EM UM SÓ LUGAR
+• Várias caixas no mesmo app, com a contagem de não lidos de cada uma
+• Calendário e contatos (CalDAV e CardDAV), com convites que você responde direto na mensagem
+• Escreva com anexos, Cc e Cco
+• 6 temas de cores e 10 idiomas
+
+PRIVACIDADE EM PRIMEIRO LUGAR
+Sem anúncios, sem rastreamento, sem venda de dados. Senhas e chaves ficam guardadas com segurança no próprio iPhone. Se você ativar as notificações instantâneas, o servidor do Ferrowl verifica a sua caixa e envia ao telefone apenas um sinal; as configurações da conta continuam criptografadas com uma chave que nunca sai do seu iPhone. O Ferrowl é open source: o código é público e qualquer pessoa pode verificá-lo.
+
+FERROWL PRO
+A primeira conta de e-mail é grátis, para sempre. Com o Ferrowl Pro, uma assinatura anual, você pode adicionar mais contas. A assinatura é renovada automaticamente e você pode gerenciá-la ou cancelá-la quando quiser nos ajustes da App Store.
+
+Termos de Uso (EULA): https://www.apple.com/legal/internet-services/itunes/dev/stdeula/
+Privacidade: https://ferrowl.com/privacy/
