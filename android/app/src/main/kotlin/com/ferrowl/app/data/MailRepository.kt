@@ -109,11 +109,18 @@ class MailRepository @Inject constructor(
      * account, on its own account. [done] gets whether it failed (the error
      * is shown here).
      */
-    fun deleteLater(account: String, folderId: String, uids: List<UInt>, delayMs: Long, done: (failed: Boolean) -> Unit): Long {
+    fun deleteLater(account: String, folderId: String, uids: List<UInt>, delayMs: Long, done: (failed: Boolean) -> Unit): Long =
+        later(delayMs, done) { delete(folderId, uids, quiet = true, account = account) }
+
+    /**
+     * [action] (a server change on one account, which it must check) after
+     * [delayMs], unless [cancelLater] comes first: as [deleteLater].
+     */
+    fun later(delayMs: Long, done: (failed: Boolean) -> Unit, action: suspend () -> Unit): Long {
         val id = nextDeferred.incrementAndGet()
         val job = Deferred {
             val failed = try {
-                delete(folderId, uids, quiet = true, account = account)
+                action()
                 false
             } catch (e: AccountChanged) {
                 false
@@ -137,7 +144,7 @@ class MailRepository @Inject constructor(
         return id
     }
 
-    /** Undo: false when the delete already ran. */
+    /** Undo: false when the action already ran. */
     fun cancelLater(id: Long): Boolean {
         val job = deferred.remove(id) ?: return false
         job.timer?.cancel()
@@ -596,10 +603,10 @@ class MailRepository @Inject constructor(
     }
 
     /** Moves messages to Spam, or back to the inbox ([toSpam] false). */
-    suspend fun spam(folderId: String, uids: List<UInt>, toSpam: Boolean, account: String? = null) {
+    suspend fun spam(folderId: String, uids: List<UInt>, toSpam: Boolean, quiet: Boolean = false, account: String? = null) {
         onAccount(account) { a -> if (toSpam) engine.reportSpamForAccount(a, folderId, uids) else engine.notSpamForAccount(a, folderId, uids) }
         val key = if (toSpam) "spam_moved" else "inbox_moved"
-        changed(translate(key).replace("{n}", uids.size.toString()))
+        changed(if (quiet) "" else translate(key).replace("{n}", uids.size.toString()))
     }
 
     /** Whether a folder is the Spam folder. */
@@ -682,9 +689,9 @@ class MailRepository @Inject constructor(
     }
 
     /** Moves several messages to another folder. */
-    suspend fun move(folderId: String, uids: List<UInt>, targetId: String, account: String? = null) {
+    suspend fun move(folderId: String, uids: List<UInt>, targetId: String, quiet: Boolean = false, account: String? = null) {
         onAccount(account) { a -> engine.moveManyForAccount(a, folderId, uids, targetId) }
-        changed(translate("bulk_moved").replace("{n}", uids.size.toString()))
+        changed(if (quiet) "" else translate("bulk_moved").replace("{n}", uids.size.toString()))
     }
 
     /**

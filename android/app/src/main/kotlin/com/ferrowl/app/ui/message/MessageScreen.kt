@@ -85,10 +85,11 @@ fun MessageScreen(
     /** Deleted, archived or moved: back to the message list (also from a conversation). */
     onGone: () -> Unit = onBack,
     /**
-     * To the Trash with "Moved to Trash · Undo" (the list does it, so Undo
-     * puts the row back); null: moved at once.
+     * The message list under this screen, when it shows the message's
+     * folder: trash, archive, unread and spam go through it with Undo (so
+     * Undo puts the row back); null: done at once.
      */
-    onTrash: (() -> Unit)? = null,
+    list: ListActions? = null,
     vm: MessageViewModel = hiltViewModel(),
 ) {
     LaunchedEffect(folderId, uid) { vm.load(folderId, uid, starred) }
@@ -110,11 +111,11 @@ fun MessageScreen(
                 },
                 actions = {
                     if (state is MessageState.Shown) {
-                        StarButton(star, onClick = vm::toggleStar)
+                        StarButton(star, onClick = { vm.toggleStar() })
                         IconButton(onClick = {
                             when {
                                 vm.deletesForever -> confirmDelete = true
-                                onTrash != null -> onTrash()
+                                list != null -> list.trash()
                                 else -> vm.delete()
                             }
                         }) {
@@ -124,11 +125,11 @@ fun MessageScreen(
                             Icon(Icons.Filled.MoreVert, contentDescription = null)
                         }
                         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                            DropdownMenuItem(text = { Text(stringResource(R.string.archive)) }, onClick = { menu = false; vm.archive() })
-                            DropdownMenuItem(text = { Text(stringResource(R.string.mark_unread)) }, onClick = { menu = false; vm.markUnread() })
+                            DropdownMenuItem(text = { Text(stringResource(R.string.archive)) }, onClick = { menu = false; list?.archive?.invoke() ?: vm.archive() })
+                            DropdownMenuItem(text = { Text(stringResource(R.string.mark_unread)) }, onClick = { menu = false; list?.markUnread?.invoke() ?: vm.markUnread() })
                             DropdownMenuItem(
                                 text = { Text(stringResource(if (vm.inSpam) R.string.spam_not else R.string.spam_report)) },
-                                onClick = { menu = false; vm.spam() },
+                                onClick = { menu = false; list?.spam?.invoke() ?: vm.spam() },
                             )
                             if (!vm.inSpam) {
                                 DropdownMenuItem(text = { Text(stringResource(R.string.block_sender)) }, onClick = { menu = false; vm.blockSender() })
@@ -386,3 +387,11 @@ internal fun hasOwnColors(html: String): Boolean =
     Regex("<style|bgcolor\\s*=|background|color\\s*[:=]", RegexOption.IGNORE_CASE).containsMatchIn(html)
 
 private fun cssColor(c: Color): String = String.format("#%06X", c.toArgb() and 0xFFFFFF)
+
+/** What the message list does for the open message, with Undo (see [MessageScreen]). */
+class ListActions(
+    val trash: () -> Unit,
+    val archive: () -> Unit,
+    val markUnread: () -> Unit,
+    val spam: () -> Unit,
+)

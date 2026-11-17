@@ -1,6 +1,22 @@
 package com.ferrowl.app.ui.notice
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -16,7 +32,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -107,7 +122,7 @@ fun NoticeHost(notices: Notices, modifier: Modifier = Modifier) {
                 // Errors stay until closed: they often explain what to do.
                 snapshotFlow { visible }.first { !it }
             } else {
-                delay(if (n.action != null) 6_000 else 3_500)
+                delay(if (n.action != null) ACTION_MS.toLong() else 3_500)
                 visible = false
             }
             delay(300)
@@ -128,35 +143,90 @@ fun NoticeHost(notices: Notices, modifier: Modifier = Modifier) {
             exit = slideOutVertically { it } + fadeOut(),
         ) {
             val n = current ?: return@AnimatedVisibility
-            val colors = MaterialTheme.colorScheme
-            Surface(
-                color = if (n.error) colors.errorContainer else colors.inverseSurface,
-                contentColor = if (n.error) colors.onErrorContainer else colors.inverseOnSurface,
-                shape = RoundedCornerShape(14.dp),
-                shadowElevation = 6.dp,
+            NoticeCard(
+                n,
+                onAction = {
+                    n.onAction?.invoke()
+                    visible = false
+                },
+                onClose = { visible = false },
+            )
+        }
+    }
+}
+
+/** How long a notice with an action (Undo) stays: the time to use it. */
+private const val ACTION_MS = 6_000
+
+/**
+ * One notice: dark in both themes (as on iOS), so it stands out over the
+ * list; an Undo shows how long it is still offered, as a bar shrinking
+ * along the bottom.
+ */
+@Composable
+private fun NoticeCard(n: Notice, onAction: () -> Unit, onClose: () -> Unit) {
+    val accent = MaterialTheme.colorScheme.primary
+    val left = remember(n) { Animatable(1f) }
+    LaunchedEffect(n) {
+        if (n.action != null) left.animateTo(0f, tween(ACTION_MS, easing = LinearEasing))
+    }
+    Surface(
+        color = Color(0xFF242424),
+        contentColor = Color.White,
+        shape = RoundedCornerShape(20.dp),
+        shadowElevation = 10.dp,
+        // An edge that separates it from a dark screen too.
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClose)
+            .semantics { liveRegion = LiveRegionMode.Polite },
+    ) {
+        Box {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { visible = false }
-                    .semantics { liveRegion = LiveRegionMode.Polite },
+                    .heightIn(min = 64.dp)
+                    .padding(start = 14.dp, end = if (n.action == null && !n.error) 18.dp else 10.dp, top = 12.dp, bottom = 12.dp),
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        n.text,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.weight(1f).padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 8.dp),
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.size(34.dp).background(if (n.error) MaterialTheme.colorScheme.error else accent, CircleShape),
+                ) {
+                    Icon(
+                        if (n.error) Icons.Filled.Warning else Icons.Filled.Check,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp),
                     )
-                    if (n.action != null) {
-                        TextButton(onClick = {
-                            n.onAction?.invoke()
-                            visible = false
-                        }) { Text(n.action, color = if (n.error) colors.onErrorContainer else colors.inversePrimary) }
-                    }
-                    if (n.error) {
-                        IconButton(onClick = { visible = false }) {
-                            Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.close))
-                        }
+                }
+                Text(
+                    n.text,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.weight(1f).padding(horizontal = 14.dp),
+                )
+                if (n.action != null) {
+                    Button(
+                        onClick = onAction,
+                        colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color.White),
+                        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp),
+                    ) { Text(n.action, fontWeight = FontWeight.Bold) }
+                }
+                if (n.error) {
+                    IconButton(onClick = onClose) {
+                        Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.close), tint = Color.White.copy(alpha = 0.7f))
                     }
                 }
+            }
+            if (n.action != null) {
+                Box(
+                    Modifier
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth(left.value)
+                        .height(3.dp)
+                        .background(accent),
+                )
             }
         }
     }

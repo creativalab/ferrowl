@@ -107,16 +107,25 @@ final class MailRepository {
         guard let account = accounts.first(where: { $0.email.caseInsensitiveCompare(email) == .orderedSame }) else { return }
         switching = account.email
         defer { switching = nil }
+        TraceLog.note("switch \(account.email): start (deferred \(deferred.count), running \(running.count))")
         await flushDeferred()
+        TraceLog.note("switch: deferred actions done\(connecting != nil ? ", waiting for a connection in progress" : "")")
         // One connection at a time: one still in progress (the previous
         // account, at start-up) would otherwise finish last and leave the
         // engine on it, so a message of this account would be fetched (and
         // marked read) by its number from the other one's inbox.
         while let task = connecting { _ = try? await task.value }
+        TraceLog.note("switch: connecting")
         let task = Task { try await engine.connect(account: account) }
         connecting = task
         defer { connecting = nil }
-        folders = try await task.value
+        do {
+            folders = try await task.value
+        } catch {
+            TraceLog.note("switch: failed \(error)")
+            throw error
+        }
+        TraceLog.note("switch: connected")
         connected = account.email
         activeEmail = account.email
         persist()
@@ -450,10 +459,10 @@ final class MailRepository {
         }
     }
 
-    func move(_ folderId: String, _ uids: [UInt32], to target: String, on account: String? = nil) async throws {
+    func move(_ folderId: String, _ uids: [UInt32], to target: String, quiet: Bool = false, on account: String? = nil) async throws {
         let account = try await ready(for: account ?? activeEmail)
         try await guarded { try await engine.moveManyForAccount(account: account, folderId: folderId, uids: uids, targetId: target) }
-        changed(uids.count == 1 ? t("moved_ok") : t("bulk_moved", ["n": "\(uids.count)"]))
+        changed(quiet ? "" : uids.count == 1 ? t("moved_ok") : t("bulk_moved", ["n": "\(uids.count)"]))
     }
 
     func setLabel(_ folderId: String, _ uids: [UInt32], _ label: String, _ on: Bool, on account: String? = nil) async throws {
@@ -462,14 +471,14 @@ final class MailRepository {
     }
 
     /// Moves messages to Spam, or back to the inbox (`toSpam` false).
-    func spam(_ folderId: String, _ uids: [UInt32], toSpam: Bool, on account: String? = nil) async throws {
+    func spam(_ folderId: String, _ uids: [UInt32], toSpam: Bool, quiet: Bool = false, on account: String? = nil) async throws {
         let account = try await ready(for: account ?? activeEmail)
         if toSpam {
             _ = try await guarded { try await engine.reportSpamForAccount(account: account, folderId: folderId, uids: uids) }
         } else {
             _ = try await guarded { try await engine.notSpamForAccount(account: account, folderId: folderId, uids: uids) }
         }
-        changed(t(toSpam ? "spam_moved" : "inbox_moved", ["n": "\(uids.count)"]))
+        changed(quiet ? "" : t(toSpam ? "spam_moved" : "inbox_moved", ["n": "\(uids.count)"]))
     }
 
     /// Sends; Markdown formatting typed by the user also goes out as HTML,

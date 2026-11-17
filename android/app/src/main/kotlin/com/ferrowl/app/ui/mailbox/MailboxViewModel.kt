@@ -502,38 +502,77 @@ class MailboxViewModel @Inject constructor(
 
     fun clearSelection() = _state.update { it.copy(selected = emptySet(), confirmDelete = false) }
 
-    fun markSelected(seen: Boolean) = bulk { folder, uids, account ->
-        _state.update { s ->
-            s.copy(messages = s.messages.map { if (it.uid in uids) it.copy(seen = seen) else it })
-        }
-        repo.setSeen(folder, uids, seen, account)
-    }
+    fun markSelected(seen: Boolean) = markRows(_state.value.selected.toList(), seen)
 
-    fun starSelected(on: Boolean) = bulk { folder, uids, account -> star(folder, uids, on, account) }
+    /** Read or unread, with Undo (a selection, or the message of an open screen). */
+    fun markRows(uids: List<UInt>, seen: Boolean) = toggleWithUndo(
+        uids,
+        translate(if (seen) "done_read" else "done_unread"),
+        isOn = { it.seen },
+        set = { h, on -> h.copy(seen = on) },
+        on = seen,
+    ) { folder, u, on, account -> repo.setSeen(folder, u, on, account) }
 
-    /** The star of a list row (all its messages). */
-    fun toggleStar(uids: List<UInt>, on: Boolean) {
+    fun starSelected(on: Boolean) = toggleStar(_state.value.selected.toList(), on)
+
+    /** The star of a list row (all its messages), or of the selection. */
+    fun toggleStar(uids: List<UInt>, on: Boolean) = toggleWithUndo(
+        uids,
+        translate(if (on) "done_starred" else "done_unstarred"),
+        isOn = { it.flagged },
+        set = { h, value -> h.copy(flagged = value) },
+        on = on,
+    ) { folder, u, value, account -> repo.setFlagged(folder, u, value, account) }
+
+    /**
+     * Read/unread or star: shown and sent at once, with Undo, which sends
+     * each message's earlier state back.
+     */
+    private fun toggleWithUndo(
+        uids: List<UInt>,
+        done: String,
+        isOn: (Header) -> Boolean,
+        set: (Header, Boolean) -> Header,
+        on: Boolean,
+        send: suspend (folder: String, uids: List<UInt>, on: Boolean, account: String?) -> Unit,
+    ) {
+        if (uids.isEmpty()) return
         val folder = _state.value.folderId
         val account = actingAccount()
+        // Only the messages it changes are put back by Undo.
+        val changed = _state.value.shown.filter { it.uid in uids && isOn(it) != on }.map { it.uid }
+        fun apply(list: List<UInt>, value: Boolean) = _state.update { s ->
+            if (s.folderId != folder) {
+                s
+            } else {
+                s.copy(
+                    messages = s.messages.map { if (it.uid in list) set(it, value) else it },
+                    results = s.results.map { if (it.uid in list) set(it, value) else it },
+                )
+            }
+        }
+        _state.update { it.copy(selected = emptySet()) }
+        apply(uids, on)
         viewModelScope.launch {
             try {
-                star(folder, uids, on, account)
+                send(folder, uids, on, account)
             } catch (e: FerrowlException) {
-                star(folder, uids, !on, account, local = true)
+                apply(uids, !on)
                 _state.update { it.copy(error = e.message) }
             }
         }
-    }
-
-    /** Updates the list right away, then the server (unless [local]). */
-    private suspend fun star(folder: String, uids: List<UInt>, on: Boolean, account: String?, local: Boolean = false) {
-        _state.update { s ->
-            s.copy(
-                messages = s.messages.map { if (it.uid in uids) it.copy(flagged = on) else it },
-                results = s.results.map { if (it.uid in uids) it.copy(flagged = on) else it },
-            )
+        if (changed.isEmpty()) return
+        notices.withAction(done, translate("undo")) {
+            apply(changed, !on)
+            viewModelScope.launch {
+                try {
+                    send(folder, changed, !on, account)
+                } catch (e: FerrowlException) {
+                    if (repo.isCurrent(account)) refresh()
+                    _state.update { it.copy(error = e.message) }
+                }
+            }
         }
-        if (!local) repo.setFlagged(folder, uids, on, account)
     }
 
     /** Gmail: whether the folder's messages have labels. */
@@ -575,49 +614,85 @@ class MailboxViewModel @Inject constructor(
     val inSpam: Boolean get() = repo.isSpam(_state.value.folderId)
 
     /** Report spam, or in Spam "not spam" (which also allows the senders). */
-    fun spamSelected() {
+    fun spamSelected() = spamRows(_state.value.selected.toList())
+
+    fun spamRows(uids: List<UInt>) {
         val toSpam = !inSpam
         val s = _state.value
-        if (!toSpam) {
-            val senders = s.shown.filter { it.uid in s.selected && it.fromAddress.isNotBlank() }.map { it.fromAddress }.toSet()
-            viewModelScope.launch { senders.forEach { runCatching { repo.setSenderRule(it, true) } } }
+        // Not spam also allows the senders (once Undo is no longer offered).
+        val senders = if (toSpam) emptySet() else s.shown.filter { it.uid in uids && it.fromAddress.isNotBlank() }.map { it.fromAddress }.toSet()
+        val done = when {
+            !toSpam -> translate("done_not_spam")
+            uids.size > 1 -> translate("spam_moved").replace("{n}", uids.size.toString())
+            else -> translate("done_spam")
         }
-        bulk { folder, uids, account -> repo.spam(folder, uids, toSpam, account) }
+        removeWithUndo(uids, done) { folder, u, account ->
+            senders.forEach { runCatching { repo.setSenderRule(it, true) } }
+            repo.spam(folder, u, toSpam, quiet = true, account = account)
+        }
     }
 
-    fun archiveSelected() = bulk { folder, uids, account -> repo.archive(folder, uids, account = account) }
+    fun archiveSelected() = archiveRows(_state.value.selected.toList())
+
+    fun archiveRows(uids: List<UInt>) {
+        val done = if (uids.size > 1) translate("bulk_archived").replace("{n}", uids.size.toString()) else translate("archived")
+        removeWithUndo(uids, done) { folder, u, account -> repo.archive(folder, u, quiet = true, account = account) }
+    }
 
     /** Whether deleting in the open folder is for good (the Trash): no swipe there. */
     val deletesForever: Boolean get() = repo.deletesForever(_state.value.folderId)
 
-    /**
-     * Swipe or the trash button of an open message: the row leaves the list
-     * at once and "Moved to Trash · Undo" shows; the server is asked only
-     * when the notice is gone, so Undo really undoes it.
-     */
+    /** Swipe or the trash button of an open message (see [removeWithUndo]). */
     fun deleteRow(uids: List<UInt>) {
+        val done = if (uids.size > 1) translate("bulk_trashed").replace("{n}", uids.size.toString()) else translate("moved_to_trash")
+        removeWithUndo(uids, done) { folder, u, account -> repo.delete(folder, u, quiet = true, account = account) }
+    }
+
+    /**
+     * The messages leave the list at once and "Archived · Undo" (or the
+     * action's text) shows; the server is asked only when the notice is
+     * gone, so Undo really undoes it.
+     */
+    private fun removeWithUndo(
+        uids: List<UInt>,
+        done: String,
+        action: suspend (folder: String, uids: List<UInt>, account: String) -> Unit,
+    ) {
+        if (uids.isEmpty()) return
         val folder = _state.value.folderId
-        val rows = _state.value.messages.filter { it.uid in uids }
-        _state.update { s -> s.copy(messages = s.messages.filterNot { it.uid in uids }) }
-        pendingDeletes.getOrPut(folder) { mutableSetOf() }.addAll(uids)
+        val gone = uids.toSet()
+        val rows = _state.value.messages.filter { it.uid in gone }
+        _state.update { s ->
+            s.copy(
+                messages = s.messages.filterNot { it.uid in gone },
+                results = s.results.filterNot { it.uid in gone },
+                selected = emptySet(),
+                confirmDelete = false,
+            )
+        }
+        pendingDeletes.getOrPut(folder) { mutableSetOf() }.addAll(gone)
         val account = actingAccount() ?: return
         // Kept by the repository on this account: it still runs if this
         // screen goes, and at once before another account is connected.
-        val job = repo.deleteLater(account, folder, uids, UNDO_MS) { failed ->
-            pendingDeletes[folder]?.removeAll(uids.toSet())
+        val job = repo.later(UNDO_MS, done = { failed ->
+            pendingDeletes[folder]?.removeAll(gone)
             if (failed && repo.isCurrent(account)) refresh()
-        }
-        notices.withAction(translate("moved_to_trash"), translate("undo")) {
+        }) { action(folder, uids, account) }
+        notices.withAction(done, translate("undo")) {
             // Already done (another account was connected meanwhile).
             if (!repo.cancelLater(job)) return@withAction
-            pendingDeletes[folder]?.removeAll(uids.toSet())
+            pendingDeletes[folder]?.removeAll(gone)
             _state.update { s ->
                 if (s.folderId != folder) s else s.copy(messages = (s.messages + rows).sortedByDescending { it.timestamp })
             }
         }
     }
 
-    fun moveSelected(targetId: String) = bulk { folder, uids, account -> repo.move(folder, uids, targetId, account) }
+    fun moveSelected(targetId: String) {
+        val uids = _state.value.selected.toList()
+        val done = if (uids.size > 1) translate("bulk_moved").replace("{n}", uids.size.toString()) else translate("done_moved")
+        removeWithUndo(uids, done) { folder, u, account -> repo.move(folder, u, targetId, quiet = true, account = account) }
+    }
 
     /** Trash, or (in the Trash) ask first and then delete for good. */
     fun deleteSelected(confirmed: Boolean = false) {
@@ -626,7 +701,11 @@ class MailboxViewModel @Inject constructor(
             _state.update { it.copy(confirmDelete = true) }
             return
         }
-        bulk { folder, uids, account -> repo.delete(folder, uids, account = account) }
+        if (repo.deletesForever(s.folderId)) {
+            bulk { folder, uids, account -> repo.delete(folder, uids, account = account) }
+        } else {
+            deleteRow(s.selected.toList())
+        }
     }
 
     private fun bulk(action: suspend (folder: String, uids: List<UInt>, account: String?) -> Unit) {

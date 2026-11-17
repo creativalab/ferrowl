@@ -18,6 +18,7 @@ import com.ferrowl.app.ui.contacts.ContactsScreen
 import com.ferrowl.app.ui.conversation.ConversationScreen
 import com.ferrowl.app.ui.mailbox.MailboxScreen
 import com.ferrowl.app.ui.mailbox.MailboxViewModel
+import com.ferrowl.app.ui.message.ListActions
 import com.ferrowl.app.ui.message.MessageScreen
 import com.ferrowl.app.ui.message.ReplyKind
 import com.ferrowl.app.ui.settings.IntegrationsScreen
@@ -140,8 +141,8 @@ fun FerrowlNavHost(composeRequests: ComposeRequests) {
         }
         composable<Read> { entry ->
             val route = entry.toRoute<Read>()
-            // The message list under this screen: the trash button removes the
-            // message there with "Moved to Trash · Undo", as a swipe does.
+            // The message list under this screen: trash, archive, unread and
+            // spam act there with Undo, as the list's own commands do.
             val listEntry = remember(entry) { runCatching { nav.getBackStackEntry(Mailbox) }.getOrNull() }
             val list: MailboxViewModel? = listEntry?.let { hiltViewModel(it) }
             val listFolder = list?.state?.collectAsState()?.value?.folderId
@@ -152,11 +153,18 @@ fun FerrowlNavHost(composeRequests: ComposeRequests) {
                 onBack = { nav.popBackStack() },
                 onReply = { kind -> nav.navigate(Write(kind.name, route.folderId, route.uid)) },
                 onGone = { nav.popBackStack(Mailbox, inclusive = false) },
-                onTrash = list?.takeIf { listFolder == route.folderId }?.let { vm ->
-                    {
-                        vm.deleteRow(listOf(route.uid.toUInt()))
+                list = list?.takeIf { listFolder == route.folderId }?.let { vm ->
+                    val uids = listOf(route.uid.toUInt())
+                    fun thenBack(action: () -> Unit): () -> Unit = {
+                        action()
                         nav.popBackStack(Mailbox, inclusive = false)
                     }
+                    ListActions(
+                        trash = thenBack { vm.deleteRow(uids) },
+                        archive = thenBack { vm.archiveRows(uids) },
+                        markUnread = thenBack { vm.markRows(uids, false) },
+                        spam = thenBack { vm.spamRows(uids) },
+                    )
                 },
             )
         }

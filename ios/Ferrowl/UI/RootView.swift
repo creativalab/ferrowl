@@ -86,40 +86,93 @@ struct NoticeBanner: View {
 
     var body: some View {
         if let notice = notices.current {
-            HStack(spacing: 12) {
-                Image(systemName: notice.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                    .foregroundStyle(notice.isError ? .red : .accentColor)
-                Text(notice.text)
-                    .font(.subheadline)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if let label = notice.actionLabel {
-                    Button(label) { notices.act() }
-                        .font(.subheadline.bold())
-                }
-                if notice.isError {
-                    Button { notices.dismiss() } label: {
-                        Image(systemName: "xmark").font(.subheadline.weight(.semibold))
-                    }
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel(t("close"))
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-            .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
-            .padding(.horizontal, 12)
-            .padding(.bottom, Self.clearance)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-            .onTapGesture { if notice.actionLabel == nil { notices.dismiss() } }
-            .accessibilityAddTraits(.isStaticText)
-            .id(notice.id)
-            .animation(.snappy, value: notice.id)
+            NoticeCard(notice: notice, act: notices.act, dismiss: notices.dismiss)
+                .padding(.horizontal, 12)
+                .padding(.bottom, Self.clearance)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .id(notice.id)
+                .animation(.snappy, value: notice.id)
         }
     }
 }
 
+/// One notice: dark in both themes (as the system's own banners), so it
+/// stands out over the list; an Undo shows how long it is still offered.
+private struct NoticeCard: View {
+    let notice: Notices.Notice
+    let act: () -> Void
+    let dismiss: () -> Void
+
+    /// What is left of the time to undo (1 → 0).
+    @State private var left: CGFloat = 1
+
+    private static let background = Color(white: 0.14)
+    private static let seconds = Double(Notices.duration.components.seconds)
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: notice.isError ? "exclamationmark" : "checkmark")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 34, height: 34)
+                .background(Circle().fill(notice.isError ? Color.red : Color.accentColor))
+            Text(notice.text)
+                .font(.body.weight(.medium))
+                .foregroundStyle(.white)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let label = notice.actionLabel {
+                Button(action: act) {
+                    Text(label)
+                        .font(.subheadline.bold())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 9)
+                        .background(Capsule().fill(Color.accentColor))
+                }
+                .buttonStyle(.plain)
+            }
+            if notice.isError {
+                Button(action: dismiss) {
+                    Image(systemName: "xmark")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.7))
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(t("close"))
+            }
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, notice.actionLabel == nil && !notice.isError ? 18 : 12)
+        .padding(.vertical, 14)
+        .frame(minHeight: 64)
+        .background(Self.background)
+        // The time left to undo, as a bar shrinking along the bottom.
+        .overlay(alignment: .bottomLeading) {
+            if notice.actionLabel != nil {
+                GeometryReader { geo in
+                    Rectangle()
+                        .fill(Color.accentColor)
+                        .frame(width: geo.size.width * left, height: 3)
+                        .frame(maxHeight: .infinity, alignment: .bottom)
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        // An edge that separates it from a dark screen too.
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.white.opacity(0.1)))
+        .shadow(color: .black.opacity(0.28), radius: 14, y: 6)
+        .contentShape(Rectangle())
+        .onTapGesture { if notice.actionLabel == nil { dismiss() } }
+        .accessibilityElement(children: .combine)
+        .onAppear {
+            guard notice.actionLabel != nil else { return }
+            withAnimation(.linear(duration: Self.seconds)) { left = 0 }
+        }
+    }
+}
 extension View {
     /// Confirmations and errors on top of a sheet too (a sheet covers the
     /// app's own notice).
