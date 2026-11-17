@@ -1150,7 +1150,7 @@ mod tests {
             ..Default::default()
         };
         let c = Client::new(&account, Kind::Calendar);
-        let mut draft = Draft::new_on(chrono::NaiveDate::from_ymd_opt(2026, 12, 1).unwrap());
+        let mut draft = Draft::new_on(jiff::civil::date(2026, 12, 1));
         draft.summary = "Kickoff".into();
         let (uid, ics) = events::create(&draft);
         let url = crate::invite::item_url(&format!("{base}/cal/"), &uid);

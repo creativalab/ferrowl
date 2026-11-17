@@ -1507,7 +1507,7 @@ impl Backend {
                 .iter()
                 .flat_map(|f| mail::parse_recipients(f))
                 .collect();
-            b.cache(|c, key| c.note_sent(key, &to, chrono::Utc::now().timestamp()));
+            b.cache(|c, key| c.note_sent(key, &to, jiff::Timestamp::now().as_second()));
             // New recipients become contacts (may take a server round trip:
             // not while sending).
             let (who, recipients) = (account.clone(), to.clone());

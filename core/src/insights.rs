@@ -8,7 +8,7 @@
 
 use std::sync::LazyLock;
 
-use chrono::NaiveDate;
+use jiff::civil::Date;
 use regex::Regex;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +26,7 @@ pub enum Insight {
     Payment {
         number: String,
         amount: String,
-        due: Option<NaiveDate>,
+        due: Option<Date>,
     },
 }
 
@@ -254,7 +254,7 @@ fn payment(all: &str) -> Option<Insight> {
     Some(Insight::Payment { number, amount, due })
 }
 
-fn due_date(all: &str) -> Option<NaiveDate> {
+fn due_date(all: &str) -> Option<Date> {
     let year = |y: &str| -> Option<i32> {
         let y: i32 = y.parse().ok()?;
         Some(if y < 100 { 2000 + y } else { y })
@@ -262,13 +262,13 @@ fn due_date(all: &str) -> Option<NaiveDate> {
     if let Some(c) = DUE_NUMERIC.captures(all) {
         // Day first, as written in Europe.
         let (d, m, y) = (c[1].parse().ok()?, c[2].parse().ok()?, year(&c[3])?);
-        if let Some(date) = NaiveDate::from_ymd_opt(y, m, d) {
+        if let Some(date) = crate::ical::ymd(y, m, d) {
             return Some(date);
         }
     }
     let c = DUE_WORDS.captures(all)?;
     let month = month_number(&c[2].to_lowercase())?;
-    NaiveDate::from_ymd_opt(year(&c[3])?, month, c[1].parse().ok()?)
+    crate::ical::ymd(year(&c[3])?, month, c[1].parse().ok()?)
 }
 
 fn month_number(name: &str) -> Option<u32> {
@@ -396,7 +396,7 @@ mod tests {
             [Insight::Payment {
                 number: "2026/145".into(),
                 amount: "€ 1.234,50".into(),
-                due: NaiveDate::from_ymd_opt(2026, 11, 30),
+                due: crate::ical::ymd(2026, 11, 30),
             }]
         );
         let words = find(
@@ -405,7 +405,7 @@ mod tests {
             "Importo 89,90 € - da pagare entro il 15 dicembre 2026",
         );
         assert!(matches!(&words[0], Insight::Payment { amount, due, .. }
-            if amount == "89,90 €" && *due == NaiveDate::from_ymd_opt(2026, 12, 15)));
+            if amount == "89,90 €" && *due == crate::ical::ymd(2026, 12, 15)));
         // Prices in an ad are not a bill, nor is a receipt.
         assert!(find("Saldi!", "", "Scarpe a 49,90 €, borse a 29,90 €").is_empty());
         assert!(find("Newsletter", "", "Pagamento sicuro con carta: abbonati a 19,99 €").is_empty());

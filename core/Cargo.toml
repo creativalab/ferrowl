@@ -16,8 +16,9 @@ keychain = ["dep:keyring"]
 [dependencies]
 anyhow = "1.0.104"
 base64 = "0.22"
-chrono = { version = "0.4.45", features = ["unstable-locales"] }
-chrono-tz = "0.10"
+# Dates and time zones; the zone database is built in, so phones need no
+# system copy of it.
+jiff = { version = "0.2.46", features = ["tzdb-bundle-always"] }
 iana-time-zone = "0.1"
 dirs = "7.0.0"
 imap = { version = "2.4.1", default-features = false }
