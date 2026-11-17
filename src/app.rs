@@ -1457,6 +1457,7 @@ impl App {
             iced::window::resize_events().map(|(_, size)| Message::WindowResized(size)),
             iced::window::close_requests().map(|_| Message::Quit),
             Subscription::run(raise_requests),
+            crate::stall_watch::subscription(),
             iced::event::listen_with(|event, _status, _window| match event {
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
                     Some(Message::CursorMoved(position))

@@ -10,6 +10,7 @@ mod preview;
 mod print;
 mod push;
 mod single_instance;
+mod stall_watch;
 mod theme;
 mod ui;
 
