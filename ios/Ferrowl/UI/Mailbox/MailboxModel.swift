@@ -123,13 +123,18 @@ final class MailboxModel {
 
     func header(_ uid: UInt32) -> Header? { messages.first { $0.uid == uid } ?? results.first { $0.uid == uid } }
 
+    /// The row of one message, also one not listed (yet).
+    func row(_ uid: UInt32, listed: Header? = nil) -> Row {
+        let header = listed ?? header(uid) ?? Header(uid: uid, from: "", subject: "", preview: "", timestamp: 0, seen: false,
+                                                     hasAttachment: false, messageId: "", parents: [])
+        return Row(conversation: Conversation(latest: header, uids: [uid], unread: header.seen ? 0 : 1))
+    }
+
     /// Opens a message of the inbox at once, also one not listed yet (a
     /// notification of new mail): the reader loads it by its number.
     func openFirst(_ uid: UInt32, listed: Header?) {
-        let header = listed ?? Header(uid: uid, from: "", subject: "", preview: "", timestamp: 0, seen: false,
-                                      hasAttachment: false, messageId: "", parents: [])
         openingFirst = uid
-        open = Row(conversation: Conversation(latest: header, uids: [uid], unread: header.seen ? 0 : 1))
+        open = row(uid, listed: listed)
     }
 
     /// A notification's message is about to open: the list's first fetch
@@ -239,10 +244,13 @@ final class MailboxModel {
         let cached = await mail.cachedHeaders(id)
         guard current else { return }
         if !cached.isEmpty, folderId == id { messages = visible(cached, in: id) }
+        let waited = openingFirst != nil
         await afterOpening()
         do {
             guard current else { return }
+            TraceLog.note("list \(id): fetching\(waited ? " (after the notification's message)" : "")")
             var fresh = try await mail.headers(id, on: account)
+            TraceLog.note("list \(id): fetched \(fresh.count)")
             guard current else { return }
             // Sender lists: blocked mail leaves the inbox, allowed mail leaves Spam.
             if let moved = try? await mail.applySenderRules(id, fresh, on: account), !moved.isEmpty {
@@ -267,6 +275,7 @@ final class MailboxModel {
             }
             await loadUnread()
         } catch {
+            TraceLog.note("list \(id): failed \(error)")
             if !quiet { notices.error(describe(error)) }
         }
     }
@@ -381,59 +390,102 @@ final class MailboxModel {
     }
 
     func markRead(_ seen: Bool, _ row: Row? = nil) {
-        let uids = target(row)
-        update(uids) { $0.seen = seen }
-        run(uids) { [mail] f, u, a in try await mail.setSeen(f, u, seen, on: a) }
+        toggleWithUndo(target(row), done: t(seen ? "done_read" : "done_unread"), keyPath: \.seen, to: seen) { mail, f, u, on, a in
+            try await mail.setSeen(f, u, on, on: a)
+        }
     }
 
     func star(_ on: Bool, _ row: Row? = nil) {
-        let uids = target(row)
-        update(uids) { $0.flagged = on }
+        toggleWithUndo(target(row), done: t(on ? "done_starred" : "done_unstarred"), keyPath: \.flagged, to: on) { mail, f, u, on, a in
+            try await mail.setFlagged(f, u, on, on: a)
+        }
+    }
+
+    /// Read/unread or star: shown and sent at once, with Undo, which sends
+    /// each message's earlier state back.
+    private func toggleWithUndo(_ uids: [UInt32], done: String, keyPath: WritableKeyPath<Header, Bool>, to on: Bool,
+                                _ send: @escaping (MailRepository, String, [UInt32], Bool, String?) async throws -> Void) {
+        guard !uids.isEmpty else { return }
+        let set = Set(uids)
+        // Only the messages it changes are put back by Undo.
+        let changed = shown.filter { set.contains($0.uid) && $0[keyPath: keyPath] != on }.map(\.uid)
+        update(uids) { $0[keyPath: keyPath] = on }
         run(uids) { [weak self, mail] f, u, a in
             do {
-                try await mail.setFlagged(f, u, on, on: a)
+                try await send(mail, f, u, on, a)
             } catch {
-                self?.update(u) { $0.flagged = !on }
+                self?.update(u) { $0[keyPath: keyPath] = !on }
                 throw error
+            }
+        }
+        guard !changed.isEmpty else { return }
+        let folder = folderId
+        let account = account
+        notices.withAction(done, t("undo")) { [weak self, mail, notices] in
+            guard let self else { return }
+            if self.current, self.folderId == folder { self.update(changed) { $0[keyPath: keyPath] = !on } }
+            Task {
+                do {
+                    try await send(mail, folder, changed, !on, account)
+                } catch is AccountChanged {
+                } catch {
+                    notices.error(describe(error))
+                    await self.refresh()
+                }
             }
         }
     }
 
     func archive(_ row: Row? = nil) {
-        run(target(row)) { [mail] f, u, a in try await mail.archive(f, u, on: a) }
+        let uids = target(row)
+        removeWithUndo(uids, done: uids.count > 1 ? t("bulk_archived", ["n": "\(uids.count)"]) : t("archived")) { mail, f, u, a in
+            try await mail.archive(f, u, quiet: true, on: a)
+        }
     }
 
-    /// Swipe, the row's menu or the trash button of an open message: the row
-    /// leaves the list at once and "Moved to Trash · Undo" shows; the server
-    /// is asked only when the notice is gone, so Undo really undoes it.
+    /// Swipe, the row's menu or the trash button of an open message (see
+    /// `removeWithUndo`).
     func deleteWithUndo(_ row: Row) {
+        let uids = row.uids
+        removeWithUndo(uids, done: uids.count > 1 ? t("bulk_trashed", ["n": "\(uids.count)"]) : t("moved_to_trash")) { mail, f, u, a in
+            try await mail.delete(f, u, quiet: true, on: a)
+        }
+    }
+
+    /// The messages leave the list at once and "Archived · Undo" (or the
+    /// action's text) shows; the server is asked only when the notice is
+    /// gone, so Undo really undoes it.
+    private func removeWithUndo(_ uids: [UInt32], done: String,
+                                _ action: @escaping (MailRepository, String, [UInt32], String) async throws -> Void) {
+        guard !uids.isEmpty else { return }
         let folder = folderId
-        let uids = Set(row.uids)
-        let removed = messages.filter { uids.contains($0.uid) }
-        messages.removeAll { uids.contains($0.uid) }
-        results.removeAll { uids.contains($0.uid) }
-        if open?.id == row.id { open = nil }
-        pendingDeletes[folder, default: []].formUnion(uids)
+        let set = Set(uids)
+        let removed = messages.filter { set.contains($0.uid) }
+        messages.removeAll { set.contains($0.uid) }
+        results.removeAll { set.contains($0.uid) }
+        if let open, set.contains(open.id) { self.open = nil }
+        endSelection()
+        pendingDeletes[folder, default: []].formUnion(set)
         guard let account else { return }
         // Kept by the repository, on this account: it runs when the notice
         // is gone, or at once before the app connects another account (and
         // never on the other account's messages with the same numbers).
         let job = mail.later(on: account, after: Notices.duration) { [weak self, mail, notices] in
             do {
-                try await mail.delete(folder, Array(uids), quiet: true, on: account)
-                self?.pendingDeletes[folder]?.subtract(uids)
+                try await action(mail, folder, uids, account)
+                self?.pendingDeletes[folder]?.subtract(set)
             } catch is AccountChanged {
-                self?.pendingDeletes[folder]?.subtract(uids)
+                self?.pendingDeletes[folder]?.subtract(set)
             } catch {
-                self?.pendingDeletes[folder]?.subtract(uids)
+                self?.pendingDeletes[folder]?.subtract(set)
                 notices.error(describe(error))
                 await self?.refresh()
             }
         }
-        notices.withAction(t("moved_to_trash"), t("undo")) { [weak self, mail] in
+        notices.withAction(done, t("undo")) { [weak self, mail] in
             // Already done (the app connected another account meanwhile).
             guard mail.cancelLater(job) else { return }
-            self?.pendingDeletes[folder]?.subtract(uids)
+            self?.pendingDeletes[folder]?.subtract(set)
             guard let self, self.current, self.folderId == folder else { return }
             self.messages = (self.messages + removed).sorted { $0.timestamp > $1.timestamp }
         }
@@ -441,14 +493,24 @@ final class MailboxModel {
 
     var deletesForever: Bool { mail.deletesForever(folderId) }
 
+    /// Deleting for good (in the Trash, after asking): cannot be undone.
     func delete(_ row: Row? = nil) {
         let uids = target(row)
-        if let open, uids.contains(open.id) { self.open = nil }
-        run(uids) { [mail] f, u, a in try await mail.delete(f, u, on: a) }
+        if deletesForever {
+            if let open, uids.contains(open.id) { self.open = nil }
+            run(uids) { [mail] f, u, a in try await mail.delete(f, u, on: a) }
+        } else {
+            removeWithUndo(uids, done: uids.count > 1 ? t("bulk_trashed", ["n": "\(uids.count)"]) : t("moved_to_trash")) { mail, f, u, a in
+                try await mail.delete(f, u, quiet: true, on: a)
+            }
+        }
     }
 
     func move(to target: String, _ row: Row? = nil) {
-        run(self.target(row)) { [mail] f, u, a in try await mail.move(f, u, to: target, on: a) }
+        let uids = self.target(row)
+        removeWithUndo(uids, done: uids.count > 1 ? t("bulk_moved", ["n": "\(uids.count)"]) : t("done_moved")) { mail, f, u, a in
+            try await mail.move(f, u, to: target, quiet: true, on: a)
+        }
     }
 
     var inSpam: Bool { mail.isSpam(folderId) }
@@ -457,12 +519,16 @@ final class MailboxModel {
     func spam(_ row: Row? = nil) {
         let uids = target(row)
         let toSpam = !inSpam
-        if !toSpam {
-            let set = Set(uids)
-            let senders = Set(shown.filter { set.contains($0.uid) && !$0.fromAddress.isEmpty }.map(\.fromAddress))
+        // Not spam also allows the senders (once Undo is no longer offered).
+        let set = Set(uids)
+        let senders = toSpam ? [] : Set(shown.filter { set.contains($0.uid) && !$0.fromAddress.isEmpty }.map(\.fromAddress))
+        let done = toSpam
+            ? (uids.count > 1 ? t("spam_moved", ["n": "\(uids.count)"]) : t("done_spam"))
+            : t("done_not_spam")
+        removeWithUndo(uids, done: done) { mail, f, u, a in
             for s in senders { try? mail.setSenderRule(s, allow: true) }
+            try await mail.spam(f, u, toSpam: toSpam, quiet: true, on: a)
         }
-        run(uids) { [mail] f, u, a in try await mail.spam(f, u, toSpam: toSpam, on: a) }
     }
 
     /// Adds or removes a Gmail label on the checked messages (the selection stays).

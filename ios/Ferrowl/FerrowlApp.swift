@@ -143,6 +143,7 @@ final class ForegroundBanners: NSObject, UNUserNotificationCenterDelegate {
         let info = response.notification.request.content.userInfo
         if let email = info["email"] as? String {
             let uid = (info["uid"] as? NSNumber)?.uint32Value ?? (info["uid"] as? Int).map { UInt32($0) }
+            TraceLog.note("notification tapped")
             DispatchQueue.main.async { self.open?(email, uid) }
         }
         done()

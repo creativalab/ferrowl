@@ -62,8 +62,10 @@ final class MessageModel {
 
     func load() async {
         guard case .loading = state else { return }
+        TraceLog.note("message \(uid): loading")
         do {
             let message = try await mail.message(folderId, uid)
+            TraceLog.note("message \(uid): loaded")
             if let html = message.html {
                 remoteImagesInside = await Task.detached(priority: .userInitiated) {
                     MessageBody.hasRemoteImages(html)
@@ -73,6 +75,7 @@ final class MessageModel {
             state = .shown(message)
             refreshInvite()
         } catch {
+            TraceLog.note("message \(uid): failed \(error)")
             state = .failed(describe(error))
         }
     }
@@ -125,7 +128,7 @@ final class MessageModel {
         }
     }
 
-    func toggleStar() {
+    func toggleStar(undoable: Bool = true) {
         let on = !starred
         starred = on
         Task {
@@ -134,6 +137,12 @@ final class MessageModel {
             } catch {
                 starred = !on
                 notices.error(describe(error))
+            }
+        }
+        if undoable {
+            notices.withAction(t(on ? "done_starred" : "done_unstarred"), t("undo")) { [weak self] in
+                guard let self, self.starred == on else { return }
+                self.toggleStar(undoable: false)
             }
         }
     }
@@ -226,7 +235,14 @@ struct MessageView: View {
             Text(t("cannot_undo"))
         }
         .sheet(isPresented: $moving) {
-            FolderPicker(exclude: model.folderId) { target in close { try await mail.move(model.folderId, [model.uid], to: target) } }
+            FolderPicker(exclude: model.folderId) { target in
+                if let list {
+                    list.move(to: target, list.row(model.uid))
+                    leave()
+                } else {
+                    close { try await mail.move(model.folderId, [model.uid], to: target) }
+                }
+            }
         }
     }
 
@@ -257,11 +273,25 @@ struct MessageView: View {
             Button(action: trash) { Image(systemName: "trash") }
                 .accessibilityLabel(t("delete"))
             Menu {
-                Button { close { try await mail.setSeen(model.folderId, [model.uid], false) } } label: {
+                Button {
+                    if let list {
+                        list.markRead(false, list.row(model.uid))
+                        leave()
+                    } else {
+                        close { try await mail.setSeen(model.folderId, [model.uid], false) }
+                    }
+                } label: {
                     Label(t("mark_unread"), systemImage: "envelope.badge")
                 }
                 Button { moving = true } label: { Label(t("move_to"), systemImage: "folder") }
-                Button { Task { if await model.spam() { leave() } } } label: {
+                Button {
+                    if let list {
+                        list.spam(list.row(model.uid))
+                        leave()
+                    } else {
+                        Task { if await model.spam() { leave() } }
+                    }
+                } label: {
                     Label(t(model.inSpam ? "spam_not" : "spam_report"), systemImage: "xmark.bin")
                 }
                 Button { Task { if await model.blockSender() { leave() } } } label: {
@@ -273,14 +303,20 @@ struct MessageView: View {
         }
     }
 
+    /// The list this message was opened from, when it shows the message's
+    /// folder: its actions then go through it, with Undo.
+    private var list: MailboxModel? {
+        guard let mailbox, mailbox.folderId == model.folderId else { return nil }
+        return mailbox
+    }
+
     /// To the Trash (in the Trash: for good, after asking).
     private func trash() {
         if model.deletesForever {
             confirmDelete = true
-        } else if let mailbox, let header = mailbox.header(model.uid) {
+        } else if let list {
             // As a swipe in the list: "Moved to Trash · Undo".
-            let unread: UInt32 = header.seen ? 0 : 1
-            mailbox.deleteWithUndo(Row(conversation: Conversation(latest: header, uids: [model.uid], unread: unread)))
+            list.deleteWithUndo(list.row(model.uid))
             leave()
         } else {
             close { try await mail.delete(model.folderId, [model.uid]) }
@@ -292,7 +328,13 @@ struct MessageView: View {
     private var actions: some View {
         HStack(spacing: 2) {
             ActionIcon(name: "archivebox", label: t("archive")) {
-                close { try await mail.archive(model.folderId, [model.uid]) }
+                if let list {
+                    // As in the list: "Archived · Undo".
+                    list.archive(list.row(model.uid))
+                    leave()
+                } else {
+                    close { try await mail.archive(model.folderId, [model.uid]) }
+                }
             }
             ActionIcon(name: "arrowshape.turn.up.left", label: t("reply")) { reply(.reply) }
             ActionIcon(name: "arrowshape.turn.up.left.2", label: t("reply_all")) { reply(.replyAll) }

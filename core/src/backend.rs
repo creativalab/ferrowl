@@ -9,7 +9,8 @@ use crate::i18n::{generic_error, t};
 use crate::local;
 use crate::mail::{self, Folder, FolderKind, FullMessage, Header, ImapSession, Outgoing};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::net::{Shutdown, TcpStream};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Default)]
@@ -37,6 +38,14 @@ pub struct Backend {
     /// The same as `Inner::account`, readable without waiting for a server
     /// command in progress (async code must not block on the main lock).
     current: Arc<Mutex<Option<Account>>>,
+    /// The socket of `Inner::session`, reachable without the lock: another
+    /// account being connected shuts it down, so a command of the previous
+    /// one waiting on a dead connection (after the app was in the
+    /// background) ends at once instead of holding the lock for minutes.
+    socket: Arc<Mutex<Option<TcpStream>>>,
+    /// Goes up each time an account is connected: a command of the
+    /// previous one does not connect again to finish.
+    connects: Arc<AtomicU64>,
     /// Set by [Backend::for_account]: the address the caller meant; every
     /// command checks it under the lock, so it never runs on an account
     /// connected in the meantime.
@@ -147,16 +156,18 @@ fn guarded<T>(
 /// the connection was lost (only for `repeatable` commands once it was
 /// sent: see `Backend::with_session_once`).
 fn run_on_session<T>(
+    b: &Backend,
     g: &mut Inner,
     account: &Account,
     repeatable: bool,
+    connects: u64,
     op: &impl Fn(&mut ImapSession) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
     if !repeatable
         && let Some(s) = g.session.as_mut()
         && s.noop().is_err()
     {
-        g.session = None;
+        b.drop_session(g);
     }
     if let Some(s) = g.session.as_mut() {
         match guarded(s, op) {
@@ -169,25 +180,31 @@ fn run_on_session<T>(
                     if cfg!(debug_assertions) {
                         eprintln!("imap: new connection after: {e:#}");
                     }
-                    g.session = None;
+                    b.drop_session(g);
                 }
                 return Err(e);
             }
             // Lost on the way: the server may have run it already.
             Some(Err(e)) if !repeatable => {
-                g.session = None;
+                b.drop_session(g);
                 return Err(e);
             }
             None if !repeatable => {
-                g.session = None;
+                b.drop_session(g);
                 return Err(anyhow::anyhow!(generic_error()));
             }
             // Connection lost, or the library panicked: once more
             // on a new connection.
-            _ => g.session = None,
+            _ => b.drop_session(g),
         }
     }
-    let mut session = mail::connect(account)?;
+    // Another account was connected meanwhile (its connection ended this
+    // one's): not connected again for this command.
+    if b.connects.load(Ordering::SeqCst) != connects {
+        return Err(anyhow::anyhow!(t("err_other_account")));
+    }
+    let (mut session, socket) = mail::connect_cancellable(account)?;
+    b.keep_socket(Some(socket));
     match guarded(&mut session, op) {
         Some(Ok(v)) => {
             g.session = Some(session);
@@ -196,16 +213,47 @@ fn run_on_session<T>(
         Some(Err(e)) => {
             if session_still_usable(&e) {
                 g.session = Some(session);
+            } else {
+                b.keep_socket(None);
             }
             Err(e)
         }
-        None => Err(anyhow::anyhow!(generic_error())),
+        None => {
+            b.keep_socket(None);
+            Err(anyhow::anyhow!(generic_error()))
+        }
     }
 }
 
 impl Backend {
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Remembers the socket of the session in use (none: no session).
+    fn keep_socket(&self, socket: Option<TcpStream>) {
+        *self.socket.lock().unwrap_or_else(|p| p.into_inner()) = socket;
+    }
+
+    /// Forgets the session (and its socket, which would keep it open).
+    fn drop_session(&self, g: &mut Inner) {
+        g.session = None;
+        self.keep_socket(None);
+    }
+
+    /// Another account is being connected: a command of the current one
+    /// stops waiting on the server (its connection is shut down) and does
+    /// not connect again, so the lock is free for the new account.
+    fn end_current(&self, next: &Account) {
+        let current = self.current.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        // The same account again (a reconnection): its commands go on.
+        if current.is_some_and(|c| c.email.trim().eq_ignore_ascii_case(next.email.trim())) {
+            return;
+        }
+        self.connects.fetch_add(1, Ordering::SeqCst);
+        if let Some(socket) = self.socket.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+            let _ = socket.shutdown(Shutdown::Both);
+        }
     }
 
     /// The same engine, but its commands only run while `email` is the
@@ -677,6 +725,9 @@ impl Backend {
     fn session_op<T>(&self, repeatable: bool, op: impl Fn(&mut ImapSession) -> anyhow::Result<T>) -> Res<T> {
         let mut attempt = 0u32;
         let mut first: Option<String> = None;
+        // Before waiting for the lock: a command asked before another
+        // account was connected does not connect again once it is.
+        let connects = self.connects.load(Ordering::SeqCst);
         loop {
             let result = {
                 let mut g = self.lock();
@@ -692,7 +743,7 @@ impl Backend {
                 if *first.get_or_insert_with(|| email.clone()) != email {
                     return Err(t("err_other_account").to_string());
                 }
-                run_on_session(&mut g, &account, repeatable, &op)
+                run_on_session(self, &mut g, &account, repeatable, connects, &op)
             };
             match result {
                 Ok(v) => return Ok(v),
@@ -717,20 +768,25 @@ impl Backend {
                 crate::pop3::Pop3::connect(&account)
                     .and_then(|p| p.quit())
                     .map_err(text)?;
+                b.end_current(&account);
                 let mut g = b.lock();
                 if let Some(mut old) = g.session.take() {
                     let _ = old.logout();
                 }
+                b.keep_socket(None);
                 g.gmail = false;
                 g.has_move = false;
                 b.gmail.store(false, Ordering::Relaxed);
                 b.set_account(&mut g, account);
                 return Ok(local::folders());
             }
-            let mut session = mail::connect(&account).map_err(text)?;
+            let (mut session, socket) = mail::connect_cancellable(&account).map_err(text)?;
             let folders = mail::list_folders(&mut session).map_err(text)?;
             let gmail = mail::has_gmail_labels(&mut session);
             let has_move = mail::has_move(&mut session);
+            // The new account is ready: the previous one's command in
+            // progress, if any, ends now (see `end_current`).
+            b.end_current(&account);
             let mut g = b.lock();
             g.has_move = has_move;
             g.gmail = gmail;
@@ -754,6 +810,7 @@ impl Backend {
             }
             b.set_account(&mut g, account);
             g.session = Some(session);
+            b.keep_socket(Some(socket));
             Ok(folders)
         })
         .await
@@ -1046,7 +1103,7 @@ impl Backend {
             }
             let (counts, in_step) = b.with_session_sync(|s| Ok(mail::unseen_counts(s, &folders)))?;
             if !in_step {
-                b.lock().session = None;
+                b.drop_session(&mut b.lock());
             }
             Ok(counts)
         })

@@ -481,12 +481,19 @@ impl std::fmt::Display for LoginError {
 impl std::error::Error for LoginError {}
 
 pub fn connect(account: &Account) -> Result<ImapSession> {
+    connect_cancellable(account).map(|(session, _)| session)
+}
+
+/// `connect`, also giving the connection's socket: shut down from another
+/// thread, it ends a command waiting on the server at once (instead of
+/// after [COMMAND_TIMEOUT]).
+pub fn connect_cancellable(account: &Account) -> Result<(ImapSession, TcpStream)> {
     use std::net::ToSocketAddrs;
     let addrs: Vec<SocketAddr> = (account.imap_host.as_str(), account.imap_port)
         .to_socket_addrs()
         .with_context(|| connect_error(account))?
         .collect();
-    connect_to(account, &addrs)
+    open(account, &addrs)
 }
 
 /// "Cannot connect to host:port".
@@ -503,6 +510,10 @@ pub fn connect_error(account: &Account) -> String {
 /// Like `connect`, to addresses already resolved (the push server checks
 /// them first). The host name is still the one TLS checks.
 pub fn connect_to(account: &Account, addrs: &[SocketAddr]) -> Result<ImapSession> {
+    open(account, addrs).map(|(session, _)| session)
+}
+
+fn open(account: &Account, addrs: &[SocketAddr]) -> Result<(ImapSession, TcpStream)> {
     let mut last = None;
     let tcp = addrs
         .iter()
@@ -517,6 +528,7 @@ pub fn connect_to(account: &Account, addrs: &[SocketAddr]) -> Result<ImapSession
         .with_context(|| connect_error(account))?;
     tcp.set_read_timeout(Some(COMMAND_TIMEOUT))?;
     tcp.set_write_timeout(Some(COMMAND_TIMEOUT))?;
+    let socket = tcp.try_clone()?;
 
     let server_name = rustls::pki_types::ServerName::try_from(account.imap_host.clone())
         .context("invalid IMAP host name")?;
@@ -541,7 +553,7 @@ pub fn connect_to(account: &Account, addrs: &[SocketAddr]) -> Result<ImapSession
         };
         anyhow::Error::new(LoginError(text))
     };
-    match account.oauth {
+    let session = match account.oauth {
         // Signed in with Google/Microsoft: XOAUTH2 with a fresh access token.
         Some(provider) => {
             let token = crate::oauth::access_token(provider, &account.email)?;
@@ -555,7 +567,8 @@ pub fn connect_to(account: &Account, addrs: &[SocketAddr]) -> Result<ImapSession
         None => client
             .login(&account.username, &account.password)
             .map_err(|(e, _)| login_error(e)),
-    }
+    }?;
+    Ok((session, socket))
 }
 
 /// Whether the server supports IMAP IDLE (push).

@@ -180,7 +180,7 @@ class MessageViewModel @Inject constructor(
     }
 
     /** Stars or unstars the message (the screen stays open). */
-    fun toggleStar() {
+    fun toggleStar(undoable: Boolean = true) {
         val on = !_starred.value
         _starred.value = on
         viewModelScope.launch {
@@ -189,6 +189,11 @@ class MessageViewModel @Inject constructor(
             } catch (e: FerrowlException) {
                 _starred.value = !on
                 notices.error(e.message.orEmpty())
+            }
+        }
+        if (undoable) {
+            notices.withAction(translate(if (on) "done_starred" else "done_unstarred"), translate("undo")) {
+                if (_starred.value == on) toggleStar(undoable = false)
             }
         }
     }

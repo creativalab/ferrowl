@@ -90,8 +90,10 @@ struct MainView: View {
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .background:
+                TraceLog.note("app: background")
                 wasInBackground = true
             case .active where wasInBackground:
+                TraceLog.note("app: back on screen")
                 wasInBackground = false
                 Task { await model?.returned() }
             default:
@@ -144,6 +146,7 @@ struct MainView: View {
         // (switching account, or opening the message, would close it).
         await mail.afterCompose()
         guard !Task.isCancelled, let pending = app.pendingOpen, let model else { return }
+        TraceLog.note("notification \(pending.email) uid \(pending.uid.map(String.init) ?? "-"), active \(mail.activeEmail ?? "-")")
         if pending.email.caseInsensitiveCompare(mail.activeEmail ?? "") != .orderedSame {
             guard app.mayUse(pending.email) else {
                 app.pendingOpen = nil
@@ -152,11 +155,11 @@ struct MainView: View {
             try? await mail.switchTo(pending.email)
             return
         }
-        app.pendingOpen = nil
         sheet = nil
         // The inbox (a new mailbox, still starting, comes to it by itself).
         if !model.folderId.isEmpty, model.folderId != mail.inboxId { model.openFolder(mail.inboxId) }
         guard let uid = pending.uid else {
+            app.pendingOpen = nil
             column = .content
             return
         }
@@ -164,7 +167,11 @@ struct MainView: View {
         // message as saved on the phone if there, else the reader loads it.
         var listed = model.header(uid)
         if listed == nil { listed = await mail.cachedInbox().first { $0.uid == uid } }
+        // Cleared only now: clearing it restarts this task (its id), and the
+        // restarted one would stop here as cancelled, opening nothing.
         guard !Task.isCancelled else { return }
+        app.pendingOpen = nil
+        TraceLog.note("notification: opening \(uid) (\(listed == nil ? "not" : "already") on the phone)")
         model.openFirst(uid, listed: listed)
     }
 
