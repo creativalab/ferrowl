@@ -98,7 +98,9 @@ struct HTMLView: UIViewRepresentable {
         let followsDark = dark && !hasOwnColors(html)
         let card = dark && !followsDark
         let images = remoteImages ? "data: https: http:" : "data:"
-        let csp = "default-src 'none'; img-src \(images); style-src 'unsafe-inline' data:; media-src data:; font-src data:"
+        // http: pictures are asked over https (iOS blocks plain http, and
+        // it would show the network which mail is read).
+        let csp = "default-src 'none'; img-src \(images); style-src 'unsafe-inline' data:; media-src data:; font-src data:; upgrade-insecure-requests"
         let head = """
         <meta charset="utf-8">
         <meta http-equiv="Content-Security-Policy" content="\(csp)">
