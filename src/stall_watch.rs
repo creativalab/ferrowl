@@ -68,7 +68,7 @@ fn on_press(now: u64) -> Option<String> {
     let since_frame = now.saturating_sub(LAST_FRAME_MS.load(Ordering::Relaxed));
     Some(format!(
         "{} Ferrowl {}: no frame for {} ms after a click {} ms ago (window not repainting)\n",
-        chrono::Local::now().to_rfc3339(),
+        jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z"),
         env!("CARGO_PKG_VERSION"),
         since_frame,
         waited,
