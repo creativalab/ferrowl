@@ -47,6 +47,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if let Some(m) = &app.menu {
         layers.push(context_menu(app, m, p));
     }
+    if let Some((url, at)) = &app.link_menu {
+        layers.push(link_menu(app, url, *at, p));
+    }
     if let Some((kind, at)) = &app.popup {
         layers.push(popup_menu(app, *kind, *at, p));
     }
@@ -1495,6 +1498,7 @@ fn reader<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
             });
         mouse_area(super::hand::hand(stack![probe, shown], app.body_link_hover))
             .on_move(Message::BodyHover)
+            .on_right_press(Message::LinkRightPress)
             .on_exit(Message::BodyLeave)
             .into()
     };
@@ -1849,6 +1853,7 @@ fn html_page<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
             // Back to the message's own coordinates for hit testing.
             .on_move(move |pt| Message::HtmlPointer(pt.x / zoom, top + pt.y / zoom))
             .on_press(Message::HtmlPress)
+            .on_right_press(Message::LinkRightPress)
             .on_exit(Message::HtmlLeave)
             .interaction(if pointer {
                 iced::mouse::Interaction::Pointer
@@ -2321,6 +2326,73 @@ fn context_menu<'a>(app: &'a App, m: &'a crate::app::ContextMenu, p: Palette) ->
     // Keep the menu inside the window.
     let x = m.at.x.min(app.window_width - 300.0).max(0.0);
     let y = m.at.y.min(app.window_height - 400.0).max(0.0);
+    let placed = container(opaque(menu)).padding(Padding {
+        top: y,
+        left: x,
+        right: 0.0,
+        bottom: 0.0,
+    });
+    // Click anywhere else closes it.
+    stack![
+        mouse_area(container(space()).width(Fill).height(Fill))
+            .on_press(Message::CloseMenu)
+            .on_right_press(Message::CloseMenu),
+        placed,
+    ]
+    .width(Fill)
+    .height(Fill)
+    .into()
+}
+
+/// Right-click menu on a link in the message: open it (in the default
+/// browser; a `mailto:` link starts a new message) or copy it.
+fn link_menu<'a>(app: &'a App, url: &'a str, at: iced::Point, p: Palette) -> Element<'a, Message> {
+    let item = |svg: &'static str, label: &'static str, msg: Message| -> Element<'a, Message> {
+        button(
+            row![
+                icon(svg, 15.0, p.text),
+                text(label).size(13).color(p.text).wrapping(Wrapping::None),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        )
+        .width(Fill)
+        .padding([7, 12])
+        .style(ghost(p, p.text))
+        .on_press(msg)
+        .into()
+    };
+    let (open, copy) = if url.starts_with("mailto:") {
+        (t("link_write"), t("link_copy_address"))
+    } else {
+        (t("link_open_browser"), t("link_copy"))
+    };
+    let menu = container(
+        column![
+            item(icons::EXTERNAL, open, Message::OpenLink(url.to_string())),
+            item(icons::COPY, copy, Message::CopyLink(url.to_string())),
+        ]
+        .spacing(2),
+    )
+    .width(260)
+    .padding(6)
+    .style(move |_| container::Style {
+        background: Some(Background::Color(p.bg)),
+        border: Border {
+            color: p.line,
+            width: 1.0,
+            radius: radius(10.0),
+        },
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.18),
+            offset: Vector::new(0.0, 8.0),
+            blur_radius: 24.0,
+        },
+        ..Default::default()
+    });
+    // Keep the menu inside the window.
+    let x = at.x.min(app.window_width - 270.0).max(0.0);
+    let y = at.y.min(app.window_height - 100.0).max(0.0);
     let placed = container(opaque(menu)).padding(Padding {
         top: y,
         left: x,
