@@ -159,13 +159,14 @@ class MessageViewModel @Inject constructor(
     /** Whether the message is in Spam ("Not spam" instead of "Report spam"). */
     val inSpam: Boolean get() = repo.isSpam(folderId)
 
-    /** Report spam, or in Spam "not spam" (which also allows the sender). */
+    /** Report spam (which also blocks the sender), or in Spam "not spam" (which allows it). */
     fun spam() {
         val toSpam = !inSpam
         val from = (_state.value as? MessageState.Shown)?.message?.fromAddress.orEmpty()
         act {
             if (!toSpam && from.isNotBlank()) repo.setSenderRule(from, true)
             repo.spam(folderId, listOf(uid), toSpam, account = account)
+            if (toSpam && from.isNotBlank()) runCatching { repo.blockSpamSenders(listOf(from)) }
         }
     }
 
