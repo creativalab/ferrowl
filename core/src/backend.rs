@@ -1294,6 +1294,17 @@ impl Backend {
         }
     }
 
+    /// The user marked mail from these senders as spam: blocks them (an
+    /// explicit mark replaces an "allowed" rule), never the account's own
+    /// address. The apps call it once the mark really runs (after its Undo
+    /// time on mobile), so an undone mark leaves the lists as they were.
+    pub fn block_spam_senders(account: &Account, addresses: &[String]) {
+        if let Some(c) = cache::get() {
+            let own = [account.email.as_str(), account.username.as_str()];
+            let _ = c.block_spam_senders(&cache::account_key(account), &own, addresses);
+        }
+    }
+
     /// The blocked (`allow` false) or allowed senders.
     pub fn sender_rules(account: &Account, allow: bool) -> Vec<String> {
         cache::get()
@@ -1340,12 +1351,14 @@ impl Backend {
             .map_err(text)
     }
 
-    /// Which of `headers` an enabled rule keeps from being notified.
+    /// Which of `headers` are not to be notified: kept quiet by an enabled
+    /// rule, or from a blocked sender (on their way to Spam).
     pub fn silenced(account: &Account, headers: &[Header]) -> Vec<u32> {
         let rules = Self::rules(account);
+        let blocked = Self::ruled(account, headers, true);
         headers
             .iter()
-            .filter(|h| crate::rules::silenced(&rules, h))
+            .filter(|h| blocked.contains(&h.uid) || crate::rules::silenced(&rules, h))
             .map(|h| h.uid)
             .collect()
     }

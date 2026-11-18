@@ -951,6 +951,19 @@ impl Cache {
         Ok(None)
     }
 
+    /// Blocks the senders of mail the user marked as spam, skipping empty
+    /// addresses and the user's own (`own`). An explicit mark replaces an
+    /// "allowed" rule for the address; a domain rule is left alone.
+    pub fn block_spam_senders(&self, account: &str, own: &[&str], addresses: &[String]) -> Result<()> {
+        let own: Vec<String> = own.iter().map(|a| normalize_sender(a)).collect();
+        for address in addresses.iter().map(|a| normalize_sender(a)) {
+            if address.contains('@') && !address.starts_with('@') && !own.contains(&address) {
+                self.set_sender_rule(account, &address, false)?;
+            }
+        }
+        Ok(())
+    }
+
     /// The account's rules, in their order.
     pub fn rules(&self, account: &str) -> Result<Vec<crate::rules::Rule>> {
         let conn = self.lock();
@@ -1350,6 +1363,52 @@ mod tests {
             c.sender_rule("a", "spam@bad.example").unwrap(),
             Some(false),
             "domain rule again"
+        );
+    }
+
+    #[test]
+    fn spam_marks_block_senders() {
+        let c = Cache::in_memory();
+        c.set_sender_rule("a", "friend@x.example", true).unwrap();
+        c.set_sender_rule("a", "@allowed.example", true).unwrap();
+        c.block_spam_senders(
+            "a",
+            &["Me@Mine.example"],
+            &[
+                "friend@x.example".into(),
+                " <New@X.example> ".into(),
+                "bad@allowed.example".into(),
+                "me@mine.example".into(),
+                String::new(),
+                "@x.example".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            c.sender_rule("a", "friend@x.example").unwrap(),
+            Some(false),
+            "allowed, now blocked"
+        );
+        assert_eq!(c.sender_rule("a", "new@x.example").unwrap(), Some(false));
+        assert_eq!(c.sender_rule("a", "bad@allowed.example").unwrap(), Some(false));
+        assert_eq!(
+            c.sender_rule("a", "good@allowed.example").unwrap(),
+            Some(true),
+            "domain kept"
+        );
+        assert_eq!(
+            c.sender_rule("a", "me@mine.example").unwrap(),
+            None,
+            "never the user"
+        );
+        assert_eq!(
+            c.sender_rule("a", "other@x.example").unwrap(),
+            None,
+            "no domain rule"
+        );
+        assert_eq!(
+            c.sender_rules("a", false).unwrap(),
+            ["bad@allowed.example", "friend@x.example", "new@x.example"]
         );
     }
 
