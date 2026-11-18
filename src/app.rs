@@ -231,6 +231,8 @@ pub enum Section {
     General,
     Accounts,
     Security,
+    /// Blocked and allowed senders.
+    Senders,
     Rules,
     Appearance,
 }
@@ -1308,6 +1310,7 @@ impl App {
             Ok("appearance") => app.screen = Screen::Settings(Section::Appearance),
             Ok("general") => app.screen = Screen::Settings(Section::General),
             Ok("security") => app.screen = Screen::Settings(Section::Security),
+            Ok("senders") => app.screen = Screen::Settings(Section::Senders),
             Ok("rules") => app.screen = Screen::Settings(Section::Rules),
             // The rule editor, with a condition and its preview.
             Ok(v) if v.starts_with("rule:") => {

@@ -77,6 +77,7 @@ pub fn view(app: &App, section: Section) -> Element<'_, Message> {
             nav_btn(Section::General, t("section_general")),
             nav_btn(Section::Accounts, t("section_accounts")),
             nav_btn(Section::Security, t("section_security")),
+            nav_btn(Section::Senders, t("senders_title")),
             nav_btn(Section::Rules, t("rules_title")),
             nav_btn(Section::Appearance, t("section_appearance")),
             space::vertical(),
@@ -104,6 +105,7 @@ pub fn view(app: &App, section: Section) -> Element<'_, Message> {
         Section::General => general(app, p),
         Section::Accounts => accounts(app, p),
         Section::Security => security(app, p),
+        Section::Senders => senders(app, p),
         Section::Rules => rules(app, p),
         Section::Appearance => appearance(app, p),
     };
@@ -239,7 +241,8 @@ fn general(app: &App, p: Palette) -> Element<'_, Message> {
 
 // ---------------------------------------------------------------- Security
 
-/// Blocked and allowed senders: two lists, each with a box to add one.
+/// The Senders section: blocked and allowed senders, two lists, each with
+/// a box to add one.
 fn senders<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
     let list = |allow: bool| -> Element<'a, Message> {
         let entries = if allow {
@@ -303,18 +306,15 @@ fn senders<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
         );
         col.width(Fill).into()
     };
-    container(
-        column![
-            text(t("senders_title")).size(16).font(INTER_BOLD).color(p.text),
-            text(t("senders_desc")).size(14).color(p.text2),
-            dir_row(vec![list(false), list(true)]).spacing(24),
-        ]
-        .spacing(14),
-    )
-    .padding(20)
-    .width(Fill)
-    .style(card(p, p.line, 14.0))
-    .into()
+    let head = title(t("senders_title"), t("senders_desc"), p);
+    if app.config.account().is_none() {
+        return head;
+    }
+    let lists = container(dir_row(vec![list(false), list(true)]).spacing(24))
+        .padding(20)
+        .width(Fill)
+        .style(card(p, p.line, 14.0));
+    column![head, lists].spacing(28).into()
 }
 
 fn security(app: &App, p: Palette) -> Element<'_, Message> {
@@ -413,7 +413,6 @@ fn security(app: &App, p: Palette) -> Element<'_, Message> {
     column![
         title(t("section_security"), t("security_desc"), p),
         privacy,
-        senders(app, p),
         own,
         contacts
     ]
