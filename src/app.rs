@@ -709,6 +709,8 @@ pub struct App {
     /// Dragging the list's edge: cursor x and list width when it started.
     pub list_resize: Option<(f32, f32)>,
     pub menu: Option<ContextMenu>,
+    /// Right-click menu on a link in the message: its address and where.
+    pub link_menu: Option<(String, iced::Point)>,
     pub drag: Option<Drag>,
     pub hover_row: Option<u32>,
     pub drop_folder: Option<String>,
@@ -1000,6 +1002,10 @@ pub enum Message {
     CloseMenu,
     MenuAction(u32, CtxAction),
     OpenLink(String),
+    /// Right click in the message body: a menu if it was on a link.
+    LinkRightPress,
+    /// Puts a link's address on the clipboard.
+    CopyLink(String),
     BodyAction(text_editor::Action),
     SubjectAction(text_editor::Action),
     /// The mouse moved over the plain-text body (position in it).
@@ -1220,6 +1226,7 @@ impl App {
             cursor: iced::Point::ORIGIN,
             list_resize: None,
             menu: None,
+            link_menu: None,
             drag: None,
             hover_row: None,
             drop_folder: None,
@@ -2219,6 +2226,7 @@ impl App {
         self.reload_after = false;
         self.list_failed = false;
         self.menu = None;
+        self.link_menu = None;
         self.drag = None;
         self.popup = None;
         self.preview = None;
@@ -4040,6 +4048,7 @@ impl App {
             }
             Message::CloseMenu => {
                 self.menu = None;
+                self.link_menu = None;
                 Task::none()
             }
             Message::MenuAction(uid, action) => {
@@ -4056,7 +4065,30 @@ impl App {
                 self.scale_factor = f;
                 Task::none()
             }
+            Message::LinkRightPress => {
+                // The HTML view keeps the link under the pointer; the
+                // plain-text body has its hidden copy's cursor there.
+                let url = self.hover_link.clone().or_else(|| {
+                    if !self.body_link_hover {
+                        return None;
+                    }
+                    let at = self.body_probe.cursor().position;
+                    self.body_probe
+                        .line(at.line)
+                        .and_then(|l| crate::linkify::at(&l.text, at.column))
+                });
+                self.link_menu = url
+                    .filter(|u| crate::html::is_openable(u))
+                    .map(|u| (u, self.cursor));
+                Task::none()
+            }
+            Message::CopyLink(url) => {
+                self.link_menu = None;
+                let copied = self.toast(t("copied"), false);
+                Task::batch([iced::clipboard::write(link_text(&url)), copied])
+            }
             Message::OpenLink(url) => {
+                self.link_menu = None;
                 if !crate::html::is_openable(&url) {
                     return Task::none();
                 }
@@ -5447,6 +5479,8 @@ impl App {
                 self.preview = None;
             } else if self.menu.is_some() {
                 self.menu = None;
+            } else if self.link_menu.is_some() {
+                self.link_menu = None;
             } else if self.drag.is_some() {
                 self.drag = None;
             } else if self.appearance_open {
@@ -5561,6 +5595,15 @@ fn save_attachment(name: &str, data: &[u8]) -> anyhow::Result<PathBuf> {
     }
     std::fs::write(&path, data)?;
     Ok(path)
+}
+
+/// What "Copy" puts on the clipboard for a link: the address itself, or
+/// the recipients of a `mailto:` link.
+fn link_text(url: &str) -> String {
+    match url.strip_prefix("mailto:") {
+        Some(rest) => parse_mailto(rest).to,
+        None => url.to_string(),
+    }
 }
 
 /// What a `mailto:` link fills in (RFC 6068).
@@ -5700,6 +5743,13 @@ fn rule_preview(account: &Account, condition: &str) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn link_text_is_the_address_or_the_recipients() {
+        assert_eq!(link_text("https://a.example/x?y=1"), "https://a.example/x?y=1");
+        assert_eq!(link_text("mailto:anna%40b.example?subject=Hi"), "anna@b.example");
+    }
+
     use super::*;
 
     #[test]

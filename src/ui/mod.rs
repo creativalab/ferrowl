@@ -182,6 +182,12 @@ pub mod icons {
     pub const LINK: &str = icon_svg!(
         r#"<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>"#
     );
+    pub const COPY: &str = icon_svg!(
+        r#"<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>"#
+    );
+    pub const EXTERNAL: &str = icon_svg!(
+        r#"<path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>"#
+    );
 }
 
 pub fn icon<'a>(src: &'static str, size: f32, color: Color) -> Element<'a, Message> {
