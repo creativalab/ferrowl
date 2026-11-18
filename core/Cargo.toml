@@ -23,7 +23,7 @@ iana-time-zone = "0.1"
 dirs = "7.0.0"
 imap = { version = "2.4.1", default-features = false }
 keyring = { optional = true, version = "3", features = ["apple-native", "windows-native", "async-secret-service", "tokio", "crypto-rust"] }
-lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "rustls-tls", "hostname"] }
+lettre = { version = "0.11.24", default-features = false, features = ["builder", "smtp-transport", "rustls-tls", "hostname"] }
 mail-parser = "1.0.0"
 pgp = "0.21"
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
