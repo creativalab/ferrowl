@@ -567,6 +567,14 @@ final class MailRepository {
         try engine.setSenderRule(address: address, allow: allow)
     }
 
+    /// The user marked mail from these senders as spam: they go to the
+    /// blocked list (an "allowed" rule included), never the account's own
+    /// address. Called once the mark really ran, after its Undo time.
+    func blockSpamSenders(_ addresses: [String]) {
+        guard !addresses.isEmpty else { return }
+        engine.blockSpamSenders(addresses: addresses)
+    }
+
     func removeSenderRule(_ address: String) { engine.removeSenderRule(address: address) }
 
     func senderRules(allow: Bool) -> [String] { engine.senderRules(allow: allow) }

@@ -157,13 +157,14 @@ final class MessageModel {
         }
     }
 
-    /// Report spam, or in Spam "not spam" (which also allows the sender).
+    /// Report spam (which also blocks the sender), or in Spam "not spam" (which allows it).
     func spam() async -> Bool {
         let toSpam = !inSpam
         let from = message?.fromAddress ?? ""
         return await act { [self] in
             if !toSpam, !from.isEmpty { try mail.setSenderRule(from, allow: true) }
             try await mail.spam(folderId, [uid], toSpam: toSpam)
+            if toSpam, !from.isEmpty { mail.blockSpamSenders([from]) }
         }
     }
 }
