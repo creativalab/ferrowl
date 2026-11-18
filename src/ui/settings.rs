@@ -265,6 +265,25 @@ fn senders<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
             .font(semibold())
             .color(p.text),
         );
+        // The box to add one comes first, above a list that can be long.
+        col = col.push(
+            dir_row(vec![
+                text_input(t("senders_placeholder"), typed)
+                    .on_input(move |v| Message::SenderInput(allow, v))
+                    .on_submit(Message::AddSender(allow))
+                    .size(14)
+                    .padding([8, 10])
+                    .style(input(p, 8.0))
+                    .into(),
+                button(text(t("senders_add")).size(13).font(medium()))
+                    .padding([8, 14])
+                    .style(outline_btn(p, p.text))
+                    .on_press_maybe(typed.contains('@').then_some(Message::AddSender(allow)))
+                    .into(),
+            ])
+            .spacing(8)
+            .align_y(Alignment::Center),
+        );
         if entries.is_empty() {
             col = col.push(text(t("senders_none")).size(13).color(p.muted));
         }
@@ -286,24 +305,6 @@ fn senders<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
                 .align_y(Alignment::Center),
             );
         }
-        col = col.push(
-            dir_row(vec![
-                text_input(t("senders_placeholder"), typed)
-                    .on_input(move |v| Message::SenderInput(allow, v))
-                    .on_submit(Message::AddSender(allow))
-                    .size(14)
-                    .padding([8, 10])
-                    .style(input(p, 8.0))
-                    .into(),
-                button(text(t("senders_add")).size(13).font(medium()))
-                    .padding([8, 14])
-                    .style(outline_btn(p, p.text))
-                    .on_press_maybe(typed.contains('@').then_some(Message::AddSender(allow)))
-                    .into(),
-            ])
-            .spacing(8)
-            .align_y(Alignment::Center),
-        );
         col.width(Fill).into()
     };
     let head = title(t("senders_title"), t("senders_desc"), p);

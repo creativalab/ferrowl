@@ -414,17 +414,7 @@ private fun SenderList(title: String, entries: List<String>, onAdd: (String) -> 
     var typed by rememberSaveable { mutableStateOf("") }
     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(title, style = MaterialTheme.typography.titleSmall)
-        if (entries.isEmpty()) {
-            Text(stringResource(R.string.senders_none), color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        entries.forEach { address ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(address, modifier = Modifier.weight(1f))
-                IconButton(onClick = { onRemove(address) }) {
-                    Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.senders_remove))
-                }
-            }
-        }
+        // The box to add one comes first, above a list that can be long.
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(
                 value = typed,
@@ -441,6 +431,17 @@ private fun SenderList(title: String, entries: List<String>, onAdd: (String) -> 
                 },
                 enabled = typed.contains('@'),
             ) { Text(stringResource(R.string.senders_add)) }
+        }
+        if (entries.isEmpty()) {
+            Text(stringResource(R.string.senders_none), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        entries.forEach { address ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(address, modifier = Modifier.weight(1f))
+                IconButton(onClick = { onRemove(address) }) {
+                    Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.senders_remove))
+                }
+            }
         }
     }
 }
