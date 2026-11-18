@@ -1,5 +1,6 @@
 package com.ferrowl.app.ui.mailbox
 
+import com.ferrowl.app.demo.Demo
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
@@ -120,6 +121,7 @@ import com.ferrowl.core.Header
 import com.ferrowl.core.SortOrder
 import com.ferrowl.core.folderTree
 import kotlin.math.abs
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -151,6 +153,23 @@ fun MailboxScreen(
     }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    // Demo mode: the scene asked for, once the sample inbox is on screen.
+    if (Demo.on) {
+        LaunchedEffect(s.messages.isNotEmpty()) {
+            if (s.messages.isEmpty() || Demo.staged) return@LaunchedEffect
+            Demo.staged = true
+            delay(400)
+            when (Demo.scene) {
+                Demo.Scene.INBOX -> {}
+                Demo.Scene.MESSAGE -> onOpen(s.folderId, Demo.NEWSLETTER, false)
+                Demo.Scene.PGP -> onOpen(s.folderId, Demo.SIGNED, true)
+                Demo.Scene.INVITE -> onOpen(s.folderId, Demo.INVITATION, false)
+                Demo.Scene.ACCOUNTS -> drawer.open()
+                Demo.Scene.CALENDAR -> onCalendar()
+                Demo.Scene.UNDO -> vm.deleteRow(listOf(Demo.TRASHED))
+            }
+        }
+    }
     // Instant notifications: what they send to the server is explained once,
     // with the first account, before anything is sent; Android 13+ then asks
     // for the permission to show them.

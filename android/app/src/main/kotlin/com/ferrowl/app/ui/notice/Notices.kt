@@ -156,7 +156,8 @@ fun NoticeHost(notices: Notices, modifier: Modifier = Modifier) {
 }
 
 /** How long a notice with an action (Undo) stays: the time to use it. */
-private const val ACTION_MS = 6_000
+// Demo mode: an Undo stays for its screenshot.
+private val ACTION_MS = if (com.ferrowl.app.demo.Demo.on) 600_000 else 6_000
 
 /**
  * One notice: dark in both themes (as on iOS), so it stands out over the

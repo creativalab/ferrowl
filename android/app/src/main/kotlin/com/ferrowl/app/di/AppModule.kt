@@ -3,6 +3,8 @@ package com.ferrowl.app.di
 import android.content.Context
 import com.ferrowl.app.data.GoogleSignIn
 import com.ferrowl.app.data.KeystoreTokenVault
+import com.ferrowl.app.demo.Demo
+import com.ferrowl.app.demo.DemoEngine
 import com.ferrowl.core.Engine
 import com.ferrowl.core.setAccessTokenSource
 import com.ferrowl.core.setTokenVault
@@ -27,6 +29,8 @@ object AppModule {
     @Provides
     @Singleton
     fun engine(@ApplicationContext context: Context, vault: KeystoreTokenVault, google: GoogleSignIn): Engine {
+        // Demo mode: an engine on an empty folder of its own, never connected.
+        if (Demo.on) return DemoEngine(context.cacheDir.resolve("demo").path, Locale.getDefault().language)
         setTokenVault(vault)
         setAccessTokenSource(google)
         return Engine(dataDir = context.filesDir.resolve("mail").path, language = Locale.getDefault().language)
@@ -45,6 +49,7 @@ object AppModule {
         // Asked for so it is made first: it hands the engine the token vault.
         @Suppress("UNUSED_PARAMETER") main: Engine,
     ): Engine {
+        if (Demo.on) return DemoEngine(context.cacheDir.resolve("demo").path, Locale.getDefault().language)
         return Engine(dataDir = context.filesDir.resolve("mail").path, language = Locale.getDefault().language)
     }
 }

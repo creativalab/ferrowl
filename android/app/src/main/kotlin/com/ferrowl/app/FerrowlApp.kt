@@ -8,6 +8,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.ferrowl.app.data.MailRepository
+import com.ferrowl.app.demo.Demo
 import com.ferrowl.app.push.ForegroundMailbox
 import com.ferrowl.app.push.MailCheck
 import dagger.hilt.android.HiltAndroidApp
@@ -46,6 +47,8 @@ class FerrowlApp : Application() {
         process.lifecycleScope.launch {
             mail.activeEmail.collect { ForegroundMailbox.active = it }
         }
+        // Demo mode: no background checks, no mail checks at all.
+        if (Demo.on) return
         // The periodic check in the background runs while there are accounts.
         process.lifecycleScope.launch {
             mail.accountList.map { it.isNotEmpty() }.distinctUntilChanged().collect { mailCheck.schedule(it) }

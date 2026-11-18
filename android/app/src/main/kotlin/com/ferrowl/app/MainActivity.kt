@@ -2,7 +2,9 @@ package com.ferrowl.app
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -14,9 +16,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.core.content.IntentCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import com.ferrowl.app.data.Billing
 import com.ferrowl.app.data.MicrosoftSignIn
 import com.ferrowl.app.data.SettingsStore
+import com.ferrowl.app.demo.Demo
 import com.ferrowl.app.push.ComposeRequest
 import com.ferrowl.app.push.ComposeRequests
 import com.ferrowl.app.ui.navigation.FerrowlNavHost
@@ -53,6 +58,18 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Demo mode (Google Play screenshots): the scene to show, also over
+        // the lock screen (the phone stays locked) and with the screen kept on.
+        if (Demo.on) {
+            if (savedInstanceState == null) Demo.start(intent?.getStringExtra(Demo.EXTRA))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                setShowWhenLocked(true)
+                setTurnScreenOn(true)
+            }
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            // No status and navigation bars: only the app is in the picture.
+            WindowCompat.getInsetsController(window, window.decorView).hide(WindowInsetsCompat.Type.systemBars())
+        }
         if (savedInstanceState == null) handle(intent)
         setContent {
             val theme by settings.theme.collectAsState(initial = "auto")

@@ -2,6 +2,7 @@ package com.ferrowl.app.data
 
 import android.content.Context
 import androidx.core.content.edit
+import com.ferrowl.app.demo.Demo
 import com.ferrowl.app.widget.UnreadWidget
 import com.ferrowl.core.Header
 import com.ferrowl.core.messageLink
@@ -29,7 +30,7 @@ data class WidgetMail(val from: String, val subject: String, val date: Long, val
 @Singleton
 class AccountUnread @Inject constructor(@ApplicationContext private val context: Context) {
     private val prefs = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-    private val _counts = MutableStateFlow(load())
+    private val _counts = MutableStateFlow(if (Demo.on) Demo.accountUnread() else load())
     val counts: StateFlow<Map<String, Int>> = _counts.asStateFlow()
 
     private fun load(): Map<String, Int> =
@@ -42,6 +43,8 @@ class AccountUnread @Inject constructor(@ApplicationContext private val context:
      */
     @Synchronized
     fun set(email: String, unread: Int, recent: List<Header>? = null, fresh: List<Header>? = null) {
+        // Demo mode: the saved counts and the widget stay as they are.
+        if (Demo.on) return
         val key = email.lowercase()
         val mails = { headers: List<Header> ->
             headers.filter { !it.seen }.map {
