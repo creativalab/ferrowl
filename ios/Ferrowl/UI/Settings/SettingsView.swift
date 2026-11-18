@@ -337,16 +337,7 @@ struct SenderListsView: View {
 
     private func list(_ title: String, items: [String], entry: Binding<String>, allow: Bool) -> some View {
         Section(title) {
-            if items.isEmpty { Text(t("senders_none")).foregroundStyle(.secondary) }
-            ForEach(items, id: \.self) { item in
-                Text(item)
-                    .swipeActions {
-                        Button(t("senders_remove"), role: .destructive) {
-                            mail.removeSenderRule(item)
-                            reload()
-                        }
-                    }
-            }
+            // The box to add one comes first, above a list that can be long.
             HStack {
                 TextField(t("senders_placeholder"), text: entry)
                     .textInputAutocapitalization(.never)
@@ -362,6 +353,16 @@ struct SenderListsView: View {
                     }
                 }
                 .disabled(entry.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            if items.isEmpty { Text(t("senders_none")).foregroundStyle(.secondary) }
+            ForEach(items, id: \.self) { item in
+                Text(item)
+                    .swipeActions {
+                        Button(t("senders_remove"), role: .destructive) {
+                            mail.removeSenderRule(item)
+                            reload()
+                        }
+                    }
             }
         }
     }

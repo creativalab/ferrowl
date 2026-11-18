@@ -616,6 +616,16 @@ class MailRepository @Inject constructor(
     suspend fun setSenderRule(address: String, allow: Boolean) =
         withContext(Dispatchers.IO) { engine.setSenderRule(address, allow) }
 
+    /**
+     * The user marked mail from these senders as spam: they go to the
+     * blocked list (an "allowed" rule included), never the account's own
+     * address. Called once the mark really ran, after its Undo time.
+     */
+    suspend fun blockSpamSenders(addresses: Collection<String>) {
+        if (addresses.isEmpty()) return
+        withContext(Dispatchers.IO) { engine.blockSpamSenders(addresses.toList()) }
+    }
+
     suspend fun removeSenderRule(address: String) = withContext(Dispatchers.IO) { engine.removeSenderRule(address) }
 
     suspend fun senderRules(allow: Boolean): List<String> = withContext(Dispatchers.IO) { engine.senderRules(allow) }

@@ -615,22 +615,27 @@ class MailboxViewModel @Inject constructor(
     /** Whether the open folder is Spam (the action becomes "Not spam"). */
     val inSpam: Boolean get() = repo.isSpam(_state.value.folderId)
 
-    /** Report spam, or in Spam "not spam" (which also allows the senders). */
+    /**
+     * Report spam (which also blocks the senders), or in Spam "not spam"
+     * (which allows them).
+     */
     fun spamSelected() = spamRows(_state.value.selected.toList())
 
     fun spamRows(uids: List<UInt>) {
         val toSpam = !inSpam
         val s = _state.value
-        // Not spam also allows the senders (once Undo is no longer offered).
-        val senders = if (toSpam) emptySet() else s.shown.filter { it.uid in uids && it.fromAddress.isNotBlank() }.map { it.fromAddress }.toSet()
+        // The senders are blocked, or for not spam allowed, once Undo is no
+        // longer offered: Undo then leaves their rules as they were.
+        val senders = s.shown.filter { it.uid in uids && it.fromAddress.isNotBlank() }.map { it.fromAddress }.toSet()
         val done = when {
             !toSpam -> translate("done_not_spam")
             uids.size > 1 -> translate("spam_moved").replace("{n}", uids.size.toString())
             else -> translate("done_spam")
         }
         removeWithUndo(uids, done) { folder, u, account ->
-            senders.forEach { runCatching { repo.setSenderRule(it, true) } }
+            if (!toSpam) senders.forEach { runCatching { repo.setSenderRule(it, true) } }
             repo.spam(folder, u, toSpam, quiet = true, account = account)
+            if (toSpam) runCatching { repo.blockSpamSenders(senders) }
         }
     }
 

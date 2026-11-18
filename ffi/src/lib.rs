@@ -1862,6 +1862,15 @@ impl Engine {
         Ok(Backend::set_sender_rule(&a, &address, allow)?)
     }
 
+    /// The user marked mail from these senders as spam: blocks them (an
+    /// "allowed" rule included), never the account's own address. The
+    /// apps call it when the mark really runs, after its Undo time.
+    pub fn block_spam_senders(&self, addresses: Vec<String>) {
+        if let Some(a) = lock(&self.account).clone() {
+            Backend::block_spam_senders(&a, &addresses);
+        }
+    }
+
     pub fn remove_sender_rule(&self, address: String) {
         if let Some(a) = lock(&self.account).clone() {
             Backend::remove_sender_rule(&a, &address);
@@ -1903,7 +1912,8 @@ impl Engine {
             .collect()
     }
 
-    /// Which of these messages a rule keeps from being notified.
+    /// Which of these messages are not to be notified: kept quiet by a
+    /// rule, or from a blocked sender.
     pub fn silenced(&self, account: Account, headers: Vec<Header>) -> Vec<u32> {
         let core: Vec<mail::Header> = headers.iter().map(mail::Header::from).collect();
         Backend::silenced(&account.into(), &core)

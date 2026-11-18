@@ -519,19 +519,22 @@ final class MailboxModel {
 
     var inSpam: Bool { mail.isSpam(folderId) }
 
-    /// Report spam, or in Spam "not spam" (which also allows the senders).
+    /// Report spam (which also blocks the senders), or in Spam "not spam"
+    /// (which allows them).
     func spam(_ row: Row? = nil) {
         let uids = target(row)
         let toSpam = !inSpam
-        // Not spam also allows the senders (once Undo is no longer offered).
+        // The senders are blocked, or for not spam allowed, once Undo is no
+        // longer offered: Undo then leaves their rules as they were.
         let set = Set(uids)
-        let senders = toSpam ? [] : Set(shown.filter { set.contains($0.uid) && !$0.fromAddress.isEmpty }.map(\.fromAddress))
+        let senders = Set(shown.filter { set.contains($0.uid) && !$0.fromAddress.isEmpty }.map(\.fromAddress))
         let done = toSpam
             ? (uids.count > 1 ? t("spam_moved", ["n": "\(uids.count)"]) : t("done_spam"))
             : t("done_not_spam")
         removeWithUndo(uids, done: done) { mail, f, u, a in
-            for s in senders { try? mail.setSenderRule(s, allow: true) }
+            if !toSpam { for s in senders { try? mail.setSenderRule(s, allow: true) } }
             try await mail.spam(f, u, toSpam: toSpam, quiet: true, on: a)
+            if toSpam { mail.blockSpamSenders(Array(senders)) }
         }
     }
 

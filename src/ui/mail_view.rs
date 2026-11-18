@@ -2284,6 +2284,14 @@ fn context_menu<'a>(app: &'a App, m: &'a crate::app::ContextMenu, p: Palette) ->
             CtxAction::MoveMenu,
             false,
         ));
+        if header.as_ref().is_some_and(|h| !h.from_address.is_empty()) {
+            v.push(item(
+                icons::BLOCK,
+                t("block_sender").into(),
+                CtxAction::BlockSender,
+                false,
+            ));
+        }
         v.push(sep());
         if kind == FolderKind::Trash {
             v.push(item(
