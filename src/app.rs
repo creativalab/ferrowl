@@ -356,6 +356,7 @@ pub enum CtxAction {
     /// Show the folder list inside the menu.
     MoveMenu,
     Move(String),
+    BlockSender,
 }
 
 /// Right-click menu on a message row.
@@ -1534,8 +1535,14 @@ impl App {
             return Task::none();
         }
         let mut new: Vec<&Header> = headers.iter().filter(|h| h.uid > previous && !h.seen).collect();
-        // Rules may keep some of them quiet.
-        new.retain(|h| !ferrowl_core::rules::silenced(&self.rules, h));
+        // Rules may keep some of them quiet; blocked senders' mail is going
+        // to Spam.
+        let blocked = self
+            .config
+            .account()
+            .map(|acc| Backend::ruled(acc, headers, true))
+            .unwrap_or_default();
+        new.retain(|h| !blocked.contains(&h.uid) && !ferrowl_core::rules::silenced(&self.rules, h));
         if new.is_empty() {
             return Task::none();
         }
@@ -1631,6 +1638,12 @@ impl App {
             CtxAction::DeleteForever => self.ask_delete_forever(uid),
             CtxAction::Move(target) => self.move_message(uid, target),
             CtxAction::MoveMenu => Task::none(),
+            CtxAction::BlockSender => {
+                let Some(h) = self.visible().into_iter().find(|h| h.uid == uid).cloned() else {
+                    return Task::none();
+                };
+                self.block_sender(uid, h.from, h.from_address)
+            }
         }
     }
 
@@ -1783,22 +1796,80 @@ impl App {
         )
     }
 
+    /// The senders' addresses of these loaded messages.
+    fn senders_of(&self, uids: &[u32]) -> Vec<String> {
+        self.headers
+            .iter()
+            .chain(self.search_results.iter().flatten())
+            .filter(|h| uids.contains(&h.uid) && !h.from_address.is_empty())
+            .map(|h| h.from_address.clone())
+            .collect()
+    }
+
     /// "Not spam": the senders of these messages go to the allowed list.
     fn allow_senders_of(&mut self, uids: &[u32]) {
         let Some(acc) = self.config.account().cloned() else {
             return;
         };
-        let addrs: Vec<String> = self
-            .headers
-            .iter()
-            .chain(self.search_results.iter().flatten())
-            .filter(|h| uids.contains(&h.uid) && !h.from_address.is_empty())
-            .map(|h| h.from_address.clone())
-            .collect();
-        for a in addrs {
+        for a in self.senders_of(uids) {
             let _ = Backend::set_sender_rule(&acc, &a, true);
         }
         self.reload_lists();
+    }
+
+    /// "Report spam": the senders of these messages go to the blocked list
+    /// (never the user's own address), so their next mail goes to Spam too.
+    fn block_senders_of(&mut self, uids: &[u32]) {
+        let Some(acc) = self.config.account().cloned() else {
+            return;
+        };
+        Backend::block_spam_senders(&acc, &self.senders_of(uids));
+        self.reload_lists();
+    }
+
+    /// Spam, or not spam, by the user: the senders follow (blocked or
+    /// allowed), then the messages move.
+    fn mark_spam(&mut self, folder: String, uids: Vec<u32>) -> Task<Message> {
+        let to_spam = self.current_kind() != FolderKind::Spam;
+        if to_spam {
+            self.block_senders_of(&uids);
+        } else {
+            self.allow_senders_of(&uids);
+        }
+        self.junk(folder, uids, to_spam, false)
+    }
+
+    /// Blocks a message's sender: the address goes to the blocked list,
+    /// and this message with the sender's other loaded ones to Spam.
+    fn block_sender(&mut self, uid: u32, from: String, address: String) -> Task<Message> {
+        let (Some(folder), Some(acc)) = (self.current_folder.clone(), self.config.account().cloned()) else {
+            return Task::none();
+        };
+        if address.is_empty() {
+            return Task::none();
+        }
+        if let Err(e) = Backend::set_sender_rule(&acc, &address, false) {
+            return self.toast(e, true);
+        }
+        self.reload_lists();
+        let addr = address.to_lowercase();
+        let mut uids: Vec<u32> = self
+            .headers
+            .iter()
+            .filter(|h| h.from_address.to_lowercase() == addr)
+            .map(|h| h.uid)
+            .collect();
+        if !uids.contains(&uid) {
+            uids.push(uid);
+        }
+        let who = if from.is_empty() { address } else { from };
+        let toast = self.toast(tf("sender_blocked", &[("who", &who)]), false);
+        let move_ = if self.current_kind() == FolderKind::Spam {
+            Task::none()
+        } else {
+            self.junk(folder, uids, true, true)
+        };
+        Task::batch([toast, move_])
     }
 
     fn bulk(&mut self, action: Bulk) -> Task<Message> {
@@ -1850,13 +1921,7 @@ impl App {
                     Message::BulkSeen,
                 )
             }
-            Bulk::Spam => {
-                let to_spam = self.current_kind() != FolderKind::Spam;
-                if !to_spam {
-                    self.allow_senders_of(&uids);
-                }
-                self.junk(folder, uids, to_spam, false)
-            }
+            Bulk::Spam => self.mark_spam(folder, uids),
             Bulk::Archive => {
                 if self.current_kind() == FolderKind::Archive {
                     return Task::none();
@@ -3421,50 +3486,13 @@ impl App {
                 let (Some(uid), Some(folder)) = (self.selected, self.current_folder.clone()) else {
                     return Task::none();
                 };
-                let to_spam = self.current_kind() != FolderKind::Spam;
-                if !to_spam {
-                    self.allow_senders_of(&[uid]);
-                }
-                self.junk(folder, vec![uid], to_spam, false)
+                self.mark_spam(folder, vec![uid])
             }
             Message::BlockSender => {
-                let (Some(msg), Some(folder), Some(acc)) = (
-                    self.message.clone(),
-                    self.current_folder.clone(),
-                    self.config.account().cloned(),
-                ) else {
+                let Some(msg) = self.message.clone() else {
                     return Task::none();
                 };
-                if msg.from_address.is_empty() {
-                    return Task::none();
-                }
-                if let Err(e) = Backend::set_sender_rule(&acc, &msg.from_address, false) {
-                    return self.toast(e, true);
-                }
-                self.reload_lists();
-                // This message and the sender's other loaded ones.
-                let addr = msg.from_address.to_lowercase();
-                let mut uids: Vec<u32> = self
-                    .headers
-                    .iter()
-                    .filter(|h| h.from_address.to_lowercase() == addr)
-                    .map(|h| h.uid)
-                    .collect();
-                if !uids.contains(&msg.uid) {
-                    uids.push(msg.uid);
-                }
-                let who = if msg.from.is_empty() {
-                    msg.from_address.clone()
-                } else {
-                    msg.from.clone()
-                };
-                let toast = self.toast(tf("sender_blocked", &[("who", &who)]), false);
-                let move_ = if self.current_kind() == FolderKind::Spam {
-                    Task::none()
-                } else {
-                    self.junk(folder, uids, true, true)
-                };
-                Task::batch([toast, move_])
+                self.block_sender(msg.uid, msg.from, msg.from_address)
             }
             Message::RulesApplied(n, result) => match result {
                 Ok(_) => Task::batch([

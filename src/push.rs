@@ -206,7 +206,8 @@ fn stream(watch: &Watch) -> impl Stream<Item = Message> + use<> {
                             }
                         }
                         let msg = if watch.other {
-                            // Mail a rule keeps quiet is not notified.
+                            // Mail a rule keeps quiet, or from a blocked
+                            // sender, is not notified.
                             let quiet = crate::backend::Backend::silenced(&watch.account, &new);
                             let fresh: Vec<(String, String)> = new
                                 .iter()
