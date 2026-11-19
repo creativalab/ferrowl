@@ -19,6 +19,10 @@ use app::App;
 use ferrowl_core::{backend, cache, config, crypto, html, i18n, mail, markdown, providers};
 
 fn main() -> iced::Result {
+    // Before any thread starts: set_var is only sound while single-threaded.
+    #[cfg(target_os = "linux")]
+    avoid_nvidia_wayland_fifo();
+
     // A second launch only raises the window that is already open.
     let _instance = match single_instance::start() {
         single_instance::Role::Primary(guard) => guard,
@@ -59,6 +63,25 @@ fn main() -> iced::Result {
         app = app.font(font);
     }
     app.run()
+}
+
+/// On Wayland with the NVIDIA driver, asks for a present mode other than FIFO.
+///
+/// With FIFO (iced's default), NVIDIA's `vkAcquireNextImageKHR` waits for the
+/// compositor to take the previous frame. Once GNOME stops showing a window in
+/// the background, that wait never ends and ignores wgpu's 1 s timeout: the
+/// main thread stays blocked inside the driver and the window never paints
+/// again. `no_vsync` picks Immediate or Mailbox and falls back to FIFO only if
+/// neither exists; the compositor still syncs to the display, so no tearing.
+/// An explicit `ICED_PRESENT_MODE` is left alone.
+#[cfg(target_os = "linux")]
+fn avoid_nvidia_wayland_fifo() {
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let nvidia = std::path::Path::new("/proc/driver/nvidia/version").exists();
+    if wayland && nvidia && std::env::var_os("ICED_PRESENT_MODE").is_none() {
+        // SAFETY: called first thing in main, before any other thread exists.
+        unsafe { std::env::set_var("ICED_PRESENT_MODE", "no_vsync") };
+    }
 }
 
 /// On panic: writes a log and, if the main thread stopped,
