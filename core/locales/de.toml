@@ -2,6 +2,7 @@
 
 compose = "Verfassen"
 search_placeholder = "Diesen Ordner durchsuchen (from:, has:attachment, is:unread)"
+clear_search = "Suche löschen"
 sync = "Synchronisieren"
 settings = "Einstellungen"
 appearance = "Darstellung"

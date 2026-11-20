@@ -2,6 +2,7 @@
 
 compose = "作成"
 search_placeholder = "このフォルダを検索（from:、has:attachment、is:unread）"
+clear_search = "検索をクリア"
 sync = "同期"
 settings = "設定"
 appearance = "外観"

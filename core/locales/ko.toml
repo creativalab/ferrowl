@@ -2,6 +2,7 @@
 
 compose = "편지 쓰기"
 search_placeholder = "이 폴더에서 검색 (from:, has:attachment, is:unread)"
+clear_search = "검색 지우기"
 sync = "동기화"
 settings = "설정"
 appearance = "모양"

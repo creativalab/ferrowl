@@ -2,6 +2,7 @@
 
 compose = "إنشاء رسالة"
 search_placeholder = "البحث في هذا المجلد (from:، has:attachment، is:unread)"
+clear_search = "مسح البحث"
 sync = "مزامنة"
 settings = "الإعدادات"
 appearance = "المظهر"

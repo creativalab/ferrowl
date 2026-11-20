@@ -2,6 +2,7 @@
 
 compose = "Scrivi"
 search_placeholder = "Cerca in questa cartella (from:, has:attachment, is:unread)"
+clear_search = "Azzera la ricerca"
 sync = "Sincronizza"
 settings = "Impostazioni"
 appearance = "Aspetto"
