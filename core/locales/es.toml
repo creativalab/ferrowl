@@ -2,6 +2,8 @@
 
 compose = "Redactar"
 search_placeholder = "Buscar en esta carpeta (from:, has:attachment, is:unread)"
+clear_search = "Borrar búsqueda"
+searching_server = "Buscando en el servidor…"
 sync = "Sincronizar"
 settings = "Configuración"
 appearance = "Apariencia"

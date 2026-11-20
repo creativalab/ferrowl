@@ -24,6 +24,8 @@ pub const LIST_ID: &str = "message-list";
 const AUTO_REFRESH: Duration = Duration::from_secs(120);
 /// Pause in typing before the search box (or a recipient field) is looked up.
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
+/// Further pause, after the local results, before the server is searched too.
+const SERVER_SEARCH_DELAY: Duration = Duration::from_millis(600);
 const SUGGEST_DEBOUNCE: Duration = Duration::from_millis(150);
 
 // ---------------------------------------------------------------- state
@@ -32,6 +34,15 @@ const SUGGEST_DEBOUNCE: Duration = Duration::from_millis(150);
 pub enum Screen {
     Mail,
     Settings(Section),
+}
+
+/// What the server found for some words in a folder (UIDs, newest first).
+/// The messages themselves are in the cache, where the search stored them.
+#[derive(Debug, Clone)]
+struct ServerHits {
+    folder: String,
+    words: Vec<String>,
+    uids: Vec<u32>,
 }
 
 /// The invitation in the open message, with our answer so far.
@@ -660,6 +671,12 @@ pub struct App {
     pub search: String,
     /// Full-text matches from the local index while searching.
     pub search_results: Option<Vec<Header>>,
+    /// The server's matches for the search box (see [ServerHits]).
+    server_hits: Option<ServerHits>,
+    /// The server is being searched for the current words.
+    pub server_searching: bool,
+    /// The whole text of the open folder's messages is being indexed.
+    body_indexing: bool,
     /// Folders already indexed (or being indexed) in this session.
     pub indexed: HashSet<String>,
     /// Highest inbox UID seen so far: newer unseen messages are "new mail".
@@ -888,6 +905,18 @@ pub enum Message {
         seq: u64,
         folder: String,
         found: Option<Vec<Header>>,
+    },
+    ServerSearchRun(u64),
+    /// A batch of whole texts was indexed: `Ok(true)` = more are left.
+    BodiesIndexed {
+        folder: String,
+        result: Result<bool, String>,
+    },
+    ServerSearched {
+        seq: u64,
+        folder: String,
+        words: Vec<String>,
+        result: Result<Vec<Header>, String>,
     },
     SetFilter(ListFilter),
     /// Checkbox of a list row: its uids (a whole conversation when grouped).
@@ -1198,6 +1227,9 @@ impl App {
             filter: ListFilter::All,
             search: String::new(),
             search_results: None,
+            server_hits: None,
+            server_searching: false,
+            body_indexing: false,
             indexed: HashSet::new(),
             inbox_max_uid: None,
             pgp_fpr: None,
@@ -2082,10 +2114,25 @@ impl App {
         }
         let seq = self.search_seq;
         let f = folder.clone();
+        // What the server found for these words is read back from the cache
+        // too (where it was stored), so it stays listed with fresh flags and
+        // drops out once deleted.
+        let hits: Vec<u32> = self
+            .server_hits
+            .as_ref()
+            .filter(|s| s.folder == folder && s.words == words)
+            .map(|s| s.uids.clone())
+            .unwrap_or_default();
         self.perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    let found = Backend::search(&acc, &f, &words);
+                    let mut found = Backend::search(&acc, &f, &words);
+                    let known: HashSet<u32> = found.iter().map(|h| h.uid).collect();
+                    let extra: Vec<u32> = hits.into_iter().filter(|u| !known.contains(u)).collect();
+                    if !extra.is_empty() {
+                        found.extend(Backend::cached_by_uid(&acc, &f, &extra));
+                        found.sort_by(|a, b| b.timestamp.cmp(&a.timestamp).then(b.uid.cmp(&a.uid)));
+                    }
                     (!found.is_empty() || crate::cache::get().is_some()).then_some(found)
                 })
                 .await
@@ -2166,6 +2213,24 @@ impl App {
                 b.index_older(f, before, 150).await
             },
             move |result| Message::Indexed {
+                folder: folder.clone(),
+                result,
+            },
+        )
+    }
+
+    /// Indexes the whole text of the next messages of `folder` after
+    /// `pause` (see [Backend::index_bodies]).
+    fn body_step(&mut self, folder: String, pause: Duration) -> Task<Message> {
+        self.body_indexing = true;
+        let b = self.backend.clone();
+        let f = folder.clone();
+        self.perform(
+            async move {
+                tokio::time::sleep(pause).await;
+                b.index_bodies(f, 25).await
+            },
+            move |result| Message::BodiesIndexed {
                 folder: folder.clone(),
                 result,
             },
@@ -2271,6 +2336,9 @@ impl App {
         self.folders.clear();
         self.headers.clear();
         self.search_results = None;
+        self.server_hits = None;
+        self.server_searching = false;
+        self.body_indexing = false;
         self.indexed.clear();
         self.inbox_max_uid = None;
         self.current_folder = None;
@@ -3091,6 +3159,13 @@ impl App {
                 } else {
                     Task::none()
                 };
+                // New mail comes with the start of its text only: the rest
+                // is indexed in the background.
+                let index = if self.body_indexing {
+                    index
+                } else {
+                    Task::batch([index, self.body_step(folder.clone(), INDEX_FIRST_PAUSE * 2)])
+                };
                 // A push came while this was loading: what it announced may
                 // not be in this answer.
                 let again = if std::mem::take(&mut self.reload_after) {
@@ -3151,7 +3226,76 @@ impl App {
                 {
                     self.search_results = found;
                     self.clamp_page();
+                    // Then the server, once per query (a refresh of the list
+                    // searches the index again, not the server).
+                    let words = self.free_words();
+                    let asked = self
+                        .server_hits
+                        .as_ref()
+                        .is_some_and(|s| s.folder == folder && s.words == words);
+                    if !asked && !self.server_searching && self.conn == Conn::Online {
+                        return Task::perform(tokio::time::sleep(SERVER_SEARCH_DELAY), move |_| {
+                            Message::ServerSearchRun(seq)
+                        });
+                    }
                 }
+                Task::none()
+            }
+            Message::ServerSearchRun(seq) => {
+                let words = self.free_words();
+                let Some(folder) = self.current_folder.clone() else {
+                    return Task::none();
+                };
+                if seq != self.search_seq || words.is_empty() || self.conn != Conn::Online {
+                    return Task::none();
+                }
+                self.server_searching = true;
+                let b = self.backend.clone();
+                let w = words.clone();
+                let f = folder.clone();
+                self.perform(async move { b.server_search(f, w).await }, move |result| {
+                    Message::ServerSearched {
+                        seq,
+                        folder: folder.clone(),
+                        words: words.clone(),
+                        result,
+                    }
+                })
+            }
+            Message::ServerSearched {
+                seq,
+                folder,
+                words,
+                result,
+            } => {
+                if seq != self.search_seq {
+                    // Typing went on: the newer words get their own search.
+                    self.server_searching = false;
+                    return self.update(Message::SearchRun(self.search_seq));
+                }
+                self.server_searching = false;
+                if self.current_folder.as_deref() != Some(&folder) || self.free_words() != words {
+                    return Task::none();
+                }
+                let found = match result {
+                    Ok(found) => found,
+                    Err(e) => {
+                        // The local results stay; the server is not asked
+                        // again for these words.
+                        eprintln!("server search: {e}");
+                        Vec::new()
+                    }
+                };
+                self.server_hits = Some(ServerHits {
+                    folder,
+                    words,
+                    uids: found.iter().map(|h| h.uid).collect(),
+                });
+                let list = self.search_results.get_or_insert_with(Vec::new);
+                let known: HashSet<u32> = list.iter().map(|h| h.uid).collect();
+                list.extend(found.into_iter().filter(|h| !known.contains(&h.uid)));
+                list.sort_by(|a, b| b.timestamp.cmp(&a.timestamp).then(b.uid.cmp(&a.uid)));
+                self.clamp_page();
                 Task::none()
             }
             Message::Push(generation) => {
@@ -3353,6 +3497,25 @@ impl App {
                     Task::none()
                 }
             },
+            Message::BodiesIndexed { folder, result } => {
+                self.body_indexing = false;
+                let open = self.current_folder.clone();
+                // Words just indexed may match the search on screen.
+                let search = if self.free_words().is_empty() || open.as_deref() != Some(&folder) {
+                    Task::none()
+                } else {
+                    self.run_search()
+                };
+                let next = match (result, open) {
+                    (Ok(true), Some(open)) if open == folder => self.body_step(folder, INDEX_PAUSE),
+                    // Another folder was opened meanwhile: its turn.
+                    (Ok(_), Some(open)) if open != folder && self.conn == Conn::Online => {
+                        self.body_step(open, INDEX_PAUSE)
+                    }
+                    _ => Task::none(),
+                };
+                Task::batch([search, next])
+            }
             Message::SetFilter(f) => {
                 self.filter = f;
                 self.page = 0;

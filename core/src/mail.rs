@@ -984,6 +984,127 @@ pub fn fetch_older(session: &mut ImapSession, folder: &str, before: u32, count: 
     fetch_range(session, mailbox, last.saturating_sub(count - 1).max(1), last)
 }
 
+/// The server's answer to a full-text search in one folder.
+pub struct Found {
+    pub uidvalidity: Option<u32>,
+    /// Matching UIDs, highest (newest) first.
+    pub uids: Vec<u32>,
+}
+
+/// Asks the server which messages of `folder` contain every word, in the
+/// headers or anywhere in the body (IMAP `SEARCH TEXT`). Unlike the local
+/// index, this also reaches messages never downloaded, and the whole text of
+/// those whose body was not stored.
+pub fn search_text(session: &mut ImapSession, folder: &str, words: &[String]) -> Result<Found> {
+    let mailbox = session.select(folder)?;
+    let mut found = Found {
+        uidvalidity: mailbox.uid_validity,
+        uids: Vec::new(),
+    };
+    let Some(criteria) = text_criteria(words) else {
+        return Ok(found);
+    };
+    if mailbox.exists > 0 {
+        found.uids = session.uid_search(criteria)?.into_iter().collect();
+        found.uids.sort_unstable_by(|a, b| b.cmp(a));
+    }
+    Ok(found)
+}
+
+/// `TEXT "a" TEXT "b"` (all must match), with `CHARSET UTF-8` in front when
+/// a word is not plain ASCII. `None` when no word is left.
+fn text_criteria(words: &[String]) -> Option<String> {
+    let words: Vec<String> = words
+        .iter()
+        // Line breaks would end the command early.
+        .map(|w| w.chars().filter(|c| !c.is_control()).collect::<String>())
+        .filter(|w| !w.trim().is_empty())
+        .collect();
+    if words.is_empty() {
+        return None;
+    }
+    let terms: Vec<String> = words.iter().map(|w| format!("TEXT {}", imap_quote(w))).collect();
+    let charset = if words.iter().all(|w| w.is_ascii()) {
+        ""
+    } else {
+        "CHARSET UTF-8 "
+    };
+    Some(format!("{charset}{}", terms.join(" ")))
+}
+
+/// List entries of the given UIDs of the selected folder (as in the list:
+/// headers and the start of the body), newest first.
+pub fn fetch_uids(session: &mut ImapSession, uids: &[u32]) -> Result<Vec<Header>> {
+    if uids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let query =
+        format!("(UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER] BODY.PEEK[TEXT]<0.{PREVIEW_BYTES}>)");
+    let fetches = session.uid_fetch(uid_set(uids), query)?;
+    let mut headers: Vec<Header> = fetches
+        .iter()
+        .filter_map(|f| {
+            let uid = f.uid?;
+            let mut raw = f.header().unwrap_or_default().to_vec();
+            raw.extend_from_slice(f.text().unwrap_or_default());
+            let mut h = header_from_raw(uid, &raw, f.flags().contains(&imap::types::Flag::Seen));
+            h.flagged = f.flags().contains(&imap::types::Flag::Flagged);
+            h.size = f.size.unwrap_or(0);
+            fill_missing_date(&mut h.timestamp, f);
+            Some(h)
+        })
+        .collect();
+    headers.sort_by(|a, b| b.timestamp.cmp(&a.timestamp).then(b.uid.cmp(&a.uid)));
+    Ok(headers)
+}
+
+/// Bytes of each message downloaded to index its text (the rest, mostly
+/// attachments and long HTML, is left out).
+const INDEX_BYTES: u32 = 65_536;
+/// Characters of text kept per message for the search index.
+const INDEX_CHARS: usize = 20_000;
+
+/// The text of the given UIDs of `folder`, for the search index: every text
+/// part (HTML turned into text) of the first [INDEX_BYTES] of each message.
+pub fn fetch_index_text(session: &mut ImapSession, folder: &str, uids: &[u32]) -> Result<Vec<(u32, String)>> {
+    if uids.is_empty() {
+        return Ok(Vec::new());
+    }
+    session.select(folder)?;
+    let fetches = session.uid_fetch(
+        uid_set(uids),
+        format!("(UID BODY.PEEK[HEADER] BODY.PEEK[TEXT]<0.{INDEX_BYTES}>)"),
+    )?;
+    Ok(fetches
+        .iter()
+        .filter_map(|f| {
+            let mut raw = f.header().unwrap_or_default().to_vec();
+            raw.extend_from_slice(f.text().unwrap_or_default());
+            Some((f.uid?, index_text(&raw)))
+        })
+        .collect())
+}
+
+/// All text parts of a (possibly cut) message, joined, up to [INDEX_CHARS].
+fn index_text(raw: &[u8]) -> String {
+    let Some(msg) = MessageParser::default().parse(raw) else {
+        return String::new();
+    };
+    let mut out = String::new();
+    let mut i = 0;
+    while let Some(t) = msg.body_text(i) {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&t);
+        i += 1;
+        if out.len() >= INDEX_CHARS * 4 {
+            break;
+        }
+    }
+    out.chars().take(INDEX_CHARS).collect()
+}
+
 fn fetch_range(
     session: &mut ImapSession,
     mailbox: imap::types::Mailbox,
@@ -1951,6 +2072,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn index_text_reads_html_only_mail() {
+        let raw = b"From: a@b.it\r\nSubject: Ordine\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=x\r\n\r\n--x\r\nContent-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\nPHA+N3ggTklDT1JFVFRFUVVJQ0sqU1BSQVk8L3A+\r\n--x--\r\n";
+        assert!(index_text(raw).contains("NICORETTEQUICK"));
+    }
+
+    #[test]
+    fn server_search_criteria() {
+        let w = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(text_criteria(&w(&[])), None);
+        assert_eq!(text_criteria(&w(&[" "])), None);
+        assert_eq!(
+            text_criteria(&w(&["nicorette", "ordine"])).as_deref(),
+            Some("TEXT \"nicorette\" TEXT \"ordine\"")
+        );
+        assert_eq!(
+            text_criteria(&w(&["città"])).as_deref(),
+            Some("CHARSET UTF-8 TEXT \"città\"")
+        );
+        // Quotes are escaped and line breaks cannot end the command.
+        assert_eq!(
+            text_criteria(&w(&["a\"b\r\nUID 1"])).as_deref(),
+            Some("TEXT \"a\\\"bUID 1\"")
+        );
+    }
+
+    #[test]
     fn replies_go_to_reply_to() {
         let raw = b"From: Shop <noreply@shop.example>\r\nReply-To: Help <help@shop.example>, sales@shop.example\r\n\
 To: me@example.org, Bob <bob@example.org>\r\nCc: carl@example.org\r\nSubject: Order\r\n\r\nThanks\r\n";
@@ -2344,6 +2491,32 @@ To: me@example.org, Bob <bob@example.org>\r\nCc: carl@example.org\r\nSubject: Or
         };
         let err = connect(&acc).err().expect("login must fail");
         assert!(format!("{err:#}").contains("IMAP login failed"), "{err:#}");
+    }
+
+    /// Server-side search on a configured account:
+    /// `FERROWL_LIVE_WORDS="a b" [FERROWL_LIVE_EMAIL=…] cargo test live_server_search -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_server_search() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let config = crate::config::Config::load();
+        let acc = match std::env::var("FERROWL_LIVE_EMAIL") {
+            Ok(email) => config.accounts.iter().find(|a| a.email == email).cloned(),
+            Err(_) => config.account().cloned(),
+        }
+        .expect("no account");
+        let words: Vec<String> = std::env::var("FERROWL_LIVE_WORDS")
+            .expect("FERROWL_LIVE_WORDS")
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        let mut s = connect(&acc).unwrap_or_else(|e| panic!("IMAP ERROR: {e:#}"));
+        let started = std::time::Instant::now();
+        let found = search_text(&mut s, "INBOX", &words).unwrap();
+        println!("{} matches in {:?}", found.uids.len(), started.elapsed());
+        for h in fetch_uids(&mut s, &found.uids[..found.uids.len().min(10)]).unwrap() {
+            println!("- {} | {} | {}", h.timestamp, h.from, h.subject);
+        }
     }
 
     /// Uses the configured account: `cargo test live_account -- --ignored --nocapture`
