@@ -58,6 +58,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
@@ -172,8 +173,28 @@ fun MessageScreen(
         Box(Modifier.fillMaxSize().padding(padding)) {
             when (val s = state) {
                 MessageState.Loading, MessageState.Gone -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                // The reason is shown as a notice at the top; the page stays empty.
-                is MessageState.Failed -> {
+                // The reason is shown as a notice at the top; the page stays
+                // empty. A message deleted or moved meanwhile (e.g. opened
+                // from a notification after it went elsewhere) says so.
+                is MessageState.Failed -> if (s.error == stringResource(R.string.err_not_found)) {
+                    Column(
+                        Modifier.align(Alignment.Center).padding(32.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            stringResource(R.string.message_gone),
+                            style = MaterialTheme.typography.titleMedium,
+                            textAlign = TextAlign.Center,
+                        )
+                        Text(
+                            stringResource(R.string.message_gone_desc),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                } else {
                     val notices = LocalNotices.current
                     LaunchedEffect(s.error) { notices.error(s.error) }
                 }

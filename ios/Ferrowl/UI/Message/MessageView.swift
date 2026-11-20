@@ -25,6 +25,8 @@ final class MessageModel {
         case loading
         case shown(Message)
         case failed(String)
+        /// Deleted or moved meanwhile (e.g. on another device).
+        case gone
     }
 
     let mail: MailRepository
@@ -60,6 +62,11 @@ final class MessageModel {
         return nil
     }
 
+    var isGone: Bool {
+        if case .gone = state { return true }
+        return false
+    }
+
     func load() async {
         guard case .loading = state else { return }
         TraceLog.note("message \(uid): loading")
@@ -76,7 +83,14 @@ final class MessageModel {
             refreshInvite()
         } catch {
             TraceLog.note("message \(uid): failed \(error)")
-            state = .failed(describe(error))
+            let text = describe(error)
+            if text == t("err_not_found") {
+                state = .gone
+                // A notification of it may still be on screen (and lead here).
+                if let email = mail.activeEmail { await MailNotifications.remove(account: email, uid: uid) }
+            } else {
+                state = .failed(text)
+            }
         }
     }
 
@@ -209,6 +223,10 @@ struct MessageView: View {
             case .failed(let error):
                 ContentUnavailableView(t("err_generic"), systemImage: "exclamationmark.triangle", description: Text(error))
                     .padding(.top, 60)
+            case .gone:
+                ContentUnavailableView(t("message_gone"), systemImage: "tray",
+                                       description: Text(t("message_gone_desc")))
+                    .padding(.top, 60)
             case .shown(let message):
                 MessageBody(message: message, model: model, compose: compose)
                     .padding()
@@ -226,7 +244,7 @@ struct MessageView: View {
             // Read now: the unread counts (and the app icon's number) change.
             await mailbox?.loadUnread()
         }
-        .toolbar { if !embedded { toolbar } }
+        .toolbar { if !embedded, !model.isGone { toolbar } }
         .overlay(alignment: .bottomLeading) {
             if !embedded, model.message != nil { actions }
         }
