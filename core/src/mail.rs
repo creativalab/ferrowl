@@ -1306,6 +1306,32 @@ fn fill_missing_date(timestamp: &mut i64, f: &imap::types::Fetch) {
     }
 }
 
+/// The file extension for an unnamed part of type `ctype/subtype`.
+fn unnamed_extension(ctype: &str, subtype: &str) -> Option<&'static str> {
+    let ext = match (ctype.to_lowercase().as_str(), subtype.to_lowercase().as_str()) {
+        ("image", "jpeg" | "jpg" | "pjpeg") => "jpg",
+        ("image", "png") => "png",
+        ("image", "gif") => "gif",
+        ("image", "webp") => "webp",
+        ("image", "heic") => "heic",
+        ("image", "svg+xml") => "svg",
+        ("image", "bmp") => "bmp",
+        ("image", "tiff") => "tiff",
+        ("application", "pdf") => "pdf",
+        ("application", "zip") => "zip",
+        ("application", "json") => "json",
+        ("text", "plain") => "txt",
+        ("text", "html") => "html",
+        ("text", "csv") => "csv",
+        ("text", "calendar") => "ics",
+        ("message", "rfc822") => "eml",
+        ("audio", "mpeg") => "mp3",
+        ("video", "mp4") => "mp4",
+        _ => return None,
+    };
+    Some(ext)
+}
+
 /// Builds the reader's view of a raw message (OpenPGP unwrapped).
 pub fn parse_full(uid: u32, raw: &[u8], keys: &PgpKeys) -> Result<FullMessage> {
     let outer = MessageParser::default().parse(raw).context(t("err_unreadable"))?;
@@ -1363,23 +1389,38 @@ pub fn parse_full(uid: u32, raw: &[u8], keys: &PgpKeys) -> Result<FullMessage> {
             (!id.is_empty()).then(|| (id, part.decoded().into_owned()))
         })
         .collect();
+    let html_lower = html.as_deref().map(str::to_lowercase).unwrap_or_default();
     let attachments = msg
         .attachments()
-        // An unnamed calendar part is the invitation itself, shown as a
-        // card: not listed as "attachment-1".
         .filter(|part| {
-            part.attachment_name().is_some()
-                || !part.content_type().is_some_and(|ct| {
-                    ct.ctype().eq_ignore_ascii_case("text")
-                        && ct.subtype().is_some_and(|s| s.eq_ignore_ascii_case("calendar"))
-                })
+            if part.attachment_name().is_some() {
+                return true;
+            }
+            // An unnamed calendar part is the invitation itself, shown as a
+            // card: not listed as "attachment-1".
+            let calendar = part.content_type().is_some_and(|ct| {
+                ct.ctype().eq_ignore_ascii_case("text")
+                    && ct.subtype().is_some_and(|s| s.eq_ignore_ascii_case("calendar"))
+            });
+            // An unnamed image the HTML shows (`cid:`) is part of the body
+            // (a newsletter's logo), not something sent along.
+            let shown = part.content_id().is_some_and(|id| {
+                let id = id.trim().trim_matches(['<', '>']).to_lowercase();
+                !id.is_empty() && html_lower.contains(&format!("cid:{id}"))
+            });
+            !calendar && !shown
         })
         .enumerate()
         .map(|(i, part)| Attachment {
-            name: part
-                .attachment_name()
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("attachment-{}", i + 1)),
+            name: part.attachment_name().map(str::to_string).unwrap_or_else(|| {
+                // An extension from the type, so phones can preview it.
+                let ext = part
+                    .content_type()
+                    .and_then(|ct| unnamed_extension(ct.ctype(), ct.subtype()?))
+                    .map(|e| format!(".{e}"))
+                    .unwrap_or_default();
+                format!("attachment-{}{ext}", i + 1)
+            }),
             data: part.decoded().into_owned(),
         })
         .collect();
@@ -2095,6 +2136,31 @@ mod tests {
             text_criteria(&w(&["a\"b\r\nUID 1"])).as_deref(),
             Some("TEXT \"a\\\"bUID 1\"")
         );
+    }
+
+    #[test]
+    fn unnamed_parts_shown_inline_or_named_by_type() {
+        let raw = b"From: Shop <noreply@shop.example>\r\nTo: me@example.org\r\nSubject: News\r\n\
+MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"m\"\r\n\r\n\
+--m\r\nContent-Type: multipart/related; boundary=\"r\"\r\n\r\n\
+--r\r\nContent-Type: text/html\r\n\r\n<img src=\"CID:Logo@shop\"> Hi\r\n\
+--r\r\nContent-Type: image/gif\r\nContent-ID: <logo@shop>\r\nContent-Transfer-Encoding: base64\r\n\r\nR0lGODlhAQABAAAAACw=\r\n\
+--r--\r\n\
+--m\r\nContent-Type: image/png\r\nContent-Disposition: attachment\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw0KGgo=\r\n\
+--m\r\nContent-Type: application/pdf; name=\"bill.pdf\"\r\nContent-Disposition: attachment; filename=\"bill.pdf\"\r\n\
+Content-Transfer-Encoding: base64\r\n\r\nJVBERi0=\r\n\
+--m--\r\n";
+        let nobody = |_: &str| None;
+        let keys = PgpKeys {
+            own: None,
+            contact: &nobody,
+            autocrypt: &nobody,
+            learn: &|_, _| {},
+        };
+        let m = parse_full(1, raw, &keys).unwrap();
+        let names: Vec<_> = m.attachments.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["attachment-1.png", "bill.pdf"]);
+        assert!(m.inline.contains_key("logo@shop"));
     }
 
     #[test]
