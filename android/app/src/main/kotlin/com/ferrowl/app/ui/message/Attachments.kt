@@ -23,7 +23,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -44,9 +48,8 @@ import java.io.File
 
 /**
  * The message's attachments, side by side under the header (the HTML below
- * scrolls on its own). A tap opens one in an app that shows its kind of
- * file (gallery, PDF viewer…), which also offers to share or save it, as
- * Quick Look does on iOS.
+ * scrolls on its own). A tap previews one inside the app ([AttachmentPreview]),
+ * as Quick Look does on iOS.
  */
 @Composable
 internal fun AttachmentRow(uid: UInt, attachments: List<Attachment>) {
@@ -56,6 +59,8 @@ internal fun AttachmentRow(uid: UInt, attachments: List<Attachment>) {
     val scope = rememberCoroutineScope()
     val noPreview = stringResource(R.string.preview_failed)
     val label = stringResource(R.string.preview_attachment)
+    var shown by remember(uid) { mutableStateOf<File?>(null) }
+    shown?.let { AttachmentPreview(it) { shown = null } }
     Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
             if (attachments.size == 1) {
@@ -71,7 +76,7 @@ internal fun AttachmentRow(uid: UInt, attachments: List<Attachment>) {
                     onClick = {
                         scope.launch {
                             val file = withContext(Dispatchers.IO) { attachmentFile(context, uid, a) }
-                            if (file == null || !openAttachment(context, file)) notices.error(noPreview)
+                            if (file == null) notices.error(noPreview) else shown = file
                         }
                     },
                     shape = RoundedCornerShape(10.dp),
@@ -119,7 +124,7 @@ internal fun mimeOf(name: String): String {
 }
 
 /** Opens the file in another app; false when none can show it. */
-private fun openAttachment(context: Context, file: File): Boolean {
+internal fun openAttachment(context: Context, file: File): Boolean {
     val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
     val view = Intent(Intent.ACTION_VIEW)
         .setDataAndType(uri, mimeOf(file.name))

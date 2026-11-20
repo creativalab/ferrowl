@@ -25,3 +25,14 @@ class InlineImagesTest {
         assertEquals("application/octet-stream", imageMime(byteArrayOf(1, 2, 3)))
     }
 }
+
+class PreviewKindTest {
+    @Test
+    fun byExtension() {
+        assertEquals(PreviewKind.PDF, previewKind("F24_11.PDF"))
+        assertEquals(PreviewKind.IMAGE, previewKind("attachment-1.png"))
+        assertEquals(PreviewKind.TEXT, previewKind("notes.csv"))
+        assertEquals(PreviewKind.NONE, previewKind("archive.zip"))
+        assertEquals(PreviewKind.NONE, previewKind("attachment-3"))
+    }
+}
