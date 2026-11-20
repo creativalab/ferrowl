@@ -237,9 +237,10 @@ private fun Body(m: Message, extra: @Composable () -> Unit) {
             }
         }
         extra()
+        AttachmentRow(m.uid, m.attachments)
         val html = m.html
         if (html != null) {
-            HtmlView(html)
+            HtmlView(html, m.inline)
         } else {
             SelectionContainer {
                 Text(linked(m.text), modifier = Modifier.verticalScroll(rememberScrollState()).padding(16.dp))
@@ -277,7 +278,7 @@ internal fun linked(text: String): AnnotatedString = buildAnnotatedString {
  * by the overview mode, and can be pinched to zoom in.
  */
 @Composable
-private fun HtmlView(html: String) {
+private fun HtmlView(html: String, inline: Map<String, ByteArray> = emptyMap()) {
     var loadImages by remember(html) { mutableStateOf(false) }
     val remote = LocalRemoteImages.current || loadImages
     // Read by the WebView's client, off the main thread.
@@ -298,7 +299,9 @@ private fun HtmlView(html: String) {
     // Dark theme: plain mail follows it; mail with its own colors stays light.
     val colors = MaterialTheme.colorScheme
     val dark = colors.surface.luminance() < 0.5f
-    val page = fitToScreen(html, if (dark) DarkPage(cssColor(colors.onSurface), cssColor(colors.primary)) else null)
+    // cid: pictures (a newsletter's logo, sent with the mail) become data: URLs.
+    val withInline = remember(html, inline) { withInlineImages(html, inline) }
+    val page = fitToScreen(withInline, if (dark) DarkPage(cssColor(colors.onSurface), cssColor(colors.primary)) else null)
     // A WebView whose renderer is gone cannot be used again: a new one
     // takes its place (and loads the page anew).
     var renderer by remember { mutableIntStateOf(0) }
@@ -397,6 +400,33 @@ internal fun fitToScreen(html: String, dark: DarkPage? = null): String {
         clean.substring(0, at.range.last + 1) + head + clean.substring(at.range.last + 1)
     } else {
         "<!doctype html><html><head>$head</head><body>$clean</body></html>"
+    }
+}
+
+/**
+ * The mail's `cid:` references replaced by the parts they name, as data:
+ * URLs (the WebView loads nothing else from the message), as iOS does.
+ */
+internal fun withInlineImages(html: String, inline: Map<String, ByteArray>): String {
+    var out = html
+    for ((cid, data) in inline) {
+        if (cid.isEmpty()) continue
+        val uri = "data:${imageMime(data)};base64," + java.util.Base64.getEncoder().encodeToString(data)
+        out = out.replace("cid:$cid", uri, ignoreCase = true)
+    }
+    return out
+}
+
+/** The picture type from its first bytes (mail often labels it loosely). */
+internal fun imageMime(data: ByteArray): String {
+    fun starts(vararg b: Int) = data.size >= b.size && b.indices.all { data[it] == b[it].toByte() }
+    return when {
+        starts(0x89, 0x50, 0x4E, 0x47) -> "image/png"
+        starts(0xFF, 0xD8, 0xFF) -> "image/jpeg"
+        starts(0x47, 0x49, 0x46, 0x38) -> "image/gif"
+        data.size >= 12 && starts(0x52, 0x49, 0x46, 0x46) && String(data, 8, 4, Charsets.US_ASCII) == "WEBP" -> "image/webp"
+        String(data, 0, minOf(data.size, 256), Charsets.UTF_8).contains("<svg", ignoreCase = true) -> "image/svg+xml"
+        else -> "application/octet-stream"
     }
 }
 
