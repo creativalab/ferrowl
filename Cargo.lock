@@ -2234,7 +2234,7 @@ checksum = "629c9d6b6f30b5604089e0980f4d924a013aacb1654a6cdf5d3d852224f68651"
 
 [[package]]
 name = "ferrowl"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "anyhow",
  "anyrender",
@@ -2269,7 +2269,7 @@ dependencies = [
 
 [[package]]
 name = "ferrowl-core"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2300,7 +2300,7 @@ dependencies = [
 
 [[package]]
 name = "ferrowl-ffi"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "ferrowl-core",
  "jiff",
