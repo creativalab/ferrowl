@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Files shared through the FileProvider: only photos taken for an attachment. -->
+<!-- Files shared through the FileProvider: photos taken for an attachment,
+     and a message's attachments opened in another app. -->
 <paths>
     <cache-path name="camera" path="camera/" />
+    <cache-path name="attachments" path="attachments/" />
 </paths>
