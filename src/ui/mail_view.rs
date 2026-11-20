@@ -1520,20 +1520,23 @@ fn reader<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
 
     let mut content = column![
         // Read-only editor rather than text: the subject can be selected
-        // and copied.
-        text_editor(&app.subject)
-            .on_action(Message::SubjectAction)
-            .size(26)
-            .font(INTER_BOLD)
-            .line_height(1.25)
-            .padding(0)
-            .style(move |_, _| text_editor::Style {
-                background: Background::Color(Color::TRANSPARENT),
-                border: Border::default(),
-                placeholder: p.muted,
-                value: p.text,
-                selection: mix(p.accent, p.bg, 0.7),
-            }),
+        // and copied (wrapped so the wheel scrolls the reader over it too).
+        super::hand::hand(
+            text_editor(&app.subject)
+                .on_action(Message::SubjectAction)
+                .size(26)
+                .font(INTER_BOLD)
+                .line_height(1.25)
+                .padding(0)
+                .style(move |_, _| text_editor::Style {
+                    background: Background::Color(Color::TRANSPARENT),
+                    border: Border::default(),
+                    placeholder: p.muted,
+                    value: p.text,
+                    selection: mix(p.accent, p.bg, 0.7),
+                }),
+            false,
+        ),
     ]
     .spacing(24)
     // Fill (up to 820): a shrinking column would size the HTML message to

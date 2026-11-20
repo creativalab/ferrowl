@@ -1,6 +1,11 @@
 //! A wrapper that shows the pointing hand over its content when told to,
 //! whatever cursor the content asks for (the read-only mail body is a text
 //! editor, which always asks for the text cursor, also over links).
+//!
+//! It also keeps the mouse wheel from the content: a text editor takes
+//! every wheel turn over it to scroll itself, even when it is as tall as
+//! its text and has nothing to scroll, so the reader around it never
+//! scrolled while the pointer was on the message.
 
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{Operation, Tree};
@@ -68,6 +73,9 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
+        if matches!(event, Event::Mouse(mouse::Event::WheelScrolled { .. })) {
+            return;
+        }
         self.content.as_widget_mut().update(
             &mut tree.children[0],
             event,
