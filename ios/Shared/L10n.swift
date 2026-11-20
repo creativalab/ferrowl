@@ -3,14 +3,19 @@ import Foundation
 /// UI texts come from the engine (`core/locales/*.toml`, the same files as
 /// the desktop and Android apps), so a translation is written once for all.
 ///
-/// `t("selected_count", ["n": "3"])` fills the `{n}` placeholder.
+/// `t("selected_count", ["n": "3"])` fills the `{n}` placeholder;
+/// `{email}` is the support address unless given.
 func t(_ key: String, _ args: [String: String] = [:]) -> String {
     var text = Translations.text(key)
+    var args = args
+    if args["email"] == nil { args["email"] = supportEmail }
     for (name, value) in args {
         text = text.replacingOccurrences(of: "{\(name)}", with: value)
     }
     return text
 }
+
+let supportEmail = "support@ferrowl.com"
 
 /// The engine's texts, each asked once: lists draw many rows, each with
 /// several labels, and a call into the engine for each was too slow.

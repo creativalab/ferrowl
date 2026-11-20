@@ -41,6 +41,15 @@ enum MailNotifications {
         if !gone.isEmpty { center.removeDeliveredNotifications(withIdentifiers: gone) }
     }
 
+    /// Removes `account`'s notification of message `uid`, if one is on screen.
+    static func remove(account: String, uid: UInt32) async {
+        let center = UNUserNotificationCenter.current()
+        let ids = await center.deliveredNotifications()
+            .filter { isOf($0, account) && self.uid(of: $0) == uid }
+            .map(\.request.identifier)
+        if !ids.isEmpty { center.removeDeliveredNotifications(withIdentifiers: ids) }
+    }
+
     private static func isOf(_ n: UNNotification, _ account: String) -> Bool {
         let content = n.request.content
         let email = content.userInfo["email"] as? String ?? content.threadIdentifier
