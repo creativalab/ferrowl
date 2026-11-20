@@ -3,6 +3,7 @@
 compose = "Escrever"
 search_placeholder = "Pesquisar nesta pasta (from:, has:attachment, is:unread)"
 clear_search = "Limpar pesquisa"
+searching_server = "Pesquisando no servidor…"
 sync = "Sincronizar"
 settings = "Configurações"
 appearance = "Aparência"

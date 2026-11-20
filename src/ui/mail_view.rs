@@ -864,6 +864,8 @@ fn message_list<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
     let content: Element<'a, Message> = if visible.is_empty() {
         let msg = if app.loading_list || app.conn == Conn::Connecting {
             t("list_loading")
+        } else if app.server_searching {
+            t("searching_server")
         } else {
             t("list_empty")
         };

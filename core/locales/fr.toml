@@ -3,6 +3,7 @@
 compose = "Nouveau message"
 search_placeholder = "Rechercher dans ce dossier (from:, has:attachment, is:unread)"
 clear_search = "Effacer la recherche"
+searching_server = "Recherche sur le serveur…"
 sync = "Synchroniser"
 settings = "Paramètres"
 appearance = "Apparence"

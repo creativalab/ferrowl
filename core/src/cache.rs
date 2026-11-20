@@ -381,6 +381,47 @@ impl Cache {
         Ok(())
     }
 
+    /// Messages of a folder whose text is not fully indexed yet (only the
+    /// start fetched with the list), newest first.
+    pub fn bodies_to_index(&self, account: &str, folder: &str, limit: u32) -> Result<Vec<u32>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT uid FROM messages WHERE account = ?1 AND folder = ?2 AND NOT full ORDER BY uid DESC LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![account, folder, limit], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Stores the indexed text of messages (uid, text), without touching
+    /// their read state; `done` UIDs the server did not return (gone) are
+    /// marked too, so they are not asked again.
+    pub fn store_index_text(
+        &self,
+        account: &str,
+        folder: &str,
+        texts: &[(u32, String)],
+        done: &[u32],
+    ) -> Result<()> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        {
+            let mut text = tx.prepare_cached(
+                "UPDATE messages SET body = ?4, full = 1 WHERE account = ?1 AND folder = ?2 AND uid = ?3 AND NOT full",
+            )?;
+            for (uid, body) in texts {
+                text.execute(params![account, folder, uid, body])?;
+            }
+            let mut mark = tx.prepare_cached(
+                "UPDATE messages SET full = 1 WHERE account = ?1 AND folder = ?2 AND uid = ?3",
+            )?;
+            for uid in done {
+                mark.execute(params![account, folder, uid])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn store_body(&self, account: &str, folder: &str, uid: u32, body: &str) -> Result<()> {
         self.lock().execute(
             "UPDATE messages SET body = ?4, full = 1, seen = 1
@@ -472,6 +513,25 @@ impl Cache {
         )?;
         let rows = stmt.query_map(params![account, folder, limit], row_to_header)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The cached messages among `uids` (any order; missing ones are skipped).
+    pub fn headers_by_uid(&self, account: &str, folder: &str, uids: &[u32]) -> Result<Vec<Header>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT uid, sender, subject, preview, ts, seen, attach, msgid, parents, flagged, size, labels, category, from_addr FROM messages
+             WHERE account = ?1 AND folder = ?2 AND uid = ?3",
+        )?;
+        let mut out = Vec::with_capacity(uids.len());
+        for uid in uids {
+            if let Some(h) = stmt
+                .query_row(params![account, folder, uid], row_to_header)
+                .optional()?
+            {
+                out.push(h);
+            }
+        }
+        Ok(out)
     }
 
     /// The folder's UIDVALIDITY as last seen, if the folder is cached.
@@ -1488,6 +1548,37 @@ mod tests {
         c.note_sent("a", &[("".into(), "ada2@x.org".into())], 9).unwrap();
         c.note_sent("a", &[("".into(), "ada2@x.org".into())], 10).unwrap();
         assert_eq!(names("ada")[0].1, "ada2@x.org");
+    }
+
+    #[test]
+    fn whole_text_index() {
+        let c = Cache::in_memory();
+        c.check_uidvalidity("a", "INBOX", 1).unwrap();
+        c.store_headers(
+            "a",
+            "INBOX",
+            &[
+                h(1, "Farmacia", "Ordine spedito", ""),
+                h(2, "Banca", "Estratto", ""),
+            ],
+            "",
+        )
+        .unwrap();
+        let words = vec!["nicorette".to_string()];
+        assert!(c.search("a", "INBOX", &words, 10).unwrap().is_empty());
+        assert_eq!(c.bodies_to_index("a", "INBOX", 10).unwrap(), vec![2, 1]);
+        // 2 is gone from the server: marked, not asked again.
+        c.store_index_text("a", "INBOX", &[(1, "7 x NICORETTEQUICK spray".into())], &[2])
+            .unwrap();
+        assert!(c.bodies_to_index("a", "INBOX", 10).unwrap().is_empty());
+        let found = c.search("a", "INBOX", &words, 10).unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(!found[0].seen, "indexing does not mark as read");
+        // A later list refresh keeps the indexed text.
+        c.store_headers("a", "INBOX", &[h(1, "Farmacia", "Ordine spedito", "")], "")
+            .unwrap();
+        assert_eq!(c.search("a", "INBOX", &words, 10).unwrap().len(), 1);
+        assert_eq!(c.headers_by_uid("a", "INBOX", &[1, 9]).unwrap().len(), 1);
     }
 
     #[test]
