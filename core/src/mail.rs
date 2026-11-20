@@ -1363,8 +1363,16 @@ pub fn parse_full(uid: u32, raw: &[u8], keys: &PgpKeys) -> Result<FullMessage> {
             (!id.is_empty()).then(|| (id, part.decoded().into_owned()))
         })
         .collect();
+    // Pictures the HTML shows in place (`cid:`) are part of the message,
+    // not attachments: they are not listed again.
+    let shown_inline = |part: &mail_parser::MessagePart| {
+        html.as_deref()
+            .zip(part.content_id())
+            .is_some_and(|(html, id)| references_cid(html, id))
+    };
     let attachments = msg
         .attachments()
+        .filter(|part| !shown_inline(part))
         // An unnamed calendar part is the invitation itself, shown as a
         // card: not listed as "attachment-1".
         .filter(|part| {
@@ -1907,6 +1915,17 @@ impl Part {
     }
 }
 
+/// Whether `html` refers to the part with Content-ID `id` (`cid:id`,
+/// any case, angle brackets around the id ignored).
+fn references_cid(html: &str, id: &str) -> bool {
+    let id = id.trim().trim_matches(['<', '>']);
+    if id.is_empty() {
+        return false;
+    }
+    let needle = format!("cid:{}", id.to_lowercase());
+    html.to_lowercase().contains(&needle)
+}
+
 /// Text (+ HTML alternative) (+ attachments).
 fn build_content(mail: &Outgoing) -> Result<Part> {
     use lettre::message::{Attachment as LAttachment, MultiPart, SinglePart, header};
@@ -2075,6 +2094,21 @@ mod tests {
     fn index_text_reads_html_only_mail() {
         let raw = b"From: a@b.it\r\nSubject: Ordine\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=x\r\n\r\n--x\r\nContent-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\nPHA+N3ggTklDT1JFVFRFUVVJQ0sqU1BSQVk8L3A+\r\n--x--\r\n";
         assert!(index_text(raw).contains("NICORETTEQUICK"));
+    }
+
+    #[test]
+    fn pictures_shown_in_the_html_are_not_attachments() {
+        let raw = b"From: a@b.it\r\nSubject: News\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\nContent-Type: multipart/related; boundary=r\r\n\r\n--r\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>Hi</p><img src=\"CID:Logo@x\">\r\n--r\r\nContent-Type: image/png; name=logo.png\r\nContent-Disposition: attachment; filename=logo.png\r\nContent-ID: <logo@x>\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw0KGgo=\r\n--r--\r\n--m\r\nContent-Type: application/pdf; name=invoice.pdf\r\nContent-Disposition: attachment; filename=invoice.pdf\r\nContent-ID: <pdf@x>\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERi0=\r\n--m--\r\n";
+        let keys = PgpKeys {
+            own: None,
+            contact: &|_| None,
+            autocrypt: &|_| None,
+            learn: &|_, _| {},
+        };
+        let m = parse_full(1, raw, &keys).unwrap();
+        let names: Vec<&str> = m.attachments.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["invoice.pdf"]);
+        assert!(m.inline.contains_key("logo@x"), "still available to the HTML");
     }
 
     #[test]
