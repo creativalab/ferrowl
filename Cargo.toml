@@ -40,10 +40,23 @@ ureq = "3"
 
 [workspace]
 members = ["core", "ffi", "server"]
+exclude = ["vendor"]
 
 [profile.release]
 strip = true
 lto = "thin"
+
+# Release build that keeps symbols, for backtraces of a hung or crashed app:
+# cargo build --profile release-debug
+[profile.release-debug]
+inherits = "release"
+strip = false
+debug = "line-tables-only"
+
+# winit 0.30.13 with one fix: on Wayland a redraw no longer waits forever for
+# a frame callback the compositor never sends (see vendor/winit/FERROWL.md).
+[patch.crates-io]
+winit = { path = "vendor/winit" }
 
 # Desktop notifications over one long-lived D-Bus connection (see push::notify).
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
