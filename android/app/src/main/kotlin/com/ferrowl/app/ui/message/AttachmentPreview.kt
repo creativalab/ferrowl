@@ -53,9 +53,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
@@ -64,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
+import androidx.core.graphics.createBitmap
 import com.ferrowl.app.R
 import com.ferrowl.app.ui.notice.LocalNotices
 import kotlinx.coroutines.Dispatchers
@@ -178,7 +178,7 @@ private fun PdfPages(file: File, onFailed: @Composable () -> Unit) {
     val renderer = doc.second
     val total = renderer.pageCount
     val shown = minOf(total, MAX_PDF_PAGES)
-    val width = with(LocalDensity.current) { LocalConfiguration.current.screenWidthDp.dp.roundToPx() }
+    val width = LocalWindowInfo.current.containerSize.width.coerceAtLeast(1)
     val ratios = remember(file) { mutableStateMapOf<Int, Float>() }
     LazyColumn(
         Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHighest),
@@ -192,7 +192,7 @@ private fun PdfPages(file: File, onFailed: @Composable () -> Unit) {
                             renderer.openPage(i).use { p ->
                                 ratios[i] = p.width.toFloat() / p.height
                                 val height = (width.toLong() * p.height / p.width).toInt().coerceAtLeast(1)
-                                Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
+                                createBitmap(width, height).also {
                                     it.eraseColor(AndroidColor.WHITE)
                                     p.render(it, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                                 }
@@ -223,16 +223,14 @@ private fun PdfPages(file: File, onFailed: @Composable () -> Unit) {
 /** A picture fitted to the screen; pinch to zoom, drag to move. */
 @Composable
 private fun Picture(file: File, onFailed: @Composable () -> Unit) {
-    val maxSide = with(LocalDensity.current) {
-        maxOf(LocalConfiguration.current.screenWidthDp, LocalConfiguration.current.screenHeightDp).dp.roundToPx() * 2
-    }
+    val maxSide = LocalWindowInfo.current.containerSize.let { maxOf(it.width, it.height) * 2 }.coerceAtLeast(1)
     val bitmap by produceState<Result<Bitmap>?>(null, file) {
         value = withContext(Dispatchers.IO) { runCatching { decodeScaled(file, maxSide) ?: error("not a picture") } }
     }
     var scale by remember { mutableFloatStateOf(1f) }
     var dx by remember { mutableFloatStateOf(0f) }
     var dy by remember { mutableFloatStateOf(0f) }
-    val zoom = rememberTransformableState { change, pan, _ ->
+    val zoom = rememberTransformableState { _, change, pan, _ ->
         scale = (scale * change).coerceIn(1f, 6f)
         if (scale == 1f) { dx = 0f; dy = 0f } else { dx += pan.x; dy += pan.y }
     }
