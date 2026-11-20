@@ -2,6 +2,8 @@
 
 compose = "写邮件"
 search_placeholder = "搜索此文件夹（from:、has:attachment、is:unread）"
+clear_search = "清除搜索"
+searching_server = "正在服务器上搜索…"
 sync = "同步"
 settings = "设置"
 appearance = "外观"

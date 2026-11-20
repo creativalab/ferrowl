@@ -94,6 +94,19 @@ fn top_bar<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
     .align_y(Alignment::Center)
     .width(208);
 
+    // With text in the box, the shortcut hint gives way to a button that
+    // empties it.
+    let search_end: Element<'a, Message> = if app.search.is_empty() {
+        kbd("Ctrl K", p)
+    } else {
+        let clear = button(icon(icons::CLOSE, 14.0, p.muted))
+            .width(28)
+            .height(28)
+            .padding(7)
+            .style(ghost(p, p.text2))
+            .on_press(Message::Search(String::new()));
+        tooltip(clear, t("clear_search"), p)
+    };
     let search = container(
         row![
             icon(icons::SEARCH, 18.0, p.muted),
@@ -103,7 +116,7 @@ fn top_bar<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
                 .size(14)
                 .padding(0)
                 .style(bare_input(p)),
-            kbd("Ctrl K", p),
+            search_end,
         ]
         .spacing(10)
         .align_y(Alignment::Center),
@@ -851,6 +864,8 @@ fn message_list<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
     let content: Element<'a, Message> = if visible.is_empty() {
         let msg = if app.loading_list || app.conn == Conn::Connecting {
             t("list_loading")
+        } else if app.server_searching {
+            t("searching_server")
         } else {
             t("list_empty")
         };

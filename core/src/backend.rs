@@ -85,6 +85,8 @@ fn text(e: anyhow::Error) -> String {
 }
 
 const MAX_THROTTLE_RETRIES: u32 = 3;
+/// At most this many server search matches (the newest) are listed.
+pub const SERVER_SEARCH_MAX: usize = 500;
 
 /// If the server refused because of rate limits, how long to wait.
 ///
@@ -1040,6 +1042,30 @@ impl Backend {
         .await
     }
 
+    /// Indexes the whole text (not only the start fetched with the list) of
+    /// up to `count` cached messages of a folder, newest first, so a search
+    /// finds words anywhere in them. Returns whether some are left.
+    pub async fn index_bodies(&self, folder: String, count: u32) -> Res<bool> {
+        self.blocking(move |b| {
+            if b.pop3_account().is_some() {
+                return Ok(false);
+            }
+            let (Some(c), Some(key)) = (cache::get(), b.key()) else {
+                return Ok(false);
+            };
+            let uids = c.bodies_to_index(&key, &folder, count).map_err(text)?;
+            if uids.is_empty() {
+                return Ok(false);
+            }
+            let texts = b.with_session_sync(|s| mail::fetch_index_text(s, &folder, &uids))?;
+            let got: std::collections::HashSet<u32> = texts.iter().map(|(u, _)| *u).collect();
+            let gone: Vec<u32> = uids.iter().copied().filter(|u| !got.contains(u)).collect();
+            c.store_index_text(&key, &folder, &texts, &gone).map_err(text)?;
+            Ok(uids.len() as u32 >= count)
+        })
+        .await
+    }
+
     /// Cached list of a folder (instant, before the server answers).
     /// Up to `limit` messages of a folder from the local copy (which the
     /// background indexing fills with older messages), newest first.
@@ -1080,6 +1106,16 @@ impl Backend {
         found.into_iter().filter(|h| q.matches(h)).collect()
     }
 
+    /// The cached messages among `uids` (e.g. earlier server search matches).
+    pub fn cached_by_uid(account: &Account, folder: &str, uids: &[u32]) -> Vec<Header> {
+        if account.is_pop3() {
+            return Vec::new();
+        }
+        cache::get()
+            .and_then(|c| c.headers_by_uid(&cache::account_key(account), folder, uids).ok())
+            .unwrap_or_default()
+    }
+
     pub fn search(account: &Account, folder: &str, words: &[String]) -> Vec<Header> {
         if account.is_pop3() {
             return local::get()
@@ -1089,6 +1125,54 @@ impl Backend {
         cache::get()
             .and_then(|c| c.search(&cache::account_key(account), folder, words, 500).ok())
             .unwrap_or_default()
+    }
+
+    /// Full-text search on the server (IMAP `SEARCH TEXT`): finds what the
+    /// local index cannot, i.e. words deep in a body only partly stored, or
+    /// messages never downloaded. The newest [SERVER_SEARCH_MAX] matches are
+    /// returned; those not cached yet are downloaded and cached. POP3
+    /// accounts have no server-side search: empty.
+    pub async fn server_search(&self, folder: String, words: Vec<String>) -> Res<Vec<Header>> {
+        self.blocking(move |b| {
+            if b.pop3_account().is_some() {
+                return Ok(Vec::new());
+            }
+            let mut found = b.with_session_sync(|s| mail::search_text(s, &folder, &words))?;
+            found.uids.truncate(SERVER_SEARCH_MAX);
+            let (Some(c), Some(key)) = (cache::get(), b.key()) else {
+                return b.with_session_sync(|s| {
+                    s.select(&folder)?;
+                    mail::fetch_uids(s, &found.uids)
+                });
+            };
+            if let Some(v) = found.uidvalidity {
+                c.check_uidvalidity(&key, &folder, v).map_err(text)?;
+            }
+            let mut headers = c.headers_by_uid(&key, &folder, &found.uids).map_err(text)?;
+            let cached: std::collections::HashSet<u32> = headers.iter().map(|h| h.uid).collect();
+            let missing: Vec<u32> = found
+                .uids
+                .iter()
+                .copied()
+                .filter(|u| !cached.contains(u))
+                .collect();
+            if !missing.is_empty() {
+                let fetched = b.with_session_sync(|s| {
+                    s.select(&folder)?;
+                    let mut out = Vec::new();
+                    for chunk in missing.chunks(100) {
+                        out.extend(mail::fetch_uids(s, chunk)?);
+                    }
+                    Ok(out)
+                })?;
+                c.store_headers(&key, &folder, &fetched, &b.own_address())
+                    .map_err(text)?;
+                headers.extend(fetched);
+            }
+            headers.sort_by(|a, b| b.timestamp.cmp(&a.timestamp).then(b.uid.cmp(&a.uid)));
+            Ok(headers)
+        })
+        .await
     }
 
     pub async fn unseen(&self, folders: Vec<String>) -> Res<HashMap<String, u32>> {

@@ -2,6 +2,8 @@
 
 compose = "Compose"
 search_placeholder = "Search this folder (from:, has:attachment, is:unread)"
+clear_search = "Clear search"
+searching_server = "Searching the server…"
 sync = "Sync"
 settings = "Settings"
 appearance = "Appearance"
