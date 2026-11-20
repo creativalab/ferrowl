@@ -103,7 +103,7 @@ final class MailRepository {
         #endif
         await flushDeferred()
         // After any connection in progress (see `switchTo`).
-        while let task = connecting { _ = try? await task.value }
+        await connectionDone()
         let task = Task { try await engine.connect(account: account) }
         connecting = task
         defer { connecting = nil }
@@ -138,7 +138,7 @@ final class MailRepository {
         // account, at start-up) would otherwise finish last and leave the
         // engine on it, so a message of this account would be fetched (and
         // marked read) by its number from the other one's inbox.
-        while let task = connecting { _ = try? await task.value }
+        await connectionDone()
         TraceLog.note("switch: connecting")
         let task = Task { try await engine.connect(account: account) }
         connecting = task
@@ -227,7 +227,7 @@ final class MailRepository {
         let servers = old.displayName != account.displayName || old.carddavUrl != account.carddavUrl || old.caldavUrl != account.caldavUrl
             || old.davUsername != account.davUsername || old.davPassword != account.davPassword
         guard servers, account.email == activeEmail, connected == account.email else { return }
-        while let task = connecting { _ = try? await task.value }
+        await connectionDone()
         guard account.email == activeEmail, connected == account.email else { return }
         let engine = engine
         let task = Task { try await engine.connect(account: account) }
@@ -240,6 +240,19 @@ final class MailRepository {
         }
         folders = list
         afterConnect()
+    }
+
+    /// Waits for the connection in progress, if any. Its owner clears
+    /// `connecting` only when it runs again after the task ends; a waiter
+    /// woken first would find the same, finished task and wait on it again
+    /// without ever suspending, spinning on the main thread for good (the
+    /// owner never gets its turn: the app froze opening a notification's
+    /// message at start-up). So, after a finished task, the turn goes back.
+    private func connectionDone() async {
+        while let task = connecting {
+            _ = try? await task.value
+            if connecting == task { await Task.yield() }
+        }
     }
 
     /// Connects the active account once per process (concurrent callers
@@ -257,8 +270,8 @@ final class MailRepository {
         while true {
             if !folders.isEmpty, connected == activeEmail { return true }
             // Another connection (a switch of account) first, then check again.
-            if let task = connecting {
-                _ = try? await task.value
+            if connecting != nil {
+                await connectionDone()
                 continue
             }
             guard let account = activeAccount else { return false }
