@@ -720,7 +720,12 @@ fn resolve(doc: &mut HtmlDocument) {
             mutator.set_attribute(id, name, &style);
         }
         drop(mutator);
+        // Laid out again from scratch: Blitz's incremental pass keeps the
+        // text of a cell that was a block unpainted (the cell takes its
+        // room, the words never show), which blanked whole newsletters.
+        doc.set_incremental_layout(false);
         doc.resolve(0.0);
+        doc.set_incremental_layout(true);
     }
 }
 
@@ -1212,6 +1217,37 @@ mod tests {
         .unwrap();
         let height: f32 = r.tiles.iter().map(|(_, h)| h).sum();
         assert!((300.0..900.0).contains(&height), "height {height}");
+    }
+
+    #[test]
+    fn text_of_cells_turned_into_blocks_is_painted() {
+        let _turn = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        // A shipping notice (Qapla/BEE template) showed nothing at all: its
+        // cells took their room but their words were never painted.
+        let html = r#"<style>.stack .column { width: 100%; display: block }</style>
+            <table class="stack" width="500"><tbody><tr>
+            <td class="column"><h1>Your order has shipped</h1></td>
+            </tr></tbody></table>"#;
+        let r = render(Job {
+            uid: 13,
+            html: html.into(),
+            width: 500,
+            scale: 1.0,
+            allow_remote: false,
+            inline: HashMap::new(),
+        })
+        .unwrap();
+        let dark = r
+            .tiles
+            .iter()
+            .map(|(handle, _)| match handle {
+                iced::advanced::image::Handle::Rgba { pixels, .. } => {
+                    pixels.chunks(4).filter(|p| p[3] > 0 && p[0] < 128).count()
+                }
+                _ => 0,
+            })
+            .sum::<usize>();
+        assert!(dark > 100, "no text painted ({dark} dark pixels)");
     }
 
     /// Renders `$FERROWL_HTML` and writes its tiles next to it (manual check).
