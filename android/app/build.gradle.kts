@@ -17,8 +17,8 @@ android {
         applicationId = "com.ferrowl.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 12
-        versionName = "0.5.5"
+        versionCode = 13
+        versionName = "0.5.6"
         // The ABIs the Rust engine is built for (see ffi/build-android.sh).
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
     }
